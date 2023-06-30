@@ -138,11 +138,13 @@ public class SiteService {
         if (siteRepository.existsByName(dto.getName())) {
             throw new BadRequestException("站点名字重复");
         }
-        if (siteRepository.existsByUrl(dto.getUrl())) {
-            throw new BadRequestException("站点地址重复");
-        }
 
         Site site = new Site();
+        syncSite(dto, site);
+        return siteRepository.save(site);
+    }
+
+    private static void syncSite(SiteDto dto, Site site) {
         site.setName(dto.getName());
         site.setUrl(dto.getUrl());
         site.setPassword(dto.getPassword());
@@ -154,7 +156,6 @@ public class SiteService {
         site.setIndexFile(dto.getIndexFile());
         site.setDisabled(dto.isDisabled());
         site.setVersion(dto.getVersion());
-        return siteRepository.save(site);
     }
 
     public Site update(int id, SiteDto dto) {
@@ -164,22 +165,8 @@ public class SiteService {
         if (other.isPresent() && other.get().getId() != id) {
             throw new BadRequestException("站点名字重复");
         }
-        other = siteRepository.findByUrl(dto.getUrl());
-        if (other.isPresent() && other.get().getId() != id) {
-            throw new BadRequestException("站点地址重复");
-        }
 
-        site.setName(dto.getName());
-        site.setUrl(dto.getUrl());
-        site.setPassword(dto.getPassword());
-        site.setToken(dto.getToken());
-        site.setFolder(dto.getFolder());
-        site.setOrder(dto.getOrder());
-        site.setSearchable(dto.isSearchable());
-        site.setXiaoya(dto.isXiaoya());
-        site.setIndexFile(dto.getIndexFile());
-        site.setDisabled(dto.isDisabled());
-        site.setVersion(dto.getVersion());
+        syncSite(dto, site);
         return siteRepository.save(site);
     }
 

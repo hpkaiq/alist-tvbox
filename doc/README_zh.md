@@ -17,7 +17,13 @@ AList代理，支持xioaya版AList界面管理。
 
 ## 安装
 ### 一键安装
-小雅集成版（不需要再安装小雅版Docker）：
+#### 小雅集成版
+不需要再安装小雅版Docker。
+
+如果找不到bash就替换为sh。
+
+如果找不到sudo，就用root账号登录，去掉sudo后运行。
+
 ```bash
 curl -s https://d.har01d.cn/update_xiaoya.sh | sudo bash
 ```
@@ -33,11 +39,15 @@ OpenWrt去掉sudo，或者已经是root账号：
 ```bash
 curl -s https://d.har01d.cn/update_xiaoya.sh | bash
 ```
-独立版：
+
+#### 独立版
 ```bash
-curl -s https://d.har01d.cn/update_new.sh | sudo bash
+curl -s https://d.har01d.cn/update_new.sh | bash
 ```
-对于群辉系统，请挂载Docker的/data目录到群辉文件系统。
+独立版请使用小雅搜索索引文件： http://d.har01d.cn/index.video.zip
+
+#### NAS
+对于群辉等NAS系统，请挂载Docker的/data目录到群辉文件系统。
 
 ## 管理
 打开管理网页：http://your-ip:5678/ 
@@ -111,6 +121,9 @@ https://www.aliyundrive.com/drive/folder/640xxxxxxxxxxxxxxxxxxxca8a 最后一串
 强制登录AList后，连接webdav需要使用下面的用户名和密码。
 
 阿里token和开放token每天会刷新，时间和自动签到时间一致。即使没有开启自动签到，也会刷新。
+
+### 别名
+![别名页面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_alias.png)
 
 ### 其它
 不再生效的文件可以保留，以后删除数据库后可以恢复。

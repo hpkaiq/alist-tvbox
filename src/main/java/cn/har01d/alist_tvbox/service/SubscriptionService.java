@@ -16,9 +16,11 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import org.springframework.web.util.UriComponents;
 
 import javax.annotation.PostConstruct;
 import javax.crypto.Cipher;
@@ -55,13 +57,17 @@ public class SubscriptionService {
     private final AppProperties appProperties;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final JdbcTemplate jdbcTemplate;
     private final SettingRepository settingRepository;
     private final SubscriptionRepository subscriptionRepository;
 
     private String token = "";
 
-    public SubscriptionService(Environment environment, AppProperties appProperties, RestTemplateBuilder builder,
+    public SubscriptionService(Environment environment,
+                               AppProperties appProperties,
+                               RestTemplateBuilder builder,
                                ObjectMapper objectMapper,
+                               JdbcTemplate jdbcTemplate,
                                SettingRepository settingRepository,
                                SubscriptionRepository subscriptionRepository) {
         this.environment = environment;
@@ -71,6 +77,7 @@ public class SubscriptionService {
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.OK_USER_AGENT)
                 .build();
         this.objectMapper = objectMapper;
+        this.jdbcTemplate = jdbcTemplate;
         this.settingRepository = settingRepository;
         this.subscriptionRepository = subscriptionRepository;
     }
@@ -81,7 +88,8 @@ public class SubscriptionService {
                 .map(Setting::getValue)
                 .orElse("");
 
-        if (subscriptionRepository.count() == 0) {
+        List<Subscription> list = subscriptionRepository.findAll();
+        if (list.isEmpty()) {
             Subscription sub = new Subscription();
             sub.setName("饭太硬");
             sub.setUrl("http://饭太硬.top/tv");
@@ -90,6 +98,29 @@ public class SubscriptionService {
             sub.setName("菜妮丝");
             sub.setUrl("https://tvbox.cainisi.cf");
             subscriptionRepository.save(sub);
+        } else {
+            fixId(list);
+        }
+    }
+
+    private void fixId(List<Subscription> list) {
+        String fixed = settingRepository.findById("fix_sub_id").map(Setting::getValue).orElse(null);
+        if (fixed == null) {
+            log.warn("fix subscription id");
+            int id = 1;
+            int max = 1;
+
+            for (var sub : list) {
+                max = Math.max(max, sub.getId());
+                sub.setId(id++);
+            }
+
+            if (max > list.size()) {
+                subscriptionRepository.deleteAll();
+                jdbcTemplate.execute("update id_generator set next_id=0 where entity_name = 'subscription';");
+                subscriptionRepository.saveAll(list);
+            }
+            settingRepository.save(new Setting("fix_sub_id", "true"));
         }
     }
 
@@ -227,6 +258,7 @@ public class SubscriptionService {
         try {
             json = Pattern.compile("^\\s*#.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
             json = Pattern.compile("^\\s*//.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
+            json = json.replace("DOCKER_ADDRESS", readHostAddress());
             Map<String, Object> override = objectMapper.readValue(json, Map.class);
             overrideConfig(config, "", "", override);
         } catch (Exception e) {
@@ -368,6 +400,7 @@ public class SubscriptionService {
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
         sites.removeIf(item -> key.equals(item.get("key")));
         sites.add(0, site);
+        log.debug("add AList site: {}", site);
     }
 
     private Map<String, Object> buildSite(String key) {
@@ -439,13 +472,24 @@ public class SubscriptionService {
         return null;
     }
 
-    private static String readHostAddress() throws IOException {
-        String address;
-        File file = new File("/data/docker_address.txt");
-        if (file.exists()) {
-            address = FileUtils.readFileToString(file, StandardCharsets.UTF_8);
-        } else {
-            address = ServletUriComponentsBuilder.fromCurrentRequest().port(5244).replacePath("/").build().toUriString();
+    private String readHostAddress() throws IOException {
+        UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest().port(5244).replacePath("/").build();
+        String address = null;
+        if (!isIntranet(uriComponents)) {
+            address = getAddress();
+            if (StringUtils.isBlank(address)) {
+                File file = new File("/data/docker_address.txt");
+                if (file.exists()) {
+                    address = FileUtils.readFileToString(file, StandardCharsets.UTF_8);
+                    if (StringUtils.isNotBlank(address)) {
+                        settingRepository.save(new Setting("docker_address", address));
+                    }
+                }
+            }
+        }
+
+        if (StringUtils.isBlank(address)) {
+            address = uriComponents.toUriString();
         }
 
         if (address.endsWith("/")) {
@@ -453,6 +497,20 @@ public class SubscriptionService {
         }
 
         return address;
+    }
+
+    private boolean isIntranet(UriComponents uriComponents) {
+        try {
+            String host = uriComponents.getHost();
+            return host != null && (host.equals("localhost") || host.equals("127.0.0.1") || host.startsWith("192.168."));
+        } catch (Exception e) {
+            log.warn("{}", e.getMessage());
+        }
+        return false;
+    }
+
+    private String getAddress() {
+        return settingRepository.findById("docker_address").map(Setting::getValue).orElse(null);
     }
 
     public Map<String, Object> convertResult(String json, String configKey) {
