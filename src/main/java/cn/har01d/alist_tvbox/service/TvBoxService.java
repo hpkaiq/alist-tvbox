@@ -175,8 +175,15 @@ public class TvBoxService {
             if (line.startsWith("./")) {
                 line = line.substring(1);
             }
+
+            String raw = line;
+            String[] parts = line.split("#");
+            if (parts.length > 1) {
+                line = parts[0];
+            }
+
             boolean isMediaFile = isMediaFile(line);
-            if (isMediaFile && lines.contains(getParent(line))) {
+            if (isMediaFile && lines.contains(getParent(raw))) {
                 continue;
             }
             String path = fixPath("/" + line + (isMediaFile ? "" : PLAYLIST));
@@ -408,10 +415,11 @@ public class TvBoxService {
         FsDetail fsDetail = aListService.getFile(site, path);
         String url = fixHttp(fsDetail.getRawUrl());
         if (url.contains("abnormal.png")) {
-            throw new IllegalStateException("阿里云盘开放token过期");
-        }
-        if (url.contains("diskfull.png")) {
+            throw new IllegalStateException("阿里云盘账号异常");
+        } else if (url.contains("diskfull.png")) {
             throw new IllegalStateException("阿里云盘空间不足");
+        } else if (url.contains(".png")) {
+            log.warn("play url: {}", url);
         }
         return url;
     }

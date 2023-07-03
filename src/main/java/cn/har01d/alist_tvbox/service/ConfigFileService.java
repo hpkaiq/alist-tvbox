@@ -29,14 +29,12 @@ public class ConfigFileService {
 
     @PostConstruct
     public void setup() {
-        if (repository.count() > 0) {
-            writeFiles();
-        } else {
+        if (repository.count() == 0) {
             readFiles();
         }
     }
 
-    private void writeFiles() {
+    public void writeFiles() {
         for (ConfigFile file : repository.findAll()) {
             try {
                 writeFileContent(file);
@@ -49,9 +47,6 @@ public class ConfigFileService {
     private void readFiles() {
         readFile("/data/tv.txt");
         readFile("/data/proxy.txt");
-        readFile("/data/pikpak.txt");
-        readFile("/data/pikpak_list.txt");
-        readFile("/data/pikpakshare_list.txt");
 
         if (Files.exists(Paths.get("/data/iptv.m3u"))) {
             readFile("/www/tvbox/iptv.m3u");

@@ -23,7 +23,7 @@
       <el-table-column prop="checkinDays" label="签到次数" width="90"/>
       <el-table-column prop="checkinTime" label="上次签到时间">
         <template #default="scope">
-          {{formatTime(scope.row.checkinTime)}}
+          {{ formatTime(scope.row.checkinTime) }}
         </template>
       </el-table-column>
       <el-table-column prop="showMyAli" label="加载我的云盘？" width="150">
@@ -94,8 +94,9 @@
             active-text="是"
             inactive-text="否"
           />
+          <span class="hint">主账号用来观看分享。</span>
         </el-form-item>
-        <el-form-item label="自动清理">
+        <el-form-item label="自动清理" label-width="140">
           <el-switch
             v-model="form.clean"
             inline-prompt
@@ -165,6 +166,7 @@
             active-text="是"
             inactive-text="否"
           />
+          <span class="hint">主账号用来观看分享。</span>
         </el-form-item>
         <el-form-item label="自动清理">
           <el-switch
@@ -191,10 +193,21 @@
       <template #footer>
           <span class="dialog-footer">
             <el-button @click="detailVisible = false">取消</el-button>
-          <el-button type="success" @click="clean">清理</el-button>
-          <el-button type="success" @click="checkin">签到</el-button>
-          <el-button type="primary" @click="handleConfirm">更新</el-button>
+            <el-button type="success" @click="clean">清理</el-button>
+            <el-button type="success" @click="checkin">签到</el-button>
+            <el-button type="primary" @click="handleConfirm">更新</el-button>
           </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="alistVisible" title="更新成功" width="30%">
+      <p>需要重启AList服务后才能生效</p>
+      <p>是否重启AList服务？</p>
+      <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="alistVisible = false">取消</el-button>
+        <el-button type="danger" @click="restartAList">重启</el-button>
+      </span>
       </template>
     </el-dialog>
 
@@ -206,6 +219,8 @@ import {onMounted, ref} from 'vue'
 import {Check, Close} from '@element-plus/icons-vue'
 import axios from "axios"
 import {ElMessage} from "element-plus";
+import {store} from "@/services/store";
+import router from "@/router";
 
 interface Item {
   path: string
@@ -221,6 +236,7 @@ const accounts = ref([])
 const formVisible = ref(false)
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
+const alistVisible = ref(false)
 const form = ref({
   id: 0,
   nickname: '',
@@ -253,7 +269,7 @@ const showDetails = (data: any) => {
 }
 
 const checkin = () => {
-  axios.post('/ali-accounts/' + form.value.id + '/checkin?force=' + forceCheckin.value).then(({data}) => {
+  axios.post('/ali/accounts/' + form.value.id + '/checkin?force=' + forceCheckin.value).then(({data}) => {
     form.value.checkinTime = data.checkinTime
     form.value.checkinDays = data.signInCount
     form.value.nickname = data.nickname
@@ -263,7 +279,7 @@ const checkin = () => {
 }
 
 const clean = () => {
-  axios.post('/ali-accounts/' + form.value.id + '/clean').then(({data}) => {
+  axios.post('/ali/accounts/' + form.value.id + '/clean').then(({data}) => {
     if (data) {
       ElMessage.success('成功清理' + data + '个过期文件')
     } else {
@@ -300,7 +316,7 @@ const handleDelete = (data: any) => {
 
 const deleteSite = () => {
   dialogVisible.value = false
-  axios.delete('/ali-accounts/' + form.value.id).then(() => {
+  axios.delete('/ali/accounts/' + form.value.id).then(() => {
     load()
   })
 }
@@ -310,16 +326,39 @@ const handleCancel = () => {
 }
 
 const handleConfirm = () => {
-  const url = updateAction.value ? '/ali-accounts/' + form.value.id : '/ali-accounts'
-  axios.post(url, form.value).then(() => {
+  const url = updateAction.value ? '/ali/accounts/' + form.value.id : '/ali/accounts'
+  axios.post(url, form.value).then((response) => {
+    detailVisible.value = false
+    if (accounts.value.length === 0) {
+      if (store.aListStatus) {
+        ElMessage.success('添加成功')
+      } else {
+        ElMessage.success('添加成功，AList服务重启中。')
+        setTimeout(() => router.push('/wait'), 3000)
+      }
+    } else {
+      if (response.headers['alist_restart_required']) {
+        ElMessage.success('更新成功，需要重启AList生效')
+        alistVisible.value = true
+      } else {
+        ElMessage.success('更新成功')
+      }
+    }
     formVisible.value = false
-    ElMessage.success('更新成功')
     load()
   })
 }
 
+const restartAList = () => {
+  axios.post('/alist/restart').then(() => {
+    alistVisible.value = false
+    ElMessage.success('AList重启中')
+    setTimeout(() => router.push('/wait'), 1000)
+  })
+}
+
 const load = () => {
-  axios.get('/ali-accounts').then(({data}) => {
+  axios.get('/ali/accounts').then(({data}) => {
     accounts.value = data
   })
 }

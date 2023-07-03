@@ -9,19 +9,26 @@
 
   <el-table :data="shares" border @selection-change="handleSelectionChange" style="width: 100%">
     <el-table-column type="selection" width="55"/>
-    <el-table-column prop="id" label="ID" width="70"/>
-    <el-table-column prop="path" label="路径"/>
-    <el-table-column label="完整路径">
+    <el-table-column prop="id" label="ID" width="70" sortable/>
+    <el-table-column prop="path" label="路径" sortable/>
+    <el-table-column label="完整路径" width="380" sortable>
       <template #default="scope">
-        {{fullPath(scope.row.path)}}
+        {{fullPath(scope.row)}}
       </template>
     </el-table-column>
-    <el-table-column prop="url" label="分享连接" width="350">
+    <el-table-column prop="url" label="分享链接">
       <template #default="scope">
-        <a :href="getShareLink(scope.row)" target="_blank">https://www.aliyundrive.com/s/{{ scope.row.shareId }}</a>
+        <a v-if="scope.row.type" :href="getShareLink(scope.row)" target="_blank">https://mypikpak.com/s/{{scope.row.shareId}}</a>
+        <a v-else :href="getShareLink(scope.row)" target="_blank">https://www.aliyundrive.com/s/{{ scope.row.shareId }}</a>
       </template>
     </el-table-column>
     <el-table-column prop="password" label="密码" width="180"/>
+    <el-table-column prop="type" label="类型" width="150" sortable>
+      <template #default="scope">
+        <span v-if="scope.row.type">PikPak分享</span>
+        <span v-else>阿里云盘</span>
+      </template>
+    </el-table-column>
     <el-table-column fixed="right" label="操作" width="200">
       <template #default="scope">
         <el-button link type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
@@ -48,7 +55,13 @@
       <el-form-item label="文件夹ID" label-width="140">
         <el-input v-model="form.folderId" autocomplete="off" placeholder="默认为根目录或者从分享链接读取"/>
       </el-form-item>
-      <span v-if="form.path">完整路径： {{fullPath(form.path)}}</span>
+      <el-form-item label="类型" label-width="140">
+        <el-radio-group v-model="form.type" class="ml-4">
+          <el-radio :label="0" size="large">阿里云盘</el-radio>
+          <el-radio :label="1" size="large">PikPak分享</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <span v-if="form.path">完整路径： {{fullPath(form)}}</span>
     </el-form>
     <template #footer>
       <span class="dialog-footer">
@@ -78,7 +91,7 @@
     <el-upload
       ref="upload"
       class="upload"
-      action="/import-shares"
+      :action="'/import-shares?type='+form.type"
       accept=".txt"
       :limit="1"
       :headers="{'X-ACCESS-TOKEN': token}"
@@ -97,8 +110,15 @@
         </div>
       </template>
     </el-upload>
+    <el-form-item label="类型" label-width="140">
+      <el-radio-group v-model="form.type" class="ml-4">
+        <el-radio :label="0" size="large">阿里云盘</el-radio>
+        <el-radio :label="1" size="large">PikPak分享</el-radio>
+      </el-radio-group>
+    </el-form-item>
     <template #footer>
       <span class="dialog-footer">
+        <el-button @click="uploadVisible = false">取消</el-button>
         <el-button class="ml-3" type="success" @click="submitUpload">上传</el-button>
       </span>
     </template>
@@ -109,14 +129,21 @@
   <h2>资源列表</h2>
 
   <el-table :data="resources" border style="width: 100%">
-    <el-table-column prop="id" label="ID" width="70"/>
-    <el-table-column prop="path" label="路径"/>
-    <el-table-column prop="url" label="分享连接" width="350">
+    <el-table-column prop="id" label="ID" width="70" sortable/>
+    <el-table-column prop="path" label="路径" width="380" sortable/>
+    <el-table-column prop="url" label="分享链接">
       <template #default="scope">
-        <a :href="getShareLink(scope.row)" target="_blank">https://www.aliyundrive.com/s/{{ scope.row.shareId }}</a>
+        <a v-if="scope.row.type" :href="getShareLink(scope.row)" target="_blank">https://mypikpak.com/s/{{scope.row.shareId}}</a>
+        <a v-else :href="getShareLink(scope.row)" target="_blank">https://www.aliyundrive.com/s/{{ scope.row.shareId }}</a>
       </template>
     </el-table-column>
     <el-table-column prop="password" label="密码" width="180"/>
+    <el-table-column prop="type" label="类型" width="150" sortable>
+      <template #default="scope">
+        <span v-if="scope.row.type">PikPak分享</span>
+        <span v-else>阿里云盘</span>
+      </template>
+    </el-table-column>
     <el-table-column prop="status" label="状态" width="120"/>
   </el-table>
   <div>
@@ -143,6 +170,7 @@ interface ShareInfo {
   folderId: string
   password: string
   status: string
+  type: number
 }
 
 const multipleSelection = ref<ShareInfo[]>([])
@@ -165,7 +193,8 @@ const form = ref({
   path: '',
   shareId: '',
   folderId: '',
-  password: ''
+  password: '',
+  type: 0
 })
 
 const handleAdd = () => {
@@ -176,7 +205,8 @@ const handleAdd = () => {
     path: '',
     shareId: '',
     folderId: '',
-    password: ''
+    password: '',
+    type: 0
   }
   formVisible.value = true
 }
@@ -189,7 +219,8 @@ const handleEdit = (data: ShareInfo) => {
     path: data.path,
     shareId: data.shareId,
     folderId: data.folderId,
-    password: data.password
+    password: data.password,
+    type: data.type
   }
   formVisible.value = true
 }
@@ -222,11 +253,16 @@ const handleCancel = () => {
   formVisible.value = false
 }
 
-const fullPath = (path: string) => {
+const fullPath = (share: any) => {
+  const path = share.path;
   if (path.startsWith('/')) {
     return path
   }
-  return '\uD83C\uDE34我的阿里分享/' + path
+  if (share.type) {
+    return '/\uD83D\uDD78\uFE0F我的PikPak分享/' + path
+  } else {
+    return '/\uD83C\uDE34我的阿里分享/' + path
+  }
 }
 
 const handleConfirm = () => {
@@ -237,6 +273,9 @@ const handleConfirm = () => {
 }
 
 const getShareLink = (shareInfo: ShareInfo) => {
+  if (shareInfo.type) {
+    return 'https://mypikpak.com/s/' + shareInfo.shareId
+  }
   let url = 'https://www.aliyundrive.com/s/' + shareInfo.shareId
   if (shareInfo.folderId) {
     url = url + '/folder/' + shareInfo.folderId

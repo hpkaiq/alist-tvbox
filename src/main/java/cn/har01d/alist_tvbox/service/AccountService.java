@@ -39,6 +39,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.PostConstruct;
+import javax.servlet.http.HttpServletResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -61,6 +62,7 @@ import java.util.stream.Collectors;
 import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_PASSWORD;
+import static cn.har01d.alist_tvbox.util.Constants.ALIST_RESTART_REQUIRED;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_USERNAME;
 import static cn.har01d.alist_tvbox.util.Constants.ATV_PASSWORD;
 import static cn.har01d.alist_tvbox.util.Constants.AUTO_CHECKIN;
@@ -165,7 +167,7 @@ public class AccountService {
             String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0);";
             statement.executeUpdate(sql);
         } catch (Exception e) {
-            throw new BadRequestException(e);
+            log.warn("", e);
         }
     }
 
@@ -319,7 +321,7 @@ public class AccountService {
     private Map<Object, Object> refreshTokens(Account account) {
         boolean changed = false;
         Map<Object, Object> response = null;
-        Instant now = Instant.now();
+        Instant now = Instant.now().plusSeconds(60);
         Instant time;
         try {
             time = account.getOpenTokenTime();
@@ -393,6 +395,8 @@ public class AccountService {
             if (login.isEnabled()) {
                 log.info("enable AList login");
                 sql = "update x_users set disabled = 1 where id = 2";
+                statement.executeUpdate(sql);
+                sql = "delete from x_users where id = 3;";
                 statement.executeUpdate(sql);
                 sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0);";
                 statement.executeUpdate(sql);
@@ -726,7 +730,7 @@ public class AccountService {
         }
     }
 
-    public Account update(Integer id, AccountDto dto) {
+    public Account update(Integer id, AccountDto dto, HttpServletResponse response) {
         validateUpdate(id, dto);
 
         Account account = accountRepository.findById(id).orElseThrow(NotFoundException::new);
@@ -749,6 +753,8 @@ public class AccountService {
             updateMaster();
             account.setMaster(true);
             updateAList(account);
+            settingRepository.save(new Setting(ALIST_RESTART_REQUIRED, "true"));
+            response.addHeader(ALIST_RESTART_REQUIRED, "true");
         }
 
         if (aliChanged) {
@@ -833,20 +839,20 @@ public class AccountService {
         }
     }
 
-    private void enableStorage(Integer id, String token) {
+    public void enableStorage(Integer id, String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
         HttpEntity<String> entity = new HttpEntity<>(null, headers);
         ResponseEntity<String> response = restTemplate.exchange("http://localhost:5244/api/admin/storage/enable?id=" + id, HttpMethod.POST, entity, String.class);
-        log.info("enable AList storage response: {}", response.getBody());
+        log.info("enable AList storage {} response: {}", id, response.getBody());
     }
 
-    private void deleteStorage(Integer id, String token) {
+    public void deleteStorage(Integer id, String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
         HttpEntity<String> entity = new HttpEntity<>(null, headers);
         ResponseEntity<String> response = restTemplate.exchange("http://localhost:5244/api/admin/storage/delete?id=" + id, HttpMethod.POST, entity, String.class);
-        log.info("delete AList storage response: {}", response.getBody());
+        log.info("delete AList storage {} response: {}", id, response.getBody());
     }
 
     public void delete(Integer id) {

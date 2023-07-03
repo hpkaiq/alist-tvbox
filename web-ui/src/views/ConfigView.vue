@@ -21,6 +21,7 @@
             inactive-text="停止中"
           />
           <span class="hint" v-if="aListStartTime">启动时间：{{ formatTime(aListStartTime) }}</span>
+          <span class="hint warning" v-if="aListRestart">AList需要重启</span>
           <el-progress
             :percentage="percentage"
             :stroke-width="15"
@@ -105,7 +106,7 @@
           <div v-if="dockerVersion">小雅版本：{{ dockerVersion }}</div>
           <div v-if="appVersion">应用版本：{{ appVersion }}</div>
           <div v-if="appRemoteVersion&&appRemoteVersion>appVersion">
-            最新版本：{{ appRemoteVersion }}，请升级应用。
+            最新版本：{{ appRemoteVersion }}，请重新运行安装脚本，升级应用。
           </div>
         </el-card>
 
@@ -115,7 +116,7 @@
           </template>
           <div>本地版本：{{ indexVersion }}</div>
           <div v-if="indexRemoteVersion&&indexRemoteVersion!=indexVersion">
-            最新版本：{{ indexRemoteVersion }}，请重启更新。
+            最新版本：{{ indexRemoteVersion }}，请重启Docker更新。
           </div>
         </el-card>
 
@@ -125,7 +126,7 @@
           </template>
           <div>本地版本：{{ movieVersion }}</div>
           <div v-if="movieRemoteVersion&&movieRemoteVersion>movieVersion">
-            最新版本：{{ movieRemoteVersion }}，请重启更新。
+            最新版本：{{ movieRemoteVersion }}，请重启Docker更新。
           </div>
         </el-card>
       </el-col>
@@ -175,6 +176,7 @@ const increase = () => {
 }
 
 const aListStarted = ref(false)
+const aListRestart = ref(false)
 const showLogin = ref(false)
 const autoCheckin = ref(false)
 const dialogVisible = ref(false)
@@ -288,6 +290,7 @@ onMounted(() => {
       openTokenUrl.value = data.open_token_url
       dockerAddress.value = data.docker_address
       autoCheckin.value = data.auto_checkin === 'true'
+      aListRestart.value = data.alist_restart_required === 'true'
       login.value.username = data.alist_username
       login.value.password = data.alist_password
       login.value.enabled = data.alist_login === 'true'
@@ -329,6 +332,10 @@ onUnmounted(() => {
 
 .bottom {
   margin-bottom: 0px;
+}
+
+.warning {
+  color: #e6a23c;
 }
 
 .append {
