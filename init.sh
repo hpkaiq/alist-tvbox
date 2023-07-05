@@ -9,11 +9,12 @@ mkdir -p /www/cgi-bin
 mkdir -p /index
 mv search /www/cgi-bin/search
 mv header.html /www/cgi-bin/header.html
+sed '/location \/dav/i\    location ~* alist {\n        deny all;\n    }\n' nginx.conf >/etc/nginx/http.d/default.conf
 mv mobi.tgz /www/mobi.tgz
 cd /www/
 tar zxf mobi.tgz
 rm mobi.tgz
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 5 -t 2 http://docker.xiaoya.pro/update/tvbox.zip
+wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 10 -t 2 http://docker.xiaoya.pro/update/tvbox.zip
 unzip -q -o tvbox.zip
 rm tvbox.zip
 if [ -f /data/my.json ]; then
@@ -29,8 +30,8 @@ cd /tmp/
 
 rm -f index.zip index.txt version.txt update.zip
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 5 -t 2 -q http://docker.xiaoya.pro/update/version.txt
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 5 -t 2 http://docker.xiaoya.pro/update/update.zip
+wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 10 -t 2 -q http://docker.xiaoya.pro/update/version.txt
+wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 10 -t 2 http://docker.xiaoya.pro/update/update.zip
 if [ ! -f update.zip ]; then
   echo "Failed to download update database file, the database upgrade process has aborted"
   exit
@@ -78,7 +79,7 @@ else
     echo $(date) "current index file version is updated, no need to upgrade"
     exit
   elif [ $remote = $latest ]; then
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 5 -t 2 http://docker.xiaoya.pro/update/index.zip
+    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 10 -t 2 http://docker.xiaoya.pro/update/index.zip
     if [ ! -f index.zip ]; then
       echo "Failed to download index compressed file, the index file upgrade process has aborted"
       exit

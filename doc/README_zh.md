@@ -12,6 +12,7 @@ AList代理，支持xioaya版AList界面管理。
 - 安全订阅配置
 - TvBox配置聚合
 - 添加阿里云盘分享
+- 添加PikPak分享
 - 管理AList服务
 - 小雅配置文件管理
 
@@ -25,33 +26,57 @@ AList代理，支持xioaya版AList界面管理。
 如果找不到sudo，就用root账号登录，去掉sudo后运行。
 
 ```bash
-curl -s https://d.har01d.cn/update_xiaoya.sh | sudo bash
+sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)"
 ```
 使用其它配置目录：
 ```bash
-curl -s https://d.har01d.cn/update_xiaoya.sh | sudo bash -s /home/user/atv
+sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)" -s /home/user/atv
 ```
 使用其它端口：
 ```bash
-curl -s https://d.har01d.cn/update_xiaoya.sh | sudo bash -s /etc/xiaoya 8080
+sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)" -s /etc/xiaoya 8080
 ```
 OpenWrt去掉sudo，或者已经是root账号：
 ```bash
-curl -s https://d.har01d.cn/update_xiaoya.sh | bash
+bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)"
 ```
 
 如果没有安装curl:
 ```bash
 wget https://d.har01d.cn/update_xiaoya.sh; sh ./update_xiaoya.sh
 ```
+
+#### host网络模式
+使用host网络模式运行：
+```bash
+sudo bash -c "$(curl https://d.har01d.cn/update_hostmode.sh)"
+```
+使用的端口：
+
+6789 - nginx
+
+5233 - httpd
+
+5234 - AList
+
+5678 - 管理应用
+
 #### 独立版
 ```bash
-curl -s https://d.har01d.cn/update_new.sh | bash
+bash -c "$(curl https://d.har01d.cn/update_new.sh)"
 ```
 独立版请使用小雅搜索索引文件： http://d.har01d.cn/index.video.zip
 
 #### NAS
 对于群辉等NAS系统，请挂载Docker的/data目录到群辉文件系统。
+
+### 海报展示
+#### 浏览目录
+![浏览目录](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/poster1.jpg)
+#### 搜索界面
+![搜索界面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/poster2.jpg)
+#### 播放界面
+![播放界面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/poster3.jpg)
 
 ## 管理
 打开管理网页：http://your-ip:5678/ 

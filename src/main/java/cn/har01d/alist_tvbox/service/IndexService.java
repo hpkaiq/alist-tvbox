@@ -26,6 +26,8 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -39,6 +41,7 @@ public class IndexService {
     private final SiteService siteService;
     private final SettingRepository settingRepository;
     private final RestTemplate restTemplate;
+    private final Executor executor = Executors.newSingleThreadExecutor();
 
     public IndexService(SiteService siteService, SettingRepository settingRepository, RestTemplateBuilder builder) {
         this.siteService = siteService;
@@ -91,11 +94,48 @@ public class IndexService {
 
     public String getRemoteVersion() {
         try {
-            return restTemplate.getForObject("http://docker.xiaoya.pro/update/version.txt", String.class);
+            String remote = restTemplate.getForObject("http://docker.xiaoya.pro/update/version.txt", String.class).trim();
+            String local = settingRepository.findById(INDEX_VERSION).map(Setting::getValue).orElse("").trim();
+            if (!local.equals(remote)) {
+                executor.execute(() -> updateXiaoyaIndexFile(remote));
+            }
+            return remote;
         } catch (Exception e) {
             log.warn("", e);
         }
         return "";
+    }
+
+    public void checkIndexFile() {
+        try {
+            String local = settingRepository.findById(INDEX_VERSION).map(Setting::getValue).orElse("").trim();
+            String remote = getRemoteVersion().trim();
+            if (!local.equals(remote)) {
+                executor.execute(() -> updateXiaoyaIndexFile(remote));
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+    }
+
+    public void updateXiaoyaIndexFile(String remote) {
+        try {
+            log.info("download xiaoya index file");
+            ProcessBuilder builder = new ProcessBuilder();
+            builder.command("sh", "-c", "/index.sh", remote);
+            builder.inheritIO();
+            builder.directory(new File("/tmp"));
+            Process process = builder.start();
+            int code = process.waitFor();
+            if (code == 0) {
+                log.info("xiaoya index file updated");
+                settingRepository.save(new Setting(INDEX_VERSION, remote));
+            } else {
+                log.warn("download xiaoya index file failed: {}", code);
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
     }
 
     public void updateIndexFile() {
