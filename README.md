@@ -10,40 +10,33 @@ mvn clean package
 
 # Run
 ```bash
-curl -s http://d.har01d.cn/update_new.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"
 ```
 ```bash
-java -jar target/alist-tvbox-1.0.jar --server.port=5678
-```
-
-# Deploy
-```bash
-scp target/alist-tvbox-1.0.jar user@your-server:~/atv.jar
-scp config/install-service.sh user@your-server:~
-# login to your server
-./install-service.sh
+java -jar target/alist-tvbox-1.0.jar
 ```
 
 # Docker
 ```bash
 ./build.sh
-docker run -d -p 5678:8080 -e ALIST_URL=http://IP:5244 --restart=always --name=alist-tvbox alist-tvbox
+docker run -d -p 4567:4567 --restart=always --name=alist-tvbox alist-tvbox
 ```
 Or run container from Docker hub.
 ```bash
-docker run -d -p 5678:8080 --restart=always --name=alist-tvbox haroldli/alist-tvbox
+docker run -d -p 4567:4567 --restart=always --name=alist-tvbox haroldli/alist-tvbox
 ```
 ```bash
-docker run -d -p 5678:8080 -p 5244:80 -v /etc/xiaoya:/data --restart=always --name=xiaoya-tvbox haroldli/xiaoya-tvbox:latest
+docker run -d -p 4567:4567 -p 5344:80 -v /etc/xiaoya:/data --restart=always --name=xiaoya-tvbox haroldli/xiaoya-tvbox:latest
 ```
 username: admin
 
 password: admin
+
 # TvBox Config
 ```json
 {
   "sites": [
-    {"key":"Alist","name":"Alist┃转发","type":1,"api":"http://ip:5678/vod","searchable":1,"quickSearch":1,"filterable":1}
+    {"key":"Alist","name":"AList","type":1,"api":"http://ip:4567/vod","searchable":1,"quickSearch":1,"filterable":1}
   ],
   "rules": [
     {"host":"pdsapi.aliyundrive.com","rule":["/redirect"]},
@@ -53,7 +46,7 @@ password: admin
 }
 ```
 
-Or use this config url `http://ip:5678/sub/1`.
+Or use this config url `http://ip:4567/sub/1`.
 
 ### Customize
 Backed URL support multiple values, use comma as separator.

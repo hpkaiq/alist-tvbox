@@ -22,16 +22,16 @@
     </p>
     <p>
       使用方式：
-      <code>docker run -d -p 5678:8080 --restart=always --name=alist-tvbox haroldli/alist-tvbox</code><br>
-      <code>docker run -d -p 5678:8080 -p 5244:80 -v /etc/xiaoya:/data --restart=always --name=xiaoya-tvbox haroldli/xiaoya-tvbox:latest</code>
+      <code>docker run -d -p 4567:4567 --restart=always --name=alist-tvbox haroldli/alist-tvbox</code><br>
+      <code>docker run -d -p 4567:4567 -p 5344:80 -v /etc/xiaoya:/data --restart=always --name=xiaoya-tvbox haroldli/xiaoya-tvbox:latest</code>
     </p>
     <p>
       一键部署(小雅版)：
-      <code>sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)"</code><br>
+      <code>sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"</code><br>
     </p>
     <p>
       一键部署(NAS)：
-      <code>sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)" -s /volume2/docker/xiaoya</code>
+      <code>sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /volume2/docker/xiaoya</code>
     </p>
   </div>
 </template>

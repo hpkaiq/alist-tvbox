@@ -26,19 +26,24 @@ AList代理，支持xioaya版AList界面管理。
 如果找不到sudo，就用root账号登录，去掉sudo后运行。
 
 ```bash
-sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)"
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"
 ```
 使用其它配置目录：
 ```bash
-sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)" -s /home/user/atv
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /home/user/atv
 ```
 使用其它端口：
+
+- 第一个参数是挂载的数据目录，默认是/etc/xiaoya。
+- 第二个参数是管理界面端口，默认是4567。
+- 第三个参数是小雅AList端口，默认是5344。
 ```bash
-sudo bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)" -s /etc/xiaoya 8080
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /etc/xiaoya 8080
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /etc/xiaoya 8080 5344
 ```
 OpenWrt去掉sudo，或者已经是root账号：
 ```bash
-bash -c "$(curl https://d.har01d.cn/update_xiaoya.sh)"
+bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"
 ```
 
 如果没有安装curl:
@@ -49,7 +54,7 @@ wget https://d.har01d.cn/update_xiaoya.sh; sh ./update_xiaoya.sh
 #### host网络模式
 使用host网络模式运行：
 ```bash
-sudo bash -c "$(curl https://d.har01d.cn/update_hostmode.sh)"
+sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_hostmode.sh)"
 ```
 使用的端口：
 
@@ -59,11 +64,11 @@ sudo bash -c "$(curl https://d.har01d.cn/update_hostmode.sh)"
 
 5234 - AList
 
-5678 - 管理应用
+4567 - 管理应用
 
 #### 独立版
 ```bash
-bash -c "$(curl https://d.har01d.cn/update_new.sh)"
+bash -c "$(curl -fsSL https://d.har01d.cn/update_new.sh)"
 ```
 独立版请使用小雅搜索索引文件： http://d.har01d.cn/index.video.zip
 
@@ -79,7 +84,7 @@ bash -c "$(curl https://d.har01d.cn/update_new.sh)"
 ![播放界面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/poster3.jpg)
 
 ## 管理
-打开管理网页：http://your-ip:5678/ 
+打开管理网页：http://your-ip:4567/ 
 
 默认用户名：admin 密码：admin
 
@@ -90,7 +95,10 @@ bash -c "$(curl https://d.har01d.cn/update_new.sh)"
 
 小雅版默认添加了站点：`http://localhost`，如果配置有域名，自行修改地址。
 
-访问AList，请加端口5244，http://your-ip:5244/
+为什么是`http://localhost`？ 因为小雅用80端口代理了容器内的AList 5244端口。
+管理程序运行在同一个容器内，能够直接访问80端口。
+
+访问AList，请加端口，http://your-ip:5244/ 。使用Docker映射的端口，默认是5244.
 
 自己可以添加三方站点，取代了xiaoya的套娃。会自动识别版本，如果不能正确识别，请手动配置版本。
 
@@ -121,6 +129,7 @@ EOF
 https://www.aliyundrive.com/drive/folder/640xxxxxxxxxxxxxxxxxxxca8a 最后一串就是。
 
 ### 订阅
+tvbox/my.json不能在TvBox直接使用，请使用订阅地址！
 ![订阅列表](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_sub.png)
 
 ![添加订阅](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_sub_config.png)
@@ -151,10 +160,32 @@ https://www.aliyundrive.com/drive/folder/640xxxxxxxxxxxxxxxxxxxca8a 最后一串
 
 阿里token和开放token每天会刷新，时间和自动签到时间一致。即使没有开启自动签到，也会刷新。
 
+### 索引
+对于阿里云盘资源，建议使用文件数量少的路径，并限速，防止被封号。
+
+![索引页面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_index.png)
+
+![索引模板](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_index_template.png)
+
 ### 别名
 把一些路径合并成一个路径。
 
 ![别名页面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_alias.png)
+
+### 日志
+Nginx代理/logs：
+```text
+    location /logs {
+        proxy_pass http://127.0.0.1:4567;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        chunked_transfer_encoding off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_redirect off;
+        proxy_hide_header Cache-Control;
+    }
+```
 
 ### 其它
 不再生效的文件可以保留，以后删除数据库后可以恢复。
@@ -163,8 +194,8 @@ guestpass.txt和guestlogin.txt第一次启动时加载，以后不再生效，�
 
 show_my_ali.txt第一次启动时加载，以后不再生效，请在界面配置是否加载阿里云盘。
 
-docker_address.txt不再生效，请使用订阅API。
+docker_address.txt不再生效，请配置->高级设置->小雅外网地址 里面设置。
 
 alist_list.txt第一次启动时加载，以后不再生效，请在界面添加站点。
 
-proxy.txt、tv.txt、pikpak.txt、my.json、iptv.m3u还是生效的，可以在文件页面编辑。
+proxy.txt、tv.txt、my.json、iptv.m3u还是生效的，可以在文件页面编辑。

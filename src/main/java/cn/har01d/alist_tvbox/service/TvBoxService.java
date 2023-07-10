@@ -27,6 +27,7 @@ import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
@@ -184,6 +185,12 @@ public class TvBoxService {
             }
         }
 
+        for (MovieDetail movie : list) {
+            if (movie.getVod_pic() != null && movie.getVod_pic().contains(".doubanio.com/")) {
+                fixCover(movie);
+            }
+        }
+
         log.info("search \"{}\" result: {}", keyword, list.size());
         result.setList(list);
         result.setTotal(list.size());
@@ -199,6 +206,11 @@ public class TvBoxService {
         }
 
         List<MovieDetail> list = searchFromIndexFile(site, keyword, indexFile);
+        File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
+        log.debug("custom index file: {}", customIndexFile);
+        if (customIndexFile.exists()) {
+            list.addAll(searchFromIndexFile(site, keyword, customIndexFile.getAbsolutePath()));
+        }
         log.debug("search \"{}\" from site {}:{}, result: {}", keyword, site.getId(), site.getName(), list.size());
         return list;
     }
@@ -288,7 +300,13 @@ public class TvBoxService {
 
     private List<MovieDetail> searchByXiaoya(Site site, String keyword) throws IOException {
         if (site.getId() == 1 && appProperties.isXiaoya()) {
-            return searchFromIndexFile(site, keyword, "/index/index.video.txt");
+            List<MovieDetail> list = searchFromIndexFile(site, keyword, "/index/index.video.txt");
+            File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
+            log.debug("custom index file: {}", customIndexFile);
+            if (customIndexFile.exists()) {
+                list.addAll(searchFromIndexFile(site, keyword, customIndexFile.getAbsolutePath()));
+            }
+            return list;
         }
 
         log.info("search \"{}\" from xiaoya {}:{}", keyword, site.getId(), site.getName());
@@ -589,6 +607,7 @@ public class TvBoxService {
             }
 
             if (movie != null) {
+                fixCover(movie);
                 movieDetail.setVod_pic(movie.getCover());
                 if (!details) {
                     return;
@@ -597,12 +616,46 @@ public class TvBoxService {
                 movieDetail.setVod_director(movie.getDirectors());
                 movieDetail.setVod_area(movie.getCountry());
                 movieDetail.setType_name(movie.getGenre());
+                movieDetail.setVod_year(String.valueOf(movie.getYear()));
+                movieDetail.setVod_remarks(movie.getDbScore());
                 if (StringUtils.isNotEmpty(movie.getDescription())) {
                     movieDetail.setVod_content(movie.getDescription());
                 }
             }
         } catch (Exception e) {
             log.warn("", e);
+        }
+    }
+
+    private static void fixCover(MovieDetail movie) {
+        try {
+            if (movie.getVod_pic() != null && !movie.getVod_pic().isEmpty()) {
+                String cover = ServletUriComponentsBuilder.fromCurrentRequest()
+                        .replacePath("/images")
+                        .query("url=" + movie.getVod_pic())
+                        .build()
+                        .toUriString();
+                log.debug("cover url: {}", cover);
+                movie.setVod_pic(cover);
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+    }
+
+    private static void fixCover(Movie movie) {
+        try {
+            if (movie.getCover() != null && !movie.getCover().isEmpty()) {
+                String cover = ServletUriComponentsBuilder.fromCurrentRequest()
+                        .replacePath("/images")
+                        .query("url=" + movie.getCover())
+                        .build()
+                        .toUriString();
+                log.debug("cover url: {}", cover);
+                movie.setCover(cover);
+            }
+        } catch (Exception e) {
+            // ignore
         }
     }
 

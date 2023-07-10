@@ -1,8 +1,17 @@
 package cn.har01d.alist_tvbox.service;
 
+import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.domain.TaskResult;
+import cn.har01d.alist_tvbox.domain.TaskStatus;
+import cn.har01d.alist_tvbox.dto.IndexRequest;
+import cn.har01d.alist_tvbox.dto.IndexResponse;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.Site;
+import cn.har01d.alist_tvbox.entity.Task;
+import cn.har01d.alist_tvbox.model.FsInfo;
+import cn.har01d.alist_tvbox.model.FsResponse;
+import cn.har01d.alist_tvbox.tvbox.IndexContext;
 import cn.har01d.alist_tvbox.util.Constants;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
@@ -10,11 +19,15 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpHeaders;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StopWatch;
 import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.PostConstruct;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -23,13 +36,18 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
-import java.util.concurrent.Executor;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
 
 import static cn.har01d.alist_tvbox.util.Constants.APP_VERSION;
 import static cn.har01d.alist_tvbox.util.Constants.DOCKER_VERSION;
@@ -38,13 +56,24 @@ import static cn.har01d.alist_tvbox.util.Constants.INDEX_VERSION;
 @Slf4j
 @Service
 public class IndexService {
+    private final AListService aListService;
     private final SiteService siteService;
+    private final TaskService taskService;
+    private final AppProperties appProperties;
     private final SettingRepository settingRepository;
     private final RestTemplate restTemplate;
-    private final Executor executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    public IndexService(SiteService siteService, SettingRepository settingRepository, RestTemplateBuilder builder) {
+    public IndexService(AListService aListService,
+                        SiteService siteService,
+                        TaskService taskService,
+                        AppProperties appProperties,
+                        SettingRepository settingRepository,
+                        RestTemplateBuilder builder) {
+        this.aListService = aListService;
         this.siteService = siteService;
+        this.taskService = taskService;
+        this.appProperties = appProperties;
         this.settingRepository = settingRepository;
         this.restTemplate = builder
                 .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
@@ -104,18 +133,6 @@ public class IndexService {
             log.warn("", e);
         }
         return "";
-    }
-
-    public void checkIndexFile() {
-        try {
-            String local = settingRepository.findById(INDEX_VERSION).map(Setting::getValue).orElse("").trim();
-            String remote = getRemoteVersion().trim();
-            if (!local.equals(remote)) {
-                executor.execute(() -> updateXiaoyaIndexFile(remote));
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
     }
 
     public void updateXiaoyaIndexFile(String remote) {
@@ -261,6 +278,216 @@ public class IndexService {
             return "index.txt";
         }
         return name;
+    }
+
+    public IndexResponse index(IndexRequest indexRequest) {
+        cn.har01d.alist_tvbox.entity.Site site = siteService.getById(indexRequest.getSiteId());
+        Task task = taskService.addIndexTask(site);
+
+        executor.submit(() -> {
+            try {
+                index(indexRequest, site, task);
+            } catch (Exception e) {
+                taskService.failTask(task.getId(), e.getMessage());
+            }
+        });
+
+        return new IndexResponse(task.getId());
+    }
+
+    @Async
+    public void index(IndexRequest indexRequest, cn.har01d.alist_tvbox.entity.Site site, Task task) throws IOException {
+        StopWatch stopWatch = new StopWatch("index");
+        File dir = new File("/data/index/" + indexRequest.getSiteId());
+        Files.createDirectories(dir.toPath());
+        File file = new File(dir, indexRequest.getIndexName() + ".txt");
+        File info = new File(dir, indexRequest.getIndexName() + ".info");
+
+        if (indexRequest.isIncremental()) {
+            removeLines(file, indexRequest.getPaths());
+        }
+
+        String summary;
+        try (FileWriter writer = new FileWriter(file, indexRequest.isIncremental());
+             FileWriter writer2 = new FileWriter(info)) {
+            Instant time = Instant.now();
+            taskService.startTask(task.getId());
+            taskService.updateTaskData(task.getId(), file.getAbsolutePath());
+            IndexContext context = new IndexContext(indexRequest, site, writer, task.getId());
+            for (String path : indexRequest.getPaths()) {
+                if (isCancelled(context)) {
+                    break;
+                }
+                if (StringUtils.isBlank(path)) {
+                    continue;
+                }
+                stopWatch.start("index " + path);
+                index(context, path, 0);
+                stopWatch.stop();
+            }
+            writer2.write(time.toString());
+            log.info("index stats: {}", context.stats);
+            summary = context.stats.toString();
+        }
+
+        if (indexRequest.isCompress()) {
+            File zipFIle = new File(dir, indexRequest.getIndexName() + ".zip");
+            zipFile(file, info, zipFIle);
+        }
+        taskService.completeTask(task.getId());
+        taskService.updateTaskSummary(task.getId(), summary);
+
+        log.info("index done, total time : {} {}", Duration.ofNanos(stopWatch.getTotalTimeNanos()), stopWatch.prettyPrint());
+        log.info("index file: {}", file.getAbsolutePath());
+    }
+
+    private boolean isCancelled(IndexContext context) {
+        Task task = taskService.getById(context.getTaskId());
+        return task.getStatus() == TaskStatus.COMPLETED && task.getResult() == TaskResult.CANCELLED;
+    }
+
+    private void removeLines(File file, Set<String> prefix) {
+        try {
+            List<String> lines = Files.readAllLines(file.toPath())
+                    .stream()
+                    .filter(path -> prefix.stream().noneMatch(path::startsWith))
+                    .collect(Collectors.toList());
+
+            try (FileWriter writer = new FileWriter(file)) {
+                IOUtils.writeLines(lines, null, writer);
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+    }
+
+    private void zipFile(File file, File info, File output) throws IOException {
+        try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(output.toPath()))) {
+            addZipEntry(zipOut, file);
+            addZipEntry(zipOut, info);
+        }
+    }
+
+    private void addZipEntry(ZipOutputStream zipOut, File file) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            ZipEntry zipEntry = new ZipEntry(file.getName());
+            zipOut.putNextEntry(zipEntry);
+
+            byte[] bytes = new byte[4096];
+            int length;
+            while ((length = fis.read(bytes)) >= 0) {
+                zipOut.write(bytes, 0, length);
+            }
+        }
+    }
+
+    private void index(IndexContext context, String path, int depth) throws IOException {
+        log.debug("path: {}  depth: {}  context: {}", path, depth, context);
+        if ((context.getMaxDepth() > 0 && depth == context.getMaxDepth()) || isCancelled(context)) {
+            log.debug("exit");
+            return;
+        }
+
+        if (!log.isDebugEnabled()) {
+            log.info("index {} : {}", context.getSiteName(), path);
+        }
+
+        FsResponse fsResponse = aListService.listFiles(context.getSite(), path, 1, 1000);
+        if (fsResponse == null) {
+            log.debug("response null: {} {}", path, context.stats);
+            context.stats.errors++;
+            return;
+        }
+        if (context.isExcludeExternal() && fsResponse.getProvider().contains("AList")) {
+            log.warn("exclude external {}", path);
+            return;
+        }
+
+        log.debug("{} get {} files", fsResponse.getProvider(), fsResponse.getFiles().size());
+        List<String> files = new ArrayList<>();
+        for (FsInfo fsInfo : fsResponse.getFiles()) {
+            try {
+                if (fsInfo.getType() == 1) { // folder
+                    String newPath = fixPath(path + "/" + fsInfo.getName());
+                    log.debug("new path: {}", newPath);
+                    if (exclude(context.getExcludes(), newPath)) {
+                        log.warn("exclude folder {}", newPath);
+                        context.stats.excluded++;
+                        continue;
+                    }
+
+                    if (context.getIndexRequest().getSleep() > 0) {
+                        log.debug("sleep {}", context.getIndexRequest().getSleep());
+                        Thread.sleep(context.getIndexRequest().getSleep());
+                    }
+
+                    index(context, newPath, depth + 1);
+                } else if (context.getIndexRequest().isIncludeFiles() && isMediaFormat(fsInfo.getName())) { // file
+                    String newPath = fixPath(path + "/" + fsInfo.getName());
+                    if (exclude(context.getExcludes(), newPath)) {
+                        log.warn("exclude file {}", newPath);
+                        context.stats.excluded++;
+                        continue;
+                    }
+
+                    context.stats.files++;
+                    log.debug("{}, add file: {}", path, fsInfo.getName());
+                    files.add(fsInfo.getName());
+                } else {
+                    log.debug("ignore file: {}", fsInfo.getName());
+                }
+            } catch (Exception e) {
+                log.warn("index error", e);
+            }
+        }
+
+        if (!files.isEmpty() && !context.contains(path)) {
+            context.write(path);
+        }
+
+        for (String name : files) {
+            String newPath = fixPath(path + "/" + name);
+            if (context.contains(newPath)) {
+                continue;
+            }
+            context.write(newPath);
+        }
+
+        taskService.updateTaskSummary(context.getTaskId(), context.stats.toString());
+    }
+
+    private boolean exclude(Set<String> rules, String path) {
+        for (String rule : rules) {
+            if (StringUtils.isBlank(rule)) {
+                continue;
+            }
+            if (rule.startsWith("^") && rule.endsWith("$") && path.equals(rule.substring(1, rule.length() - 1))) {
+                return true;
+            }
+            if (rule.startsWith("^") && path.startsWith(rule.substring(1))) {
+                return true;
+            }
+            if (rule.endsWith("$") && path.endsWith(rule.substring(0, rule.length() - 1))) {
+                return true;
+            }
+            if (path.contains(rule)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isMediaFormat(String name) {
+        int index = name.lastIndexOf('.');
+        if (index > 0) {
+            String suffix = name.substring(index + 1);
+            return appProperties.getFormats().contains(suffix);
+        }
+        return false;
+    }
+
+    private String fixPath(String path) {
+        return path.replaceAll("/+", "/").replace("\n", "%20");
     }
 
 }

@@ -1,5 +1,5 @@
 BASE_DIR=./data
-PORT=5678
+PORT=4567
 
 if [ $# -gt 0 ]; then
 	BASE_DIR=$1
@@ -18,7 +18,9 @@ if docker ps | awk '{print $NF}' | grep -q xiaoya-tvbox; then
   esac
 fi
 
-echo -e "\e[36m端口映射：\e[0m $PORT:8080"
+echo -e "\e[36m端口映射：\e[0m $PORT:4567"
+
+echo -e "\e[33m默认端口变更为4567\e[0m"
 
 docker image prune -f
 
@@ -39,16 +41,16 @@ do
 done
 
 docker rm -f alist-tvbox && \
-docker run -d -p $PORT:8080 --restart=always -v "$BASE_DIR":/data --name=alist-tvbox haroldli/alist-tvbox:${tag}
-
-echo -e "\n\e[32m请使用以下命令查看日志输出：\e[0m"
-echo -e "    docker logs -f alist-tvbox\n"
+docker run -d -p $PORT:4567 --restart=always -v "$BASE_DIR":/data --name=alist-tvbox haroldli/alist-tvbox:${tag}
 
 IP=$(ip a | grep -F '192.168.' | awk '{print $2}' | awk -F/ '{print $1}' | head -1)
 if [ -n "$IP" ]; then
+  echo ""
   echo -e "\e[32m请用以下地址访问：\e[0m"
   echo -e "    \e[32m管理界面\e[0m： http://$IP:$PORT/"
 else
   echo -e "\e[32m云服务器请用公网IP访问\e[0m"
 fi
 echo ""
+
+echo -e "\e[33m默认端口变更为4567\e[0m"

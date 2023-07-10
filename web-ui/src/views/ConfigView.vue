@@ -107,6 +107,7 @@
           <div v-if="appVersion">应用版本：{{ appVersion }}</div>
           <div v-if="appRemoteVersion&&appRemoteVersion>appVersion">
             最新版本：{{ appRemoteVersion }}，请重新运行安装脚本，升级应用。
+            <div v-if="changelog">更新日志： {{changelog}}</div>
           </div>
         </el-card>
 
@@ -163,6 +164,7 @@ import {ElMessage} from "element-plus";
 import axios from "axios";
 import {onUnmounted} from "@vue/runtime-core";
 import {store} from "@/services/store";
+import router from "@/router";
 
 let intervalId = 0
 const percentage = ref<number>(0)
@@ -180,6 +182,7 @@ const aListRestart = ref(false)
 const showLogin = ref(false)
 const autoCheckin = ref(false)
 const dialogVisible = ref(false)
+const changelog = ref('')
 const appVersion = ref(0)
 const appRemoteVersion = ref(0)
 const dockerVersion = ref('')
@@ -219,6 +222,10 @@ const updateToken = () => {
       ElMessage.info('成功关闭安全订阅')
     })
   }
+}
+
+const goIndex = () => {
+  router.push('/index')
 }
 
 const updateOpenTokenUrl = () => {
@@ -285,7 +292,7 @@ onMounted(() => {
       movieVersion.value = +data.movie_version
       indexVersion.value = data.index_version
       dockerVersion.value = data.docker_version
-      appVersion.value = +data.app_version
+      appVersion.value = data.app_version
       openTokenUrl.value = data.open_token_url
       dockerAddress.value = data.docker_address
       autoCheckin.value = data.auto_checkin === 'true'
@@ -303,9 +310,10 @@ onMounted(() => {
       }
     })
     axios.get('/versions').then(({data}) => {
-      movieRemoteVersion.value = +data.movie
+      movieRemoteVersion.value = data.movie
       indexRemoteVersion.value = data.index
-      appRemoteVersion.value = +data.app
+      appRemoteVersion.value = data.app
+      changelog.value = data.changelog
     })
   } else {
     axios.get('/token').then(({data}) => {

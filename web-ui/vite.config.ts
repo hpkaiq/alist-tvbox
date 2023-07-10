@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-const API = "http://127.0.0.1:5678";
+const API = "http://127.0.0.1:4567";
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -21,6 +21,8 @@ export default defineConfig({
       "/accounts": API,
       "/pikpak": API,
       "/ali": API,
+      "/export-shares": API,
+      "/logs": API,
       "/login": API,
       "/checkin": API,
       "/files": API,
