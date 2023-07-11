@@ -147,6 +147,9 @@
         <el-form-item>
           <el-button type="primary" @click="updateDockerAddress">更新</el-button>
         </el-form-item>
+        <el-form-item>
+          <el-button @click="exportDatabase">导出数据库</el-button>
+        </el-form-item>
       </el-form>
       <template #footer>
       <span class="dialog-footer">
@@ -246,6 +249,12 @@ const updateLogin = () => {
   })
 }
 
+const exportDatabase = () => {
+  axios.post('/settings/export').then(() => {
+    ElMessage.success('导出数据库成功')
+  })
+}
+
 const updateScheduleTime = () => {
   axios.post('/schedule', scheduleTime.value).then(() => {
     ElMessage.success('更新成功')
@@ -289,7 +298,7 @@ onMounted(() => {
       scheduleTime.value = data.schedule_time || new Date(2023, 6, 20, 9, 0)
       aListStartTime.value = data.alist_start_time
       fileExpireHour.value = +data.file_expire_hour || 24
-      movieVersion.value = +data.movie_version
+      movieVersion.value = data.movie_version
       indexVersion.value = data.index_version
       dockerVersion.value = data.docker_version
       appVersion.value = data.app_version
