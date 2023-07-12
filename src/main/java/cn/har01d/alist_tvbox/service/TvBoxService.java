@@ -3,9 +3,13 @@ package cn.har01d.alist_tvbox.service;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.entity.Account;
 import cn.har01d.alist_tvbox.entity.AccountRepository;
+import cn.har01d.alist_tvbox.entity.Meta;
+import cn.har01d.alist_tvbox.entity.MetaRepository;
 import cn.har01d.alist_tvbox.entity.Movie;
+import cn.har01d.alist_tvbox.entity.MovieRepository;
 import cn.har01d.alist_tvbox.entity.ShareRepository;
 import cn.har01d.alist_tvbox.entity.Site;
+import cn.har01d.alist_tvbox.entity.SiteRepository;
 import cn.har01d.alist_tvbox.model.FileNameInfo;
 import cn.har01d.alist_tvbox.model.Filter;
 import cn.har01d.alist_tvbox.model.FilterValue;
@@ -18,26 +22,34 @@ import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.TextUtils;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import javax.annotation.PostConstruct;
 import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -56,6 +68,9 @@ import static cn.har01d.alist_tvbox.util.Constants.PLAYLIST;
 public class TvBoxService {
     private final AccountRepository accountRepository;
     private final ShareRepository shareRepository;
+    private final MetaRepository metaRepository;
+    private final MovieRepository movieRepository;
+    private final SiteRepository siteRepository;
 
     private final AListService aListService;
     private final IndexService indexService;
@@ -63,6 +78,7 @@ public class TvBoxService {
     private final AppProperties appProperties;
     private final DoubanService doubanService;
     private final SubscriptionService subscriptionService;
+    private final ObjectMapper objectMapper;
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
     private final List<FilterValue> filters = Arrays.asList(
             new FilterValue("原始顺序", ""),
@@ -73,37 +89,138 @@ public class TvBoxService {
             new FilterValue("大小⬆️", "size,asc"),
             new FilterValue("大小⬇️", "size,desc")
     );
+    private final List<FilterValue> filters2 = Arrays.asList(
+            new FilterValue("原始顺序", ""),
+            new FilterValue("名字⬆️", "name,asc;year,asc"),
+            new FilterValue("名字⬇️", "name,desc;year,desc"),
+            new FilterValue("年份⬆️", "year,asc;name,asc"),
+            new FilterValue("年份⬇️", "year,desc;name,desc"),
+            new FilterValue("评分⬆️", "score,asc;name,asc"),
+            new FilterValue("评分⬇️", "score,desc;name,desc"),
+            new FilterValue("ID⬆️", "movie_id,asc"),
+            new FilterValue("ID⬇️", "movie_id,desc")
+    );
+    private final List<FilterValue> filters3 = Arrays.asList(
+            new FilterValue("高分", "high"),
+            new FilterValue("普通", ""),
+            new FilterValue("全部", "all"),
+            new FilterValue("无分", "no"),
+            new FilterValue("低分", "low")
+    );
 
     public TvBoxService(AccountRepository accountRepository,
                         ShareRepository shareRepository,
+                        MetaRepository metaRepository,
+                        MovieRepository movieRepository,
+                        SiteRepository siteRepository,
                         AListService aListService,
                         IndexService indexService,
                         SiteService siteService,
                         AppProperties appProperties,
                         DoubanService doubanService,
-                        SubscriptionService subscriptionService) {
+                        SubscriptionService subscriptionService,
+                        ObjectMapper objectMapper) {
         this.accountRepository = accountRepository;
         this.shareRepository = shareRepository;
+        this.metaRepository = metaRepository;
+        this.movieRepository = movieRepository;
+        this.siteRepository = siteRepository;
         this.aListService = aListService;
         this.indexService = indexService;
         this.siteService = siteService;
         this.appProperties = appProperties;
         this.doubanService = doubanService;
         this.subscriptionService = subscriptionService;
+        this.objectMapper = objectMapper;
     }
 
-    public CategoryList getCategoryList() {
+    @PostConstruct
+    public void setup() {
+        try {
+            loadMeta();
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+    }
+
+    private void loadMeta() throws IOException {
+        if (appProperties.isXiaoya()) {
+            for (Site site : siteRepository.findAll()) {
+                if (site.isSearchable() && !site.isDisabled()) {
+                    loadMeta(site);
+                    return;
+                }
+            }
+        }
+    }
+
+    private void loadMeta(Site site) throws IOException {
+        Path file = Paths.get("/data/index/" + site.getId() + "/custom_index.txt");
+        if (Files.exists(file)) {
+            loadMetaFromIndexFile(file);
+        }
+    }
+
+    private void loadMetaFromIndexFile(Path file) throws IOException {
+        List<String> lines = Files.readAllLines(file);
+        for (String line : lines) {
+            try {
+                String[] parts = line.split("#");
+                String path = line;
+                if (parts.length > 1) {
+                    path = parts[0];
+                }
+
+                if (metaRepository.existsByPath(path)) {
+                    continue;
+                }
+
+                Meta meta = new Meta();
+                meta.setPath(path);
+                Movie movie = null;
+                if (parts.length > 2) {
+                    movie = movieRepository.findById(Integer.parseInt(parts[2])).orElse(null);
+                } else if (parts.length > 1) {
+                    meta.setName(parts[1]);
+                }
+
+                if (movie != null) {
+                    meta.setMovie(movie);
+                    meta.setYear(movie.getYear());
+                    meta.setName(movie.getName());
+                    if (StringUtils.isNotBlank(movie.getDbScore())) {
+                        meta.setScore((int) (Double.parseDouble(movie.getDbScore()) * 10));
+                    }
+                }
+                metaRepository.save(meta);
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+        }
+    }
+
+    public CategoryList getCategoryList(Integer type) {
         CategoryList result = new CategoryList();
 
-        int id = 1;
-        for (Site site : siteService.list()) {
-            Category category = new Category();
-            category.setType_id(site.getId() + "$/");
-            category.setType_name(site.getName());
-            result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), new Filter("sort", "排序", filters));
-            if (id++ == 1 && appProperties.isXiaoya()) {
-                addMyFavorite(result);
+        if (type != null && type == 1) {
+            for (Site site : siteService.list()) {
+                if (site.isXiaoya() && site.isSearchable() && !site.isDisabled()) {
+                    setTypes(result, site);
+                    break;
+                }
+            }
+        } else {
+            int id = 1;
+            for (Site site : siteService.list()) {
+                Category category = new Category();
+                category.setType_id(site.getId() + "$/");
+                category.setType_name(site.getName());
+                result.getCategories().add(category);
+
+                result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
+                if (id++ == 1 && appProperties.isXiaoya()) {
+                    addMyFavorite(result);
+                }
             }
         }
 
@@ -119,13 +236,62 @@ public class TvBoxService {
         return result;
     }
 
+    private void setTypes(CategoryList result, Site site) {
+        Category category = new Category();
+        category.setType_id(site.getId() + "$/");
+        category.setType_name(site.getName());
+        category.setType_flag(0);
+        result.getCategories().add(category);
+        result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
+
+        try {
+            Path file = Paths.get("/data/category.txt");
+            if (Files.exists(file)) {
+                for (String path : Files.readAllLines(file)) {
+                    if (StringUtils.isBlank(path)) {
+                        continue;
+                    }
+                    String name = path;
+                    String[] parts = path.split(":");
+                    if (parts.length == 2) {
+                        path = parts[0];
+                        name = parts[1];
+                    }
+                    category = new Category();
+                    category.setType_id(site.getId() + "$" + fixPath("/" + path));
+                    category.setType_name(name);
+                    category.setType_flag(0);
+                    result.getCategories().add(category);
+                    result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
+                }
+                return;
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+
+        for (FsInfo fsInfo : aListService.listFiles(site, "/", 1, 20).getFiles()) {
+            String name = fsInfo.getName();
+            if (fsInfo.getType() != 1 || name.contains("v.") || name.contains("画质演示测试") || name.contains("指南")
+                    || name.contains("电子书") || name.contains("游戏") || name.contains("我的")) {
+                continue;
+            }
+            category = new Category();
+            category.setType_id(site.getId() + "$/" + name);
+            category.setType_name(name);
+            category.setType_flag(0);
+            result.getCategories().add(category);
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
+        }
+    }
+
     private void addMyFavorite(CategoryList result) {
         if (accountRepository.findAll().stream().anyMatch(Account::isShowMyAli)) {
             Category category = new Category();
             category.setType_id("1$/\uD83D\uDCC0我的阿里云盘");
             category.setType_name("我的云盘");
             result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), new Filter("sort", "排序", filters));
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
 
         int pp = shareRepository.countByType(1);
@@ -134,7 +300,7 @@ public class TvBoxService {
             category.setType_id("1$/\uD83C\uDE34我的阿里分享");
             category.setType_name("阿里分享");
             result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), new Filter("sort", "排序", filters));
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
 
         if (pp > 0) {
@@ -142,7 +308,7 @@ public class TvBoxService {
             category.setType_id("1$/\uD83D\uDD78️我的PikPak分享");
             category.setType_name("PikPak");
             result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), new Filter("sort", "排序", filters));
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
     }
 
@@ -154,16 +320,16 @@ public class TvBoxService {
         return result;
     }
 
-    public MovieList msearch(String keyword) {
+    public MovieList msearch(Integer type, String keyword) {
         String name = TextUtils.fixName(keyword);
-        MovieList result = search(name);
+        MovieList result = search(type, name);
         if (result.getTotal() > 0) {
-            return getDetail(result.getList().get(0).getVod_id());
+            return getDetail(type, result.getList().get(0).getVod_id());
         }
         return result;
     }
 
-    public MovieList search(String keyword) {
+    public MovieList search(Integer type, String keyword) {
         MovieList result = new MovieList();
         List<Future<List<MovieDetail>>> futures = new ArrayList<>();
         for (Site site : siteService.list()) {
@@ -221,6 +387,7 @@ public class TvBoxService {
         Set<String> lines = Files.readAllLines(Paths.get(indexFile))
                 .stream()
                 .filter(path -> keywords.stream().allMatch(path::contains))
+                .limit(appProperties.getMaxSearchResult())
                 .collect(Collectors.toSet());
 
         List<MovieDetail> list = new ArrayList<>();
@@ -249,7 +416,7 @@ public class TvBoxService {
             }
             MovieDetail movieDetail = new MovieDetail();
             movieDetail.setVod_id(site.getId() + "$" + path);
-            movieDetail.setVod_name(site.getName() + ":" + line);
+            movieDetail.setVod_name(getNameFromPath(line));
             movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_tag(FILE);
             if (!isMediaFile) {
@@ -329,13 +496,16 @@ public class TvBoxService {
                 }
             }
             movieDetail.setVod_id(site.getId() + "$" + path);
-            movieDetail.setVod_name(name);
+            movieDetail.setVod_name(getNameFromPath(name));
             movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_tag(FILE);
             if (!isMediaFile) {
                 setDoubanInfo(site, movieDetail, getParent(path), false);
             }
             list.add(movieDetail);
+            if (list.size() > appProperties.getMaxSearchResult()) {
+                break;
+            }
         }
 
         log.debug("{}", list);
@@ -363,6 +533,13 @@ public class TvBoxService {
     private Site getSite(String tid) {
         int index = tid.indexOf('$');
         String id = tid.substring(0, index);
+        if ("0".equals(id)) {
+            for (Site site : siteService.findAll()) {
+                if (site.isXiaoya() && site.isSearchable() && !site.isDisabled()) {
+                    return site;
+                }
+            }
+        }
         try {
             Integer siteId = Integer.parseInt(id);
             return siteService.getById(siteId);
@@ -373,7 +550,11 @@ public class TvBoxService {
         return siteService.getByName(id);
     }
 
-    public MovieList getMovieList(String tid, String sort, int page) {
+    public MovieList getMovieList(Integer type, String tid, String filter, String sort, int page) {
+        if (type == 1) {
+            return getMetaList(tid, filter, sort, page);
+        }
+
         int index = tid.indexOf('$');
         Site site = getSite(tid);
         String path = tid.substring(index + 1);
@@ -426,8 +607,86 @@ public class TvBoxService {
 
         result.setPage(page);
         result.setTotal(total);
-        result.setLimit(size);
+        result.setLimit(result.getList().size());
         result.setPagecount((total + size - 1) / size);
+        log.debug("list: {}", result);
+        return result;
+    }
+
+    public MovieList getMetaList(String tid, String filter, String sort, int page) {
+        int index = tid.indexOf('$');
+        Site site = getSite(tid);
+        String path = tid.substring(index + 1);
+        if (path.contains(PLAYLIST)) {
+            return getPlaylist(site, path);
+        }
+
+        List<MovieDetail> files = new ArrayList<>();
+        MovieList result = new MovieList();
+
+        Pageable pageable;
+        String score = "";
+        if (StringUtils.isNotBlank(filter)) {
+            try {
+                Map<String, String> map = objectMapper.readValue(filter, Map.class);
+                score = map.getOrDefault("score", "");
+                sort = map.getOrDefault("sort", sort);
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+        }
+
+        if (StringUtils.isNotBlank(sort)) {
+            List<Sort.Order> orders = new ArrayList<>();
+            for (String item : sort.split(";")) {
+                String[] parts = item.split(",");
+                Sort.Order order = parts[1].equals("asc") ? Sort.Order.asc(parts[0]) : Sort.Order.desc(parts[0]);
+                orders.add(order);
+            }
+            Sort sort1 = Sort.by(orders);
+            pageable = PageRequest.of(page - 1, 30, sort1);
+        } else {
+            pageable = PageRequest.of(page - 1, 30);
+        }
+
+        Page<Meta> list;
+        if ("all".equals(score)) {
+            list = metaRepository.findByPathStartsWith(path, pageable);
+        } else if ("high".equals(score)) {
+            list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 80, pageable);
+        } else if ("low".equals(score)) {
+            list = metaRepository.findByPathStartsWithAndScoreLessThan(path, 60, pageable);
+        } else if ("no".equals(score)) {
+            list = metaRepository.findByPathStartsWithAndScoreIsNull(path, pageable);
+        } else {
+            list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 60, pageable);
+        }
+
+        log.debug("{} {} {}", pageable, list, list.getContent().size());
+        for (Meta meta : list) {
+            Movie movie = meta.getMovie();
+            String name;
+            if (movie == null) {
+                name = getNameFromPath(meta.getPath());
+            } else {
+                name = movie.getName();
+            }
+
+            String newPath = fixPath(meta.getPath() + "/" + PLAYLIST);
+            MovieDetail movieDetail = new MovieDetail();
+            movieDetail.setVod_id(site.getId() + "$" + newPath);
+            movieDetail.setVod_name(name);
+            movieDetail.setVod_pic(Constants.ALIST_PIC);
+            setDoubanInfo(movieDetail, movie, false);
+            files.add(movieDetail);
+        }
+
+        result.getList().addAll(files);
+
+        result.setPage(page);
+        result.setTotal((int) list.getTotalElements());
+        result.setLimit(files.size());
+        result.setPagecount(list.getTotalPages());
         log.debug("list: {}", result);
         return result;
     }
@@ -497,7 +756,7 @@ public class TvBoxService {
         return url;
     }
 
-    public MovieList getDetail(String tid) {
+    public MovieList getDetail(Integer type, String tid) {
         int index = tid.indexOf('$');
         Site site = getSite(tid);
         String path = tid.substring(index + 1);
@@ -607,23 +866,31 @@ public class TvBoxService {
             }
 
             if (movie != null) {
-                fixCover(movie);
-                movieDetail.setVod_pic(movie.getCover());
-                movieDetail.setVod_year(String.valueOf(movie.getYear()));
-                movieDetail.setVod_remarks(movie.getDbScore());
-                if (!details) {
-                    return;
-                }
-                movieDetail.setVod_actor(movie.getActors());
-                movieDetail.setVod_director(movie.getDirectors());
-                movieDetail.setVod_area(movie.getCountry());
-                movieDetail.setType_name(movie.getGenre());
-                if (StringUtils.isNotEmpty(movie.getDescription())) {
-                    movieDetail.setVod_content(movie.getDescription());
-                }
+                setDoubanInfo(movieDetail, movie, details);
             }
         } catch (Exception e) {
             log.warn("", e);
+        }
+    }
+
+    private static void setDoubanInfo(MovieDetail movieDetail, Movie movie, boolean details) {
+        if (movie == null) {
+            return;
+        }
+        fixCover(movie);
+        movieDetail.setVod_pic(movie.getCover());
+        movieDetail.setVod_year(String.valueOf(movie.getYear()));
+        movieDetail.setVod_remarks(movie.getDbScore());
+        if (!details) {
+            return;
+        }
+        movieDetail.setVod_actor(movie.getActors());
+        movieDetail.setVod_director(movie.getDirectors());
+        movieDetail.setVod_area(movie.getCountry());
+        movieDetail.setType_name(movie.getGenre());
+        movieDetail.setVod_lang(movie.getLanguage());
+        if (StringUtils.isNotEmpty(movie.getDescription())) {
+            movieDetail.setVod_content(movie.getDescription());
         }
     }
 
@@ -645,7 +912,7 @@ public class TvBoxService {
 
     private static void fixCover(Movie movie) {
         try {
-            if (movie.getCover() != null && !movie.getCover().isEmpty()) {
+            if (movie.getCover() != null && !movie.getCover().isEmpty() && !movie.getCover().contains("/images")) {
                 String cover = ServletUriComponentsBuilder.fromCurrentRequest()
                         .replacePath("/images")
                         .query("url=" + movie.getCover())
@@ -703,6 +970,18 @@ public class TvBoxService {
         int index = path.lastIndexOf('/');
         if (index > 0) {
             return path.substring(0, index);
+        }
+        return path;
+    }
+
+    private String getNameFromPath(String path) {
+        String[] parts = path.split("#");
+        if (parts.length > 1) {
+            return parts[1];
+        }
+        int index = path.lastIndexOf('/');
+        if (index > 0) {
+            return path.substring(index + 1);
         }
         return path;
     }
