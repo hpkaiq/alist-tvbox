@@ -102,7 +102,7 @@ public class TvBoxService {
     );
     private final List<FilterValue> filters3 = Arrays.asList(
             new FilterValue("高分", "high"),
-            new FilterValue("普通", ""),
+            new FilterValue("默认", ""),
             new FilterValue("全部", "all"),
             new FilterValue("无分", "no"),
             new FilterValue("低分", "low")
@@ -202,14 +202,16 @@ public class TvBoxService {
     public CategoryList getCategoryList(Integer type) {
         CategoryList result = new CategoryList();
 
-        if (type != null && type == 1) {
+        if ((type != null && type == 1) || appProperties.isMerge()) {
             for (Site site : siteService.list()) {
                 if (site.isXiaoya() && site.isSearchable() && !site.isDisabled()) {
                     setTypes(result, site);
                     break;
                 }
             }
-        } else {
+        }
+
+        if (type == null || type == 0 || appProperties.isMerge()) {
             int id = 1;
             for (Site site : siteService.list()) {
                 Category category = new Category();
@@ -239,7 +241,7 @@ public class TvBoxService {
     private void setTypes(CategoryList result, Site site) {
         Category category = new Category();
         category.setType_id(site.getId() + "$/");
-        category.setType_name(site.getName());
+        category.setType_name("\uD83C\uDFAC" + site.getName());
         category.setType_flag(0);
         result.getCategories().add(category);
         result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
@@ -247,9 +249,20 @@ public class TvBoxService {
         try {
             Path file = Paths.get("/data/category.txt");
             if (Files.exists(file)) {
+                String typeId = "";
+                List<FilterValue> filters = new ArrayList<>();
+                filters.add(new FilterValue("全部", ""));
                 for (String path : Files.readAllLines(file)) {
                     if (StringUtils.isBlank(path)) {
                         continue;
+                    }
+                    if (path.startsWith("  ")) {
+                        setFilterValue(filters, path);
+                        continue;
+                    } else if (!typeId.isEmpty()) {
+                        addFilters(result, typeId, filters);
+                        filters = new ArrayList<>();
+                        filters.add(new FilterValue("全部", ""));
                     }
                     String name = path;
                     String[] parts = path.split(":");
@@ -259,11 +272,12 @@ public class TvBoxService {
                     }
                     category = new Category();
                     category.setType_id(site.getId() + "$" + fixPath("/" + path));
-                    category.setType_name(name);
+                    category.setType_name((appProperties.isMerge() ? "\uD83C\uDFAC" : "") + name);
                     category.setType_flag(0);
+                    typeId = category.getType_id();
                     result.getCategories().add(category);
-                    result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
                 }
+                addFilters(result, typeId, filters);
                 return;
             }
         } catch (Exception e) {
@@ -281,7 +295,24 @@ public class TvBoxService {
             category.setType_name(name);
             category.setType_flag(0);
             result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+        }
+    }
+
+    private void addFilters(CategoryList result, String typeId, List<FilterValue> filters) {
+        if (filters.size() <= 1) {
+            result.getFilters().put(typeId, List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+        } else {
+            result.getFilters().put(typeId, List.of(new Filter("dir", "目录", filters), new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+        }
+    }
+
+    private static void setFilterValue(List<FilterValue> filters, String path) {
+        String[] parts = path.split(":");
+        if (parts.length == 2) {
+            filters.add(new FilterValue(parts[1].trim(), parts[0].trim()));
+        } else {
+            filters.add(new FilterValue(getNameFromPath(path.trim()), path.trim()));
         }
     }
 
@@ -320,16 +351,16 @@ public class TvBoxService {
         return result;
     }
 
-    public MovieList msearch(Integer type, String keyword) {
+    public MovieList msearch(String keyword) {
         String name = TextUtils.fixName(keyword);
-        MovieList result = search(type, name);
+        MovieList result = search(name);
         if (result.getTotal() > 0) {
-            return getDetail(type, result.getList().get(0).getVod_id());
+            return getDetail(result.getList().get(0).getVod_id());
         }
         return result;
     }
 
-    public MovieList search(Integer type, String keyword) {
+    public MovieList search(String keyword) {
         MovieList result = new MovieList();
         List<Future<List<MovieDetail>>> futures = new ArrayList<>();
         for (Site site : siteService.list()) {
@@ -467,7 +498,7 @@ public class TvBoxService {
 
     private List<MovieDetail> searchByXiaoya(Site site, String keyword) throws IOException {
         if (site.getId() == 1 && appProperties.isXiaoya()) {
-            List<MovieDetail> list = searchFromIndexFile(site, keyword, "/index/index.video.txt");
+            List<MovieDetail> list = searchFromIndexFile(site, keyword, "/data/index/index.video.txt");
             File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
             log.debug("custom index file: {}", customIndexFile);
             if (customIndexFile.exists()) {
@@ -626,11 +657,13 @@ public class TvBoxService {
 
         Pageable pageable;
         String score = "";
+        String dir = "";
         if (StringUtils.isNotBlank(filter)) {
             try {
                 Map<String, String> map = objectMapper.readValue(filter, Map.class);
                 score = map.getOrDefault("score", "");
                 sort = map.getOrDefault("sort", sort);
+                dir = map.getOrDefault("dir", "");
             } catch (Exception e) {
                 log.warn("", e);
             }
@@ -648,6 +681,8 @@ public class TvBoxService {
         } else {
             pageable = PageRequest.of(page - 1, 30);
         }
+
+        path = fixPath(path + "/" + dir);
 
         Page<Meta> list;
         if ("all".equals(score)) {
@@ -756,7 +791,7 @@ public class TvBoxService {
         return url;
     }
 
-    public MovieList getDetail(Integer type, String tid) {
+    public MovieList getDetail(String tid) {
         int index = tid.indexOf('$');
         Site site = getSite(tid);
         String path = tid.substring(index + 1);
@@ -865,9 +900,7 @@ public class TvBoxService {
                 movie = doubanService.getByName(movieDetail.getVod_name());
             }
 
-            if (movie != null) {
-                setDoubanInfo(movieDetail, movie, details);
-            }
+            setDoubanInfo(movieDetail, movie, details);
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -974,7 +1007,7 @@ public class TvBoxService {
         return path;
     }
 
-    private String getNameFromPath(String path) {
+    private static String getNameFromPath(String path) {
         String[] parts = path.split("#");
         if (parts.length > 1) {
             return parts[1];

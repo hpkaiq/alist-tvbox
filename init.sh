@@ -1,11 +1,17 @@
 #!/bin/sh
 
-mkdir -p /var/lib/pxg /www/cgi-bin /index /opt/atv/log
+mkdir -p /var/lib/pxg /www/cgi-bin /index /opt/atv/log /data/atv /data/index
+if [ -d /index ]; then
+  rm -rf /index
+fi
+ln -sf /data/index /
+ln -sf /data/config .
 cd /var/lib/pxg
 unzip -q /var/lib/data.zip
 mv data.db /opt/alist/data/data.db
 mv config.json /opt/alist/data/config.json
 mv search /www/cgi-bin/search
+mv sou /www/cgi-bin/sou
 mv header.html /www/cgi-bin/header.html
 sed '/location \/dav/i\    location ~* alist {\n        deny all;\n    }\n' nginx.conf >/etc/nginx/http.d/default.conf
 mv mobi.tgz /www/mobi.tgz
@@ -83,8 +89,8 @@ else
       exit
     else
       unzip -o -q -P abcd index.zip
-      cat index.video.txt index.book.txt index.music.txt index.non.video.txt >/index/index.txt
-      mv index*.txt /index/
+      cat index.video.txt index.book.txt index.music.txt index.non.video.txt >/data/index/index.txt
+      mv index*.txt /data/index/
       echo $(date) "update index succesfully, your new version.txt is" $remote
       echo $remote >/version.txt
     fi
