@@ -1,0 +1,21 @@
+FROM haroldli/xiaoya-tvbox:latest
+WORKDIR /tmp/build
+COPY target/alist-tvbox-1.0.jar app.jar
+RUN java -Djarmode=layertools -jar app.jar extract
+
+VOLUME /opt/atv/data/
+WORKDIR /opt/atv/
+
+COPY /tmp/build/dependencies/ ./
+COPY /tmp/build/snapshot-dependencies/ ./
+COPY /tmp/build/spring-boot-loader/ ./
+COPY /tmp/build/application/ ./
+
+RUN rm -r /tmp/build
+
+EXPOSE 4567 80
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["81", "--spring.profiles.active=production,xiaoya"]
+
