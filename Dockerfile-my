@@ -12,6 +12,8 @@ COPY --from=corretto-jdk application/dependencies/ ./
 COPY --from=corretto-jdk application/snapshot-dependencies/ ./
 COPY --from=corretto-jdk application/spring-boot-loader/ ./
 COPY --from=corretto-jdk application/application/ ./
+COPY entrypoint.sh /
+
 
 EXPOSE 4567 80
 
