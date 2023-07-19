@@ -61,7 +61,6 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.*;
 import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_PASSWORD;
