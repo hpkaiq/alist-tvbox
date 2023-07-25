@@ -49,4 +49,4 @@ if [ -f /data/cmd.sql ]; then
   rm -f /data/cmd.sql
 fi
 
-java -cp BOOT-INF/classes:BOOT-INF/lib/* cn.har01d.alist_tvbox.AListApplication "$@"
+java "$MEM_OPT" -cp BOOT-INF/classes:BOOT-INF/lib/* cn.har01d.alist_tvbox.AListApplication "$@"
