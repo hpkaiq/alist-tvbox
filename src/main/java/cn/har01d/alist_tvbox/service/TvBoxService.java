@@ -33,6 +33,7 @@ import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -58,23 +59,23 @@ public class TvBoxService {
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
     private final List<FilterValue> filters = Arrays.asList(
             new FilterValue("原始顺序", ""),
-            new FilterValue("名字⬆️", "name,asc"),
-            new FilterValue("名字⬇️", "name,desc"),
             new FilterValue("时间⬆️", "time,asc"),
             new FilterValue("时间⬇️", "time,desc"),
+            new FilterValue("名字⬆️", "name,asc"),
+            new FilterValue("名字⬇️", "name,desc"),
             new FilterValue("大小⬆️", "size,asc"),
             new FilterValue("大小⬇️", "size,desc")
     );
     private final List<FilterValue> filters2 = Arrays.asList(
             new FilterValue("原始顺序", ""),
-            new FilterValue("名字⬆️", "name,asc;year,asc"),
-            new FilterValue("名字⬇️", "name,desc;year,desc"),
-            new FilterValue("年份⬆️", "year,asc;name,asc"),
-            new FilterValue("年份⬇️", "year,desc;name,desc"),
-            new FilterValue("评分⬆️", "score,asc;name,asc"),
-            new FilterValue("评分⬇️", "score,desc;name,desc"),
-            new FilterValue("ID⬆️", "movie_id,asc"),
-            new FilterValue("ID⬇️", "movie_id,desc")
+            new FilterValue("评分⬇️", "score,desc;year,desc"),
+            new FilterValue("评分⬆️", "score,asc;year,desc"),
+            new FilterValue("年份⬇️", "year,desc;score,desc"),
+            new FilterValue("年份⬆️", "year,asc;score,desc"),
+            new FilterValue("名字⬇️", "name,desc;year,desc;score,desc"),
+            new FilterValue("名字⬆️", "name,asc;year,desc;score,desc"),
+            new FilterValue("ID⬇️", "movie_id,desc"),
+            new FilterValue("ID⬆️", "movie_id,asc")
     );
     private final List<FilterValue> filters3 = Arrays.asList(
             new FilterValue("高分", "high"),
@@ -143,13 +144,20 @@ public class TvBoxService {
     }
 
     private void setTypes(CategoryList result, Site site) {
+        int year = LocalDate.now().getYear();
+        List<FilterValue> years = new ArrayList<>();
+        years.add(new FilterValue("全部", ""));
+        for (int i = 0; i < 20; ++i) {
+            years.add(new FilterValue(String.valueOf(year - i), String.valueOf(year - i)));
+        }
+        years.add(new FilterValue("其它", "others"));
         int type = appProperties.isMix() ? 1 : 0;
         Category category = new Category();
         category.setType_id(site.getId() + "$/" + "$" + type);
         category.setType_name("\uD83C\uDFAC" + site.getName());
         category.setType_flag(type);
         result.getCategories().add(category);
-        result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "筛选", filters3)));
+        result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3), new Filter("year", "年份", years)));
 
         try {
             Path file = Paths.get("/data/category.txt");
@@ -165,7 +173,7 @@ public class TvBoxService {
                         setFilterValue(filters, path);
                         continue;
                     } else if (!typeId.isEmpty()) {
-                        addFilters(result, typeId, filters);
+                        addFilters(result, typeId, filters, years);
                         filters = new ArrayList<>();
                         filters.add(new FilterValue("全部", ""));
                     }
@@ -182,7 +190,7 @@ public class TvBoxService {
                     typeId = category.getType_id();
                     result.getCategories().add(category);
                 }
-                addFilters(result, typeId, filters);
+                addFilters(result, typeId, filters, years);
                 return;
             }
         } catch (Exception e) {
@@ -200,15 +208,15 @@ public class TvBoxService {
             category.setType_name(name);
             category.setType_flag(0);
             result.getCategories().add(category);
-            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3), new Filter("year", "年份", years)));
         }
     }
 
-    private void addFilters(CategoryList result, String typeId, List<FilterValue> filters) {
+    private void addFilters(CategoryList result, String typeId, List<FilterValue> filters, List<FilterValue> years) {
         if (filters.size() <= 1) {
-            result.getFilters().put(typeId, List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+            result.getFilters().put(typeId, List.of(new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3), new Filter("year", "年份", years)));
         } else {
-            result.getFilters().put(typeId, List.of(new Filter("dir", "目录", filters), new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3)));
+            result.getFilters().put(typeId, List.of(new Filter("dir", "目录", filters), new Filter("sort", "排序", filters2), new Filter("score", "评分", filters3), new Filter("year", "年份", years)));
         }
     }
 
@@ -585,12 +593,14 @@ public class TvBoxService {
         Pageable pageable;
         String score = "";
         String dir = "";
+        String year = "";
         if (StringUtils.isNotBlank(filter)) {
             try {
                 Map<String, String> map = objectMapper.readValue(filter, Map.class);
                 score = map.getOrDefault("score", "");
                 sort = map.getOrDefault("sort", sort);
                 dir = map.getOrDefault("dir", "");
+                year = map.getOrDefault("year", "");
             } catch (Exception e) {
                 log.warn("", e);
             }
@@ -615,16 +625,43 @@ public class TvBoxService {
         path = fixPath(path + "/" + dir);
 
         Page<Meta> list;
-        if ("normal".equals(score)) {
-            list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 60, pageable);
-        } else if ("high".equals(score)) {
-            list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 80, pageable);
-        } else if ("low".equals(score)) {
-            list = metaRepository.findByPathStartsWithAndScoreLessThan(path, 60, pageable);
-        } else if ("no".equals(score)) {
-            list = metaRepository.findByPathStartsWithAndScoreIsNull(path, pageable);
+        if (year.isEmpty()) {
+            if ("normal".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 60, pageable);
+            } else if ("high".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 80, pageable);
+            } else if ("low".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreLessThan(path, 60, pageable);
+            } else if ("no".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreIsNull(path, pageable);
+            } else {
+                list = metaRepository.findByPathStartsWith(path, pageable);
+            }
+        } else if ("others".equals(year)) {
+            int y = LocalDate.now().getYear() - 20;
+            if ("normal".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqualAndYearLessThan(path, 60, y, pageable);
+            } else if ("high".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqualAndYearLessThan(path, 80, y, pageable);
+            } else if ("low".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreLessThanAndYearLessThan(path, 60, y, pageable);
+            } else if ("no".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreIsNullAndYearLessThan(path, y, pageable);
+            } else {
+                list = metaRepository.findByPathStartsWithAndYearLessThan(path, y, pageable);
+            }
         } else {
-            list = metaRepository.findByPathStartsWith(path, pageable);
+            if ("normal".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqualAndYear(path, 60, Integer.parseInt(year), pageable);
+            } else if ("high".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqualAndYear(path, 80, Integer.parseInt(year), pageable);
+            } else if ("low".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreLessThanAndYear(path, 60, Integer.parseInt(year), pageable);
+            } else if ("no".equals(score)) {
+                list = metaRepository.findByPathStartsWithAndScoreIsNullAndYear(path, Integer.parseInt(year), pageable);
+            } else {
+                list = metaRepository.findByPathStartsWithAndYear(path, Integer.parseInt(year), pageable);
+            }
         }
 
         log.debug("{} {} {}", pageable, list, list.getContent().size());
@@ -823,7 +860,7 @@ public class TvBoxService {
             movieDetail.setVod_time(fsDetail.getModified());
             movieDetail.setVod_pic(getCover(fsDetail.getThumb(), fsDetail.getType()));
             movieDetail.setVod_play_from(site.getName());
-            movieDetail.setVod_play_url(fsDetail.getName() + "$" + fixHttp(fsDetail.getRawUrl()));
+            movieDetail.setVod_play_url(fsDetail.getName() + "$" + buildPlayUrl(site, path));
             movieDetail.setVod_content(site.getName() + ":" + getParent(path));
             setDoubanInfo(site, movieDetail, getParent(path), true);
             result.getList().add(movieDetail);
@@ -1140,7 +1177,7 @@ public class TvBoxService {
 
     private String getCommonPrefix(List<String> names) {
         int n = names.size();
-        if (n == 1) return names.get(0);
+        if (n <= 1) return "";
         String ans = names.get(0);
         for (int i = 1; i < n; i++) {
             int j = 0;
@@ -1154,7 +1191,7 @@ public class TvBoxService {
 
     private String getCommonSuffix(List<String> names) {
         int n = names.size();
-        if (n == 1) return names.get(0);
+        if (n <= 1) return "";
         names = names.stream().map(e -> new StringBuilder(e).reverse().toString()).collect(Collectors.toList());
         String text = new StringBuilder(getCommonPrefix(names)).reverse().toString();
         if (text.startsWith("集")) {

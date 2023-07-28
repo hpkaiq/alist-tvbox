@@ -288,10 +288,15 @@ public class BiliBiliService {
                     if (item.getType() == 5) {
                         result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters6)));
                     }
-                    if (value.equals("fav$0")) {
-                        List<Filter> filters = getFavFilters();
-                        category.setType_id(value + "$" + favId);
-                        result.getFilters().put(category.getType_id(), filters);
+                    try {
+                        if (value.equals("fav$0")) {
+                            List<Filter> filters = getFavFilters();
+                            category.setType_id(value + "$" + favId);
+                            result.getFilters().put(category.getType_id(), filters);
+                        }
+                    } catch (Exception e) {
+                        log.warn("", e);
+                        return;
                     }
                     if (value.equals("channel$0")) {
                         List<Filter> filters = List.of(new Filter("type", "分类", filters5));
@@ -1029,6 +1034,7 @@ public class BiliBiliService {
         String[] parts = bvid.split("-");
         int fnval = 16;
         Map<String, Object> result = new HashMap<>();
+        dash = dash || appProperties.isSupportDash();
         if (dash) {
             fnval = settingRepository.findById("bilibili_fnval").map(Setting::getValue).map(Integer::parseInt).orElse(FN_VAL);
         }

@@ -107,7 +107,14 @@
           <div v-if="dockerVersion">小雅版本：{{ dockerVersion }}</div>
           <div v-if="appVersion">应用版本：{{ appVersion }}</div>
           <div v-if="appRemoteVersion&&appRemoteVersion>appVersion">
-            最新版本：{{ appRemoteVersion }}，请重新运行安装脚本，升级应用。
+            <el-tooltip
+              class="box-item"
+              effect="dark"
+              :content="tooltip"
+              placement="top"
+            >
+              最新版本：{{ appRemoteVersion }}，请重新运行安装脚本，升级应用。
+            </el-tooltip>
             <div class="changelog" v-if="changelog">更新日志： {{ changelog }}</div>
           </div>
         </el-card>
@@ -139,7 +146,9 @@
           </el-form>
           <div>本地版本：{{ movieVersion }}</div>
           <div v-if="movieRemoteVersion&&movieRemoteVersion>movieVersion">
-            最新版本：{{ movieRemoteVersion }}，{{movieRemoteVersion==cachedMovieVersion?'已经下载，请':'后台下载中，请稍后'}}重启Docker更新。
+            最新版本：{{
+              movieRemoteVersion
+            }}，{{ movieRemoteVersion == cachedMovieVersion ? '已经下载，请' : '后台下载中，请稍后' }}重启Docker容器更新。
           </div>
         </el-card>
       </el-col>
@@ -148,6 +157,14 @@
     <el-dialog v-model="dialogVisible" title="高级功能" width="40%">
       <el-form label-width="150px">
         <el-form-item label="开放Token认证URL">
+          <el-select v-model="openTokenUrl" class="m-2" placeholder="Select">
+            <el-option
+              v-for="item in options"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
           <el-input v-model="openTokenUrl"/>
         </el-form-item>
         <el-form-item>
@@ -155,7 +172,7 @@
         </el-form-item>
         <el-form-item label="阿里Token地址">
           <a :href="currentUrl + '/ali/token/' + aliSecret" target="_blank">
-            {{currentUrl + '/ali/token/' + aliSecret}}
+            {{ currentUrl + '/ali/token/' + aliSecret }}
           </a>
         </el-form-item>
         <el-form-item label="小雅外网地址">
@@ -184,7 +201,6 @@ import {ElMessage} from "element-plus";
 import axios from "axios";
 import {onUnmounted} from "@vue/runtime-core";
 import {store} from "@/services/store";
-import router from "@/router";
 
 let intervalId = 0
 const currentUrl = window.location.origin
@@ -198,6 +214,12 @@ const increase = () => {
   }
 }
 
+const options = [
+  {label: 'api.xhofe.top', value: 'https://api.xhofe.top/alist/ali_open/token'},
+  {label: 'api-cf.nn.ci', value: 'https://api-cf.nn.ci/alist/ali_open/token'},
+  {label: 'api.nn.ci ✈', value: 'https://api.nn.ci/alist/ali_open/token'},
+]
+const tooltip = 'sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"'
 const aListStarted = ref(false)
 const aListRestart = ref(false)
 const mixSiteSource = ref(false)
