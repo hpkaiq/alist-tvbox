@@ -1,19 +1,12 @@
-FROM amazoncorretto:17-alpine as corretto-jdk
-WORKDIR application
-COPY target/alist-tvbox-1.0.jar app.jar
-RUN java -Djarmode=layertools -jar app.jar extract
-
 FROM haroldli/xiaoya-tvbox:latest
 
 VOLUME /opt/atv/data/
 WORKDIR /opt/atv/
 
-COPY --from=corretto-jdk application/dependencies/ ./
-COPY --from=corretto-jdk application/snapshot-dependencies/ ./
-COPY --from=corretto-jdk application/spring-boot-loader/ ./
-COPY --from=corretto-jdk application/application/ ./
-COPY entrypoint.sh /
-
+COPY target/dependencies/ ./
+COPY target/snapshot-dependencies/ ./
+COPY target/spring-boot-loader/ ./
+COPY target/application/ ./
 
 EXPOSE 4567 80
 
