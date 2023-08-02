@@ -11,6 +11,7 @@ import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
+import cn.har01d.alist_tvbox.util.BiliBiliUtils;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.util.Utils;
@@ -308,6 +309,7 @@ public class BiliBiliService {
         result.setTotal(result.getCategories().size());
         result.setLimit(result.getCategories().size());
 
+        log.debug("getCategoryList: {}", result);
         return result;
     }
 
@@ -791,6 +793,10 @@ public class BiliBiliService {
             return getTypePlaylist(bvid);
         }
 
+        if (bvid.startsWith("ss")) {
+            return getBangumi(bvid.substring(2));
+        }
+
         if (bvid.startsWith("season$")) {
             return getBangumi(bvid);
         }
@@ -832,7 +838,7 @@ public class BiliBiliService {
         MovieList result = new MovieList();
 
         String[] parts = tid.split("\\$");
-        String sid = parts[1];
+        String sid = parts.length == 1 ? tid : parts[1];
         String url = "https://www.bilibili.com/bangumi/play/ss" + sid;
         log.debug("Bangumi: {}", url);
         HttpEntity<Void> entity = buildHttpEntity(null);
@@ -990,10 +996,12 @@ public class BiliBiliService {
         for (Map.Entry<String, String> entry : customHeaders.entrySet()) {
             headers.add(entry.getKey(), entry.getValue());
         }
+        String defaultCookie = BiliBiliUtils.getCookie();
         String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
-        if (StringUtils.isNotBlank(cookie)) {
-            headers.add(HttpHeaders.COOKIE, cookie.trim());
+        if (StringUtils.isBlank(cookie)) {
+            cookie = defaultCookie;
         }
+        headers.add(HttpHeaders.COOKIE, cookie.trim());
         return new HttpEntity<>(data, headers);
     }
 
@@ -1158,7 +1166,11 @@ public class BiliBiliService {
     private void heartbeat(String aid, String cid) {
         try {
             String csrf = "";
+            String defaultCookie = BiliBiliUtils.getCookie();
             String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
+            if (StringUtils.isBlank(cookie)) {
+                cookie = defaultCookie;
+            }
             String[] parts = cookie.split(";");
             for (String text : parts) {
                 if (text.contains("bili_jct")) {

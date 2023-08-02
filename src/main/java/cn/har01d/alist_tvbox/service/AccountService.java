@@ -48,7 +48,11 @@ import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
-import java.time.*;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.HashMap;
@@ -923,11 +927,34 @@ public class AccountService {
             map = getAliToken(account.getRefreshToken());
         }
         String accessToken = (String) map.get(ACCESS_TOKEN);
-        String driveId = (String) map.get("default_drive_id");
+        String driveId;
 
-        AliFileList list = getFileList(driveId, account.getFolderId(), accessToken);
+        AliFileList list;
+        try {
+            driveId = (String) getUserInfo(accessToken).get("resource_drive_id");
+            log.debug("use resource_drive_id {}", driveId);
+            list = getFileList(driveId, account.getFolderId(), accessToken);
+        } catch (Exception e) {
+            log.warn("{}", e.getMessage());
+            driveId = (String) map.get("default_drive_id");
+            log.debug("use default_drive_id {}", driveId);
+            list = getFileList(driveId, account.getFolderId(), accessToken);
+        }
+
+        log.debug("AliFileList: {}", list);
         List<AliFileItem> files = list.getItems().stream().filter(file -> !file.isHidden() && "file".equals(file.getType())).collect(Collectors.toList());
         return deleteFiles(driveId, files, accessToken);
+    }
+
+    private Map<String, Object> getUserInfo(String accessToken) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.put("User-Agent", Collections.singletonList(USER_AGENT));
+        headers.put("Referer", Collections.singletonList("https://www.aliyundrive.com/"));
+        headers.put("Authorization", Collections.singletonList("Bearer " + accessToken));
+        Map<String, Object> body = new HashMap<>();
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate1.exchange("https://user.aliyundrive.com/v2/user/get", HttpMethod.POST, entity, Map.class);
+        return response.getBody();
     }
 
     private AliFileList getFileList(String driveId, String fileId, String accessToken) {
