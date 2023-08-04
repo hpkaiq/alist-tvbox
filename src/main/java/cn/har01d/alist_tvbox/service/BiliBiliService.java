@@ -2,7 +2,45 @@ package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.NavigationDto;
-import cn.har01d.alist_tvbox.dto.bili.*;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelItem;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFavItemsResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFavListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFeedResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHistoryResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHistoryResult;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHotResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliLoginResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlay;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlayResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliQrCodeResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResult;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeasonInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeasonResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliTokenResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2InfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.ChannelArchive;
+import cn.har01d.alist_tvbox.dto.bili.ChannelArchives;
+import cn.har01d.alist_tvbox.dto.bili.ChannelList;
+import cn.har01d.alist_tvbox.dto.bili.CookieData;
+import cn.har01d.alist_tvbox.dto.bili.FavItem;
+import cn.har01d.alist_tvbox.dto.bili.QrCode;
+import cn.har01d.alist_tvbox.dto.bili.QrCodeResult;
+import cn.har01d.alist_tvbox.dto.bili.Resp;
+import cn.har01d.alist_tvbox.dto.bili.Sub;
+import cn.har01d.alist_tvbox.dto.bili.SubtitleData;
+import cn.har01d.alist_tvbox.dto.bili.SubtitleDataResponse;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.model.Filter;
@@ -19,34 +57,40 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.EncodeHintType;
-import com.google.zxing.MultiFormatWriter;
-import com.google.zxing.WriterException;
-import com.google.zxing.common.BitMatrix;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
-import javax.annotation.PostConstruct;
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.*;
+import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE;
+import static cn.har01d.alist_tvbox.util.Constants.BILI_BILI;
+import static cn.har01d.alist_tvbox.util.Constants.FILE;
+import static cn.har01d.alist_tvbox.util.Constants.LIST_PIC;
 
 @Slf4j
 @Service
@@ -191,42 +235,44 @@ public class BiliBiliService {
         HttpEntity<Void> entity = buildHttpEntity(null);
         Map<String, Object> json = restTemplate.exchange(NAV_API, HttpMethod.GET, entity, Map.class).getBody();
         Map<String, Object> data = (Map<String, Object>) json.get("data");
+        Map<String, Object> result = new HashMap<>();
         if (data != null) {
             if (data.get("mid") instanceof Long) {
                 mid = ((Long) data.get("mid")).intValue();
             } else {
                 mid = (Integer) data.get("mid");
             }
+            if (mid != null && mid.equals(BiliBiliUtils.getMid())) {
+                data.put("uname", "内置账号");
+                data.remove("mid");
+            }
+            result.put("uname", data.get("uname"));
+            result.put("mid", data.get("mid"));
+            result.put("isLogin", data.get("isLogin"));
+            result.put("vipType", data.get("vipType"));
+            result.put("vip", data.get("vip"));
+            result.put("vip_label", data.get("vip_label"));
+            result.put("level_info", data.get("level_info"));
+            try {
+                Map<String, Object> wbi = (Map<String, Object>) data.get("wbi_img");
+                if (wbi != null) {
+                    imgKey = getKey((String) wbi.get("img_url"));
+                    subKey = getKey((String) wbi.get("sub_url"));
+                    keyTime = LocalDate.now();
+                }
+            } catch (Exception e) {
+                log.warn("", e);
+            }
             log.info("user: {} {} isLogin: {} vip: {}", data.get("uname"), data.get("mid"), data.get("isLogin"), data.get("vipType"));
         }
-        return data;
+        return result;
     }
 
-    public QrCode scanLogin() throws IOException, WriterException {
+    public QrCode scanLogin() throws IOException {
         QrCode qrCode = restTemplate.getForObject("https://passport.bilibili.com/x/passport-login/web/qrcode/generate", BiliBiliQrCodeResponse.class).getData();
-        qrCode.setImage(getQrCode(qrCode.getUrl()));
+        qrCode.setImage(BiliBiliUtils.getQrCode(qrCode.getUrl()));
         log.debug("{}", qrCode);
         return qrCode;
-    }
-
-    private String getQrCode(String text) throws IOException, WriterException {
-        log.info("getQrCode: {}", text);
-        Map<EncodeHintType, String> charcter = new HashMap<>();
-        charcter.put(EncodeHintType.CHARACTER_SET, "UTF-8");
-        BitMatrix bitMatrix = new MultiFormatWriter()
-                .encode(text, BarcodeFormat.QR_CODE, 500, 500, charcter);
-        int width = bitMatrix.getWidth();
-        int height = bitMatrix.getHeight();
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        for (int x = 0; x < width; x++) {
-            for (int y = 0; y < height; y++) {
-                image.setRGB(x, y, bitMatrix.get(x, y) ? BLACK : WHITE);
-            }
-        }
-
-        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-        ImageIO.write(image, "png", stream);
-        return Base64.getEncoder().encodeToString(stream.toByteArray());
     }
 
     public int checkLogin(String key) {
@@ -996,10 +1042,9 @@ public class BiliBiliService {
         for (Map.Entry<String, String> entry : customHeaders.entrySet()) {
             headers.add(entry.getKey(), entry.getValue());
         }
-        String defaultCookie = BiliBiliUtils.getCookie();
         String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
-        if (StringUtils.isBlank(cookie)) {
-            cookie = defaultCookie;
+        if (StringUtils.isBlank(cookie) || "666".equals(cookie)) {
+            cookie = getCookie(cookie);
         }
         headers.add(HttpHeaders.COOKIE, cookie.trim());
         return new HttpEntity<>(data, headers);
@@ -1163,13 +1208,41 @@ public class BiliBiliService {
         return String.format("%02d:%02d:%02d,%03d", hour, minute, second, milis);
     }
 
+    private String getCookie(String token) {
+        if ("666".equals(token)) {
+            return BiliBiliUtils.getCookie();
+        } else {
+            try {
+                String cookie = BiliBiliUtils.getDefaultCookie();
+                if (cookie != null) {
+                    return cookie;
+                }
+
+                String json = restTemplate.getForObject("https://ghproxy.com/raw.githubusercontent.com/gaotianliuyun/gao/master/0827.json", String.class);
+                Map<String, Object> map = objectMapper.readValue(json, Map.class);
+                List<Map<String, Object>> sites = (List<Map<String, Object>>) map.get("sites");
+                for (Map<String, Object> site : sites) {
+                    String api = (String) site.get("api");
+                    if ("csp_Bili".equals(api)) {
+                        Map<String, Object> ext = (Map<String, Object>) site.get("ext");
+                        cookie = (String) ext.get("cookie");
+                        BiliBiliUtils.setDefaultCookie(cookie);
+                        return cookie;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+        }
+        return "";
+    }
+
     private void heartbeat(String aid, String cid) {
         try {
             String csrf = "";
-            String defaultCookie = BiliBiliUtils.getCookie();
             String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
-            if (StringUtils.isBlank(cookie)) {
-                cookie = defaultCookie;
+            if (StringUtils.isBlank(cookie) || "666".equals(cookie)) {
+                cookie = getCookie(cookie);
             }
             String[] parts = cookie.split(";");
             for (String text : parts) {
@@ -1693,8 +1766,9 @@ public class BiliBiliService {
         return url;
     }
 
-    private static String fixSubtitleUrl(String url) {
+    private String fixSubtitleUrl(String url) {
         return ServletUriComponentsBuilder.fromCurrentRequest()
+                .scheme(appProperties.isEnableHttps() ? "https" : "http")
                 .replacePath("/subtitles")
                 .query("url=" + fixUrl(url))
                 .build()
