@@ -2,34 +2,20 @@ name: 'release native docker'
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: 'The git branch to build.'
-        required: true
-        default: 'dev'
-#      tag:
-#        description: 'The docker tag to build.'
-#        required: true
-#        default: 'dev'
-      release:
-        description: 'Release the app.'
-        required: true
-        type: boolean
-        default: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: show info
-        run: |
-          echo "git branch: ${{ inputs.branch }}"
-          echo "docker tag: ${{ inputs.tag }}"
-          echo "release: ${{ inputs.release }}"
       - name: Checkout
         uses: actions/checkout@v3
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
-          ref: ${{ inputs.branch }}
+          go-version: '1.20'
+      - name: build cli
+        working-directory: ./atv-cli
+        run: go build
       - name: Setup node
         uses: actions/setup-node@v3
         with:
@@ -51,12 +37,20 @@ jobs:
           cache: 'maven'
       - name: Build with Maven
         run:  |
-          sudo apt install zlibc build-essential libz-dev zlib1g-dev
-          wget https://more.musl.cc/10.2.1/x86_64-linux-musl/x86_64-linux-musl-native.tgz
-          tar xf x86_64-linux-musl-native.tgz -C /opt
           export TOOLCHAIN_DIR=/opt/x86_64-linux-musl-native/
           export CC=$TOOLCHAIN_DIR/bin/gcc
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          sudo apt update
+          sudo apt install build-essential libz-dev zlib1g-dev zlib1g -y
+          wget https://more.musl.cc/10.2.1/x86_64-linux-musl/x86_64-linux-musl-native.tgz
+          tar xf x86_64-linux-musl-native.tgz -C /opt
+          wget https://zlib.net/zlib-1.2.13.tar.gz
+          tar xf zlib-1.2.13.tar.gz
+          cd zlib-1.2.13
+          ./configure --prefix=$TOOLCHAIN_DIR --static
+          make
+          sudo make install
+          cd ..
           mvn -B -Pnative package --file pom.xml
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -83,45 +77,8 @@ jobs:
         with:
           context: .
           file: Dockerfile-native
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/xiaoya-tvbox:native
           cache-from: type=gha
           cache-to: type=gha,mode=max
-#      - if: ${{ inputs.release }}
-#        name: Build host mode docker and push
-#        uses: docker/build-push-action@v4
-#        with:
-#          context: .
-#          file: Dockerfile-host
-#          platforms: linux/amd64,linux/arm64
-#          push: true
-#          tags: ${{ secrets.DOCKERHUB_USERNAME }}/xiaoya-tvbox:hostmode
-#          cache-from: type=gha
-#          cache-to: type=gha,mode=max
-      - name: Send version file
-        if: ${{ env.ssh_host != '' && inputs.release }}
-        env:
-          ssh_host: ${{ secrets.SSH_HOST }}
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          port: 22
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "data/app_version,config/update_new.sh,config/update_xiaoya.sh,config/update_hostmode.sh"
-          strip_components: 1
-          target: /var/www/alist/
-      - if: ${{ inputs.release }}
-        name: send telegram message
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.CHANNEL_ID }}
-          token: ${{ secrets.BOT_TOKEN }}
-          message: |
-            ${{ github.actor }} created commit:
-            Commit message: ${{ github.event.commits[0].message }}
-
-            Repository: ${{ github.repository }}
-
-            See changes: https://github.com/${{ github.repository }}/commit/${{github.sha}}
