@@ -254,9 +254,10 @@ public class ShareService {
 
     public int importShares(SharesDto dto) {
         int count = 0;
-        log.info("import share list from file");
+        log.info("import share list");
         for (String line : dto.getContent().split("\n")) {
             String[] parts = line.trim().split("\\s+");
+            log.debug("import {} {}", parts.length, line);
             if (parts.length > 1) {
                 try {
                     Share share = new Share();
@@ -269,6 +270,7 @@ public class ShareService {
                         share.setFolderId("");
                     }
                     share.setType(dto.getType());
+                    share.setPath(getMountPath(share));
                     if (shareRepository.existsByPath(share.getPath())) {
                         continue;
                     }
