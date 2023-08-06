@@ -46,16 +46,6 @@
           </el-icon>
         </template>
       </el-table-column>
-      <el-table-column prop="master" label="自动清理？" width="120">
-        <template #default="scope">
-          <el-icon v-if="scope.row.clean">
-            <Check/>
-          </el-icon>
-          <el-icon v-else>
-            <Close/>
-          </el-icon>
-        </template>
-      </el-table-column>
       <el-table-column fixed="right" label="操作" width="200">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="showDetails(scope.row)">详情</el-button>
@@ -76,9 +66,6 @@
                     autocomplete="off"/>
           <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive_open.html" target="_blank">获取开放token</a>
         </el-form-item>
-        <el-form-item label="转存文件夹ID" label-width="140">
-          <el-input v-model="form.folderId" placeholder="长度40位" autocomplete="off"/>
-        </el-form-item>
         <el-form-item label="加载我的云盘" label-width="140" v-if="form.openToken">
           <el-switch
             v-model="form.showMyAli"
@@ -95,14 +82,6 @@
             inactive-text="否"
           />
           <span class="hint">主账号用来观看分享。</span>
-        </el-form-item>
-        <el-form-item label="自动清理" label-width="140">
-          <el-switch
-            v-model="form.clean"
-            inline-prompt
-            active-text="是"
-            inactive-text="否"
-          />
         </el-form-item>
         <el-form-item label="自动签到" label-width="140">
           <el-switch
@@ -147,10 +126,6 @@
           <span class="hint">更新时间： {{ formatTime(form.openTokenTime) }}</span>
           <span class="hint">过期时间： {{ formatTime(exp) }}</span>
         </el-form-item>
-        <el-form-item prop="folderId" label="转存文件夹ID">
-          <el-input v-model="form.folderId" placeholder="长度40位"/>
-          <a href="https://www.aliyundrive.com/drive" target="_blank">阿里云盘</a>
-        </el-form-item>
         <el-form-item label="加载我的云盘" v-if="form.openToken">
           <el-switch
             v-model="form.showMyAli"
@@ -167,14 +142,6 @@
             inactive-text="否"
           />
           <span class="hint">主账号用来观看分享。</span>
-        </el-form-item>
-        <el-form-item label="自动清理">
-          <el-switch
-            v-model="form.clean"
-            inline-prompt
-            active-text="是"
-            inactive-text="否"
-          />
         </el-form-item>
         <el-form-item label="自动签到">
           <el-switch
@@ -193,7 +160,6 @@
       <template #footer>
           <span class="dialog-footer">
             <el-button @click="detailVisible = false">取消</el-button>
-            <el-button type="success" @click="clean">清理</el-button>
             <el-button type="success" @click="checkin">签到</el-button>
             <el-button type="primary" @click="handleConfirm">更新</el-button>
           </span>
@@ -242,11 +208,9 @@ const form = ref({
   nickname: '',
   refreshToken: '',
   openToken: '',
-  folderId: '',
   autoCheckin: true,
   showMyAli: false,
   master: false,
-  clean: false,
   refreshTokenTime: '',
   openTokenTime: '',
   checkinTime: '',
@@ -278,16 +242,6 @@ const checkin = () => {
   })
 }
 
-const clean = () => {
-  axios.post('/ali/accounts/' + form.value.id + '/clean').then(({data}) => {
-    if (data) {
-      ElMessage.success('成功清理' + data + '个过期文件')
-    } else {
-      ElMessage.info('没有可清理的文件')
-    }
-  })
-}
-
 const handleAdd = () => {
   dialogTitle.value = '添加账号'
   updateAction.value = false
@@ -296,11 +250,9 @@ const handleAdd = () => {
     nickname: '',
     refreshToken: '',
     openToken: '',
-    folderId: '',
     autoCheckin: true,
     showMyAli: false,
     master: false,
-    clean: false,
     refreshTokenTime: '',
     openTokenTime: '',
     checkinTime: '',
