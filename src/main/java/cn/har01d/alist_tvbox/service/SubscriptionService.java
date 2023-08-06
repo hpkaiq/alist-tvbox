@@ -265,6 +265,8 @@ public class SubscriptionService {
             config = overrideConfig(config, override);
         }
 
+        addSite(config);
+
         // should after overrideConfig
         handleWhitelist(config);
         removeBlacklist(config);
@@ -275,7 +277,6 @@ public class SubscriptionService {
             log.warn("", e);
         }
 
-        addSite(config);
 //        addRules(config);
 
         return config;

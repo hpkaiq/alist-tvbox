@@ -155,13 +155,26 @@ public class AccountService {
             } catch (Exception e) {
                 log.warn("", e);
             }
+
+            try {
+                updateAliAccountId();
+            } catch (Exception e) {
+                log.warn("", e);
+            }
         }
+
         try {
             enableLogin();
             addAdminUser();
         } catch (Exception e) {
             log.warn("", e);
         }
+    }
+
+    private void updateAliAccountId() {
+        accountRepository.getFirstByMasterTrue().map(Account::getId).ifPresent(id -> {
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0);");
+        });
     }
 
     private void addAdminUser() {
@@ -659,18 +672,22 @@ public class AccountService {
         account.setAutoCheckin(dto.isAutoCheckin());
         account.setShowMyAli(dto.isShowMyAli());
         account.setClean(dto.isClean());
+
+        accountRepository.save(account);
+
         if (count == 0) {
             account.setMaster(true);
             updateAList(account);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
             aListLocalService.startAListServer();
         }
 
         if (count > 0 && account.isMaster()) {
             log.info("sync tokens for account {}", account);
             syncTokens(account);
+            updateAliAccountByApi(account);
         }
 
-        accountRepository.save(account);
         if (count == 0) {
             showMyAli(account);
         } else {
@@ -690,8 +707,8 @@ public class AccountService {
     private void syncTokens(Account account) {
         try {
             String token = login();
-            updateTokenToAList("RefreshToken", account.getRefreshToken(), token);
-            updateTokenToAList("RefreshTokenOpen", account.getOpenToken(), token);
+            updateTokenToAList("RefreshToken-" + account.getId(), account.getRefreshToken(), token);
+            updateTokenToAList("RefreshTokenOpen-" +  + account.getId(), account.getOpenToken(), token);
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -760,6 +777,7 @@ public class AccountService {
         if (changed && account.isMaster()) {
             updateMaster();
             account.setMaster(true);
+            updateAliAccountByApi(account);
             //updateAList(account);
 //            settingRepository.save(new Setting(ALIST_RESTART_REQUIRED, "true"));
 //            response.addHeader(ALIST_RESTART_REQUIRED, "true");
@@ -775,6 +793,26 @@ public class AccountService {
         }
 
         return accountRepository.save(account);
+    }
+
+    private void updateAliAccountByApi(Account account) {
+        int status = aListLocalService.getAListStatus();
+        if (status == 1) {
+            Utils.executeUpdate("UPDATE x_setting_items SET value=" + account.getId() + " WHERE key = 'ali_account_id'");
+            throw new BadRequestException("AList服务启动中");
+        }
+
+        String token = status == 2 ? login() : "";
+        HttpHeaders headers = new HttpHeaders();
+        headers.put("Authorization", Collections.singletonList(token));
+        Map<String, Object> body =  new HashMap<>();
+        body.put("key", "x_setting_items");
+        body.put("type", "number");
+        body.put("flag", 1);
+        body.put("value", account.getId());
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<String> response = restTemplate.exchange("/api/admin/setting/save", HttpMethod.POST, entity, String.class);
+        log.info("enable AList storage {} response: {}", account.getId(), response.getBody());
     }
 
     private void updateMaster() {
