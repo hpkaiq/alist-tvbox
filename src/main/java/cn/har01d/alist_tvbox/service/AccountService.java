@@ -3,11 +3,9 @@ package cn.har01d.alist_tvbox.service;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.AListLogin;
 import cn.har01d.alist_tvbox.dto.AccountDto;
-import cn.har01d.alist_tvbox.dto.AliyundriveOpen;
 import cn.har01d.alist_tvbox.dto.CheckinResponse;
 import cn.har01d.alist_tvbox.dto.CheckinResult;
 import cn.har01d.alist_tvbox.dto.RewardResponse;
-import cn.har01d.alist_tvbox.dto.Storage;
 import cn.har01d.alist_tvbox.entity.Account;
 import cn.har01d.alist_tvbox.entity.AccountRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
@@ -448,10 +446,10 @@ public class AccountService {
                     String sql;
                     if (account.isShowMyAli()) {
                         log.info("enable AList storage {}", id, name);
-                        sql = "INSERT INTO x_storages VALUES(" + id + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                        sql = "INSERT INTO x_storages VALUES(" + id + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
                         int code = Utils.executeUpdate(sql);
                         log.debug("{}", sql);
-                        sql = "INSERT INTO x_storages VALUES(" + (id + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                        sql = "INSERT INTO x_storages VALUES(" + (id + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
                         log.info("add AList storage {} {} {}", id, name, code);
                     } else {
                         sql = "DELETE FROM x_storages WHERE id = " + id;
@@ -806,10 +804,10 @@ public class AccountService {
                 name = String.valueOf(account.getId());
             }
             if (account.isShowMyAli()) {
-                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
+                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
                 Utils.executeUpdate(sql);
                 storageId++;
-                sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
+                sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
                 Utils.executeUpdate(sql);
                 log.info("add AList storage {}", name);
             }
@@ -837,10 +835,10 @@ public class AccountService {
                 name = String.valueOf(account.getId());
             }
             if (account.isShowMyAli()) {
-                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 int code = Utils.executeUpdate(sql);
                 log.debug("{} {}", code, sql);
-                sql = "INSERT INTO x_storages VALUES(" + (storageId + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"master\":" + account.isMaster() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                sql = "INSERT INTO x_storages VALUES(" + (storageId + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 code = Utils.executeUpdate(sql);
                 log.debug("{} {}", code, sql);
                 log.info("add AList storage {}", name);
