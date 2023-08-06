@@ -320,8 +320,8 @@ public class ShareService {
             for (Share share : list) {
                 try {
                     if (share.getType() == null || share.getType() == 0) {
-                        String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
-                        int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account1.getRefreshToken(), account1.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId()));
+                        String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"account_id\":%d}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                        int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account1.getRefreshToken(), account1.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId(), account1.getId()));
                         log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
                     } else if (share.getType() == 1) {
                         String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
@@ -428,8 +428,8 @@ public class ShareService {
             int result = 0;
             if (share.getType() == null || share.getType() == 0) {
                 Account account = accountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
-                String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
-                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId()));
+                String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"account_id\":%d}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
+                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId(), account.getId()));
             } else if (share.getType() == 1) {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
@@ -461,8 +461,8 @@ public class ShareService {
             int result = 0;
             if (share.getType() == null || share.getType() == 0) {
                 Account account = accountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
-                String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
-                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId()));
+                String sql = "INSERT INTO x_storages VALUES(%d,\"%s\",0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"account_id\":%d}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
+                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId(), account.getId()));
             } else if (share.getType() == 1) {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
@@ -527,40 +527,6 @@ public class ShareService {
         ResponseEntity<String> response = restTemplate.exchange("/api/admin/storage/delete?id=" + id, HttpMethod.POST, entity, String.class);
         log.info("delete storage response: {}", response.getBody());
     }
-
-//    public Page<ShareInfo> listResources(Pageable pageable) {
-//        int total = 0;
-//        List<ShareInfo> list = new ArrayList<>();
-//        int size = pageable.getPageSize();
-//        int offset = pageable.getPageNumber() * size;
-//        try (Connection connection = DriverManager.getConnection(Constants.DB_URL);
-//             Statement statement = connection.createStatement()) {
-//            String sql = "select count(*) from x_storages where driver='AliyundriveShare2Open' OR driver= 'PikPakShare'";
-//            ResultSet rs = statement.executeQuery(sql);
-//            total = rs.getInt(1);
-//            sql = "select * from x_storages where driver='AliyundriveShare2Open' OR driver= 'PikPakShare' LIMIT " + size + " OFFSET " + offset;
-//            rs = statement.executeQuery(sql);
-//            while (rs.next()) {
-//                ShareInfo shareInfo = new ShareInfo();
-//                shareInfo.setId(rs.getInt("id"));
-//                shareInfo.setPath(rs.getString("mount_path"));
-//                shareInfo.setStatus(rs.getString("status"));
-//                shareInfo.setType(getType(rs.getString("driver")));
-//                String addition = rs.getString("addition");
-//                if (StringUtils.isNotBlank(addition)) {
-//                    Map<String, String> map = objectMapper.readValue(addition, Map.class);
-//                    shareInfo.setShareId(map.get("share_id"));
-//                    shareInfo.setPassword(map.get("share_pwd"));
-//                    shareInfo.setFolderId(map.get("root_folder_id"));
-//                }
-//                list.add(shareInfo);
-//            }
-//        } catch (Exception e) {
-//            throw new BadRequestException(e);
-//        }
-//
-//        return new PageImpl<>(list, pageable, total);
-//    }
 
     private Integer getType(String driver) {
         switch (driver) {

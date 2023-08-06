@@ -735,7 +735,7 @@ public class AccountService {
             Utils.executeUpdate(sql);
             sql = "update x_storages set addition = json_set(addition, '$.RefreshTokenOpen', '" + account.getOpenToken() + "') where driver = 'AliyundriveShare2Open'";
             Utils.executeUpdate(sql);
-            sql = "update x_storages set addition = json_set(addition, '$.Master', '" + account.isMaster() + "') where driver = 'AliyundriveShare2Open'";
+            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
             Utils.executeUpdate(sql);
         } catch (Exception e) {
             throw new BadRequestException(e);
