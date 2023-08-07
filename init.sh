@@ -119,5 +119,5 @@ fi
 version=$(head -n1 /docker.version)
 app_ver=$(head -n1 /opt/atv/data/app_version)
 sqlite3 /opt/alist/data/data.db <<EOF
-INSERT INTO x_storages VALUES(20000,'/©️ $version-$app_ver',0,'AList V3',30,'work','{"root_folder_path":"/","url":"","password":"","access_token":""}','','2022-11-12 13:05:12+00:00',0,'','','',0,'302_redirect','');
+INSERT INTO x_storages VALUES(20000,'/©️ $version-$app_ver',0,'Alias',30,'work','{"paths":"/音乐"}','','2022-11-12 13:05:12+00:00',0,'','','',0,'302_redirect','');
 EOF

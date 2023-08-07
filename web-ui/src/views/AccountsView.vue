@@ -119,20 +119,20 @@
           <span class="hint">更新时间： {{ formatTime(form.accessTokenTime) }}</span>
           <span class="hint">过期时间： {{ formatTime(exp[0]) }}</span>
         </el-form-item>
-        <el-form-item prop="refreshToken" label="阿里refresh token">
-          <el-input v-model="form.refreshToken" maxlength="128" placeholder="长度32位"/>
-          <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive.html" target="_blank">获取阿里token</a><br/>
-          <a href="https://aliyuntoken.vercel.app/" class="hint" target="_blank">获取阿里token</a>
-          <span class="hint">更新时间： {{ formatTime(form.refreshTokenTime) }}</span>
-        </el-form-item>
         <el-form-item prop="accessTokenOpen" label="开放access token">
           <el-input v-model="form.accessTokenOpen" maxlength="128" readonly/>
           <span class="hint">创建时间： {{ formatTime(iat[1]) }}</span>
           <span class="hint">更新时间： {{ formatTime(form.accessTokenOpenTime) }}</span>
           <span class="hint">过期时间： {{ formatTime(exp[1]) }}</span>
         </el-form-item>
-        <el-form-item prop="openToken" label="开放refresh token">
-          <el-input v-model="form.openToken" type="textarea" rows="3" minlength="256" placeholder="长度280位"/>
+        <el-form-item prop="refreshToken" label="阿里refresh token" required>
+          <el-input v-model="form.refreshToken" maxlength="128" placeholder="长度32位"/>
+          <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive.html" target="_blank">获取阿里token</a><br/>
+          <a href="https://aliyuntoken.vercel.app/" class="hint" target="_blank">获取阿里token</a>
+          <span class="hint">更新时间： {{ formatTime(form.refreshTokenTime) }}</span>
+        </el-form-item>
+        <el-form-item prop="openToken" label="开放refresh token" required>
+          <el-input v-model="form.openToken" type="textarea" rows="4" minlength="256" placeholder="长度280位"/>
           <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive_open.html" target="_blank">获取开放token</a>
           <span class="hint">创建时间： {{ formatTime(iat[2]) }}</span>
           <span class="hint">更新时间： {{ formatTime(form.openTokenTime) }}</span>
@@ -178,7 +178,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="alistVisible" title="更新成功" width="30%">
+    <el-dialog v-model="alistVisible" title="更新成功" width="40%">
       <p>需要重启AList服务后才能生效</p>
       <p>是否重启AList服务？</p>
       <template #footer>

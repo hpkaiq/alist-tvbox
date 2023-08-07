@@ -21,7 +21,6 @@ import cn.har01d.alist_tvbox.model.UserResponse;
 import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
-import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
@@ -484,11 +483,17 @@ public class AccountService {
     }
 
     public void updateTokens() {
-        List<Account> list = accountRepository.findAll();
-        for (Account account : list) {
-            if (account.isMaster()) {
-                updateAList(account);
-                return;
+        String count = Utils.executeQuery("SELECT count(*) FROM x_tokens");
+        log.info("{} tokens in AList", count);
+        if (count.isEmpty()) {
+            Utils.executeUpdate("CREATE TABLE IF NOT EXISTS \"x_tokens\" (`key` text,`value` text,`accountId` integer,`modified` datetime,PRIMARY KEY (`key`))");
+            List<Account> list = accountRepository.findAll();
+            log.info("updateTokens {}", list.size());
+            for (Account account : list) {
+                String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s','%d','%s')";
+                Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
+                sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s','%d','%s')";
+                Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
             }
         }
     }
@@ -678,7 +683,6 @@ public class AccountService {
 
         if (count == 0) {
             account.setMaster(true);
-            updateAList(account);
             Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
             aListLocalService.startAListServer();
         }
@@ -753,8 +757,8 @@ public class AccountService {
             Utils.executeUpdate(sql);
             sql = "update x_storages set addition = json_set(addition, '$.RefreshTokenOpen', '" + account.getOpenToken() + "') where driver = 'AliyundriveShare2Open'";
             Utils.executeUpdate(sql);
-            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(sql);
+//            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
+//            Utils.executeUpdate(sql);
         } catch (Exception e) {
             throw new BadRequestException(e);
         }
