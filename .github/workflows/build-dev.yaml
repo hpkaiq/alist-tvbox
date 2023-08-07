@@ -113,6 +113,7 @@ jobs:
           to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.BOT_TOKEN }}
           message: |
+            开发版
             ${{ github.actor }} created commit on ${{ inputs.branch }} branch:
             Commit message: ${{ github.event.commits[0].message }}
 
