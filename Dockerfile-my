@@ -1,4 +1,4 @@
-FROM haroldli/xiaoya-tvbox:latest
+FROM haroldli/xiaoya-tvbox:dev
 
 VOLUME /opt/atv/data/
 WORKDIR /opt/atv/
