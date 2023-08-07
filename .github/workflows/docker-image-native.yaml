@@ -1,4 +1,4 @@
-name: 'release native docker'
+name: own-native-release
 
 on:
   workflow_dispatch:
