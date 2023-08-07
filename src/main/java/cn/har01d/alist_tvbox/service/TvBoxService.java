@@ -784,7 +784,7 @@ public class TvBoxService {
             log.debug("{} {}", name, metas.size());
             if (metas.size() > 1) {
                 String ids = metas.stream().map(Meta::getId).map(String::valueOf).collect(Collectors.joining("-"));
-                movieDetail.setVod_id(site.getId() + "$" + encodeUrl(path) + "$0");
+                movieDetail.setVod_id(site.getId() + "$" + encodeUrl(ids) + "$0");
                 added.put(name, true);
             } else {
                 String newPath = fixPath(meta.getPath() + (isMediaFile(meta.getPath()) ? "" : "/" + PLAYLIST));
