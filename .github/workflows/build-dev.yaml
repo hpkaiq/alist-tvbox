@@ -114,7 +114,7 @@ jobs:
           to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.BOT_TOKEN }}
           message: |
-            开发版
+            一键部署(开发版)： wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && sh ./update_xiaoya.sh -t dev
             ${{ github.actor }} created commit on ${{ inputs.branch }} branch:
             Commit message: ${{ env.HEAD_MESSAGE }}
 
