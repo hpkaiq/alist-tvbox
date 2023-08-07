@@ -113,7 +113,7 @@ jobs:
           to: ${{ secrets.CHANNEL_ID }}
           token: ${{ secrets.BOT_TOKEN }}
           message: |
-            ${{ github.actor }} created commit:
+            ${{ github.actor }} created commit on ${{ inputs.branch }} branch:
             Commit message: ${{ github.event.commits[0].message }}
 
             Repository: ${{ github.repository }}:${{ inputs.branch }}
