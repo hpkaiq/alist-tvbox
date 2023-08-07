@@ -115,7 +115,7 @@ jobs:
           message: |
             开发版
             ${{ github.actor }} created commit on ${{ inputs.branch }} branch:
-            Commit message: ${{ github.event.commits[0].message }}
+            Commit message: ${{ github.event.head_commit.message }}
 
             Repository: ${{ github.repository }}:${{ inputs.branch }}
 
