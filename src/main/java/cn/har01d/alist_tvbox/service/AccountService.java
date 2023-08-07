@@ -3,12 +3,6 @@ package cn.har01d.alist_tvbox.service;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.AListLogin;
 import cn.har01d.alist_tvbox.dto.AccountDto;
-import cn.har01d.alist_tvbox.dto.AliBatchRequest;
-import cn.har01d.alist_tvbox.dto.AliBatchResponse;
-import cn.har01d.alist_tvbox.dto.AliFileItem;
-import cn.har01d.alist_tvbox.dto.AliFileList;
-import cn.har01d.alist_tvbox.dto.AliRequest;
-import cn.har01d.alist_tvbox.dto.AliResponse;
 import cn.har01d.alist_tvbox.dto.CheckinResponse;
 import cn.har01d.alist_tvbox.dto.CheckinResult;
 import cn.har01d.alist_tvbox.dto.RewardResponse;
@@ -35,7 +29,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.TaskScheduler;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -45,7 +38,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -61,7 +53,6 @@ import java.util.stream.Collectors;
 import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_PASSWORD;
-import static cn.har01d.alist_tvbox.util.Constants.ALIST_RESTART_REQUIRED;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_USERNAME;
 import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
 import static cn.har01d.alist_tvbox.util.Constants.ATV_PASSWORD;
@@ -143,7 +134,6 @@ public class AccountService {
 
             account.setRefreshToken(refreshToken);
             account.setOpenToken(openToken);
-            account.setFolderId(folderId);
             account.setMaster(true);
             account.setUser(userRepository.findById(1).orElse(null));
 
@@ -165,13 +155,26 @@ public class AccountService {
             } catch (Exception e) {
                 log.warn("", e);
             }
+
+            try {
+                updateAliAccountId();
+            } catch (Exception e) {
+                log.warn("", e);
+            }
         }
+
         try {
             enableLogin();
             addAdminUser();
         } catch (Exception e) {
             log.warn("", e);
         }
+    }
+
+    private void updateAliAccountId() {
+        accountRepository.getFirstByMasterTrue().map(Account::getId).ifPresent(id -> {
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0);");
+        });
     }
 
     private void addAdminUser() {
@@ -324,23 +327,14 @@ public class AccountService {
         indexService.getRemoteVersion();
     }
 
-    @Scheduled(cron = "0 30 * * * ?")
-    public void clean() {
-        for (Account account : accountRepository.findAll()) {
-            try {
-                Map<Object, Object> response = refreshTokens(account);
-                if (account.isClean()) {
-                    clean(account, response);
-                }
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-        }
-    }
-
     public void autoCheckin(List<Account> accounts) {
         for (Account account : accounts) {
             if (account.isAutoCheckin()) {
+                try {
+                    refreshTokens(account);
+                } catch (Exception e) {
+                    log.warn("", e);
+                }
                 try {
                     checkin(account, true);
                 } catch (Exception e) {
@@ -453,29 +447,32 @@ public class AccountService {
 
     public void enableMyAli() {
         List<Account> list = accountRepository.findAll().stream().filter(Account::isShowMyAli).collect(Collectors.toList());
-        int id = 10000;
+        log.debug("enableMyAli {}", list.size());
         try {
             for (Account account : list) {
                 try {
-                    String sql;
+                    int id = 10000 + (account.getId() - 1) * 2;
                     String name = account.getNickname();
                     if (StringUtils.isBlank(name)) {
                         name = String.valueOf(account.getId());
                     }
+                    String sql;
                     if (account.isShowMyAli()) {
                         log.info("enable AList storage {}", id, name);
-                        sql = "INSERT INTO x_storages VALUES(" + id + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"r\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
-                        Utils.executeUpdate(sql);
-                        sql = "INSERT INTO x_storages VALUES(" + (id + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"b\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
-                        log.info("add AList storage {} {}", id, name);
+                        sql = "INSERT INTO x_storages VALUES(" + id + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                        int code = Utils.executeUpdate(sql);
+                        log.debug("{}", sql);
+                        sql = "INSERT INTO x_storages VALUES(" + (id + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                        log.info("add AList storage {} {} {}", id, name, code);
                     } else {
                         sql = "DELETE FROM x_storages WHERE id = " + id;
-                        Utils.executeUpdate(sql);
+                        int code = Utils.executeUpdate(sql);
+                        log.debug("{}", sql);
                         sql = "DELETE FROM x_storages WHERE id = " + (id + 1);
-                        log.info("remove AList storage {} {}", id, name);
+                        log.info("remove AList storage {} {} {}", id, name, code);
                     }
-                    Utils.executeUpdate(sql);
-                    id += 2;
+                    int code = Utils.executeUpdate(sql);
+                    log.debug("{} {}", code, sql);
                 } catch (Exception e) {
                     log.warn("", e);
                 }
@@ -672,22 +669,30 @@ public class AccountService {
         account.setId((int) count + 1);
         account.setRefreshToken(dto.getRefreshToken().trim());
         account.setOpenToken(dto.getOpenToken().trim());
-        account.setFolderId(dto.getFolderId().trim());
         account.setAutoCheckin(dto.isAutoCheckin());
         account.setShowMyAli(dto.isShowMyAli());
         account.setClean(dto.isClean());
+
+        accountRepository.save(account);
+
         if (count == 0) {
             account.setMaster(true);
             updateAList(account);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
             aListLocalService.startAListServer();
+        }
+
+        if (count > 0 && account.isMaster()) {
+            log.info("sync tokens for account {}", account);
+            syncTokens(account);
+            updateAliAccountByApi(account);
+        }
+
+        if (count == 0) {
             showMyAli(account);
         } else {
             showMyAliWithAPI(account);
         }
-
-        log.info("refresh tokens for account {}", account);
-        refreshAccountTokens(account);
-        accountRepository.save(account);
         return account;
     }
 
@@ -699,28 +704,11 @@ public class AccountService {
         return count;
     }
 
-    private void refreshAccountTokens(Account account) {
+    private void syncTokens(Account account) {
         try {
-            if (StringUtils.isNotBlank(account.getOpenToken())) {
-                log.info("update open token: {}", account.getId());
-                account.setOpenToken(getAliOpenToken(account.getOpenToken()));
-                account.setOpenTokenTime(Instant.now());
-            }
-        } catch (org.springframework.web.client.HttpClientErrorException e) {
-            throw e;
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            if (StringUtils.isNotBlank(account.getRefreshToken())) {
-                log.info("update refresh token: {}", account.getId());
-                Map<Object, Object> map = getAliToken(account.getRefreshToken());
-                account.setRefreshToken((String) map.get(REFRESH_TOKEN));
-                account.setRefreshTokenTime(Instant.now());
-            }
-        } catch (org.springframework.web.client.HttpClientErrorException e) {
-            throw e;
+            String token = login();
+            updateTokenToAList("RefreshToken-" + account.getId(), account.getRefreshToken(), token);
+            updateTokenToAList("RefreshTokenOpen-" +  + account.getId(), account.getOpenToken(), token);
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -735,9 +723,6 @@ public class AccountService {
             if (StringUtils.isBlank(dto.getOpenToken())) {
                 throw new BadRequestException("开放token不能为空");
             }
-            if (StringUtils.isBlank(dto.getFolderId())) {
-                throw new BadRequestException("转存文件夹ID不能为空");
-            }
         }
 
         if (StringUtils.isNotBlank(dto.getRefreshToken()) && dto.getRefreshToken().length() > 128) {
@@ -746,9 +731,7 @@ public class AccountService {
         if (StringUtils.isNotBlank(dto.getOpenToken()) && dto.getOpenToken().length() < 128) {
             throw new BadRequestException("开放token长度太短");
         }
-        if (StringUtils.isNotBlank(dto.getFolderId()) && dto.getFolderId().length() > 64) {
-            throw new BadRequestException("转存文件夹ID长度太长");
-        }
+
         if (StringUtils.isAllBlank(dto.getRefreshToken(), dto.getOpenToken())) {
             throw new BadRequestException("至少需要一个token");
         }
@@ -756,7 +739,7 @@ public class AccountService {
     }
 
     private void updateAList(Account account) {
-        if (account == null || StringUtils.isAnyBlank(account.getRefreshToken(), account.getOpenToken(), account.getFolderId())) {
+        if (account == null || StringUtils.isAnyBlank(account.getRefreshToken(), account.getOpenToken())) {
             log.warn("cannot update AList: {}", account);
             return;
         }
@@ -766,11 +749,11 @@ public class AccountService {
             Utils.executeUpdate("update x_storages set driver = 'AliyundriveShare2Open' where driver = 'AliyundriveShare'");
 
             String sql = "update x_storages set addition = json_set(addition, '$.RefreshToken', '" + account.getRefreshToken() + "') where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(String.format(sql));
+            Utils.executeUpdate(sql);
             sql = "update x_storages set addition = json_set(addition, '$.RefreshTokenOpen', '" + account.getOpenToken() + "') where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(String.format(sql));
-            sql = "update x_storages set addition = json_set(addition, '$.TempTransferFolderID', '" + account.getFolderId() + "') where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(String.format(sql));
+            Utils.executeUpdate(sql);
+            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
+            Utils.executeUpdate(sql);
         } catch (Exception e) {
             throw new BadRequestException(e);
         }
@@ -783,13 +766,9 @@ public class AccountService {
         boolean aliChanged = account.isShowMyAli() != dto.isShowMyAli();
         boolean tokenChanged = !Objects.equals(account.getRefreshToken(), dto.getRefreshToken()) || !Objects.equals(account.getOpenToken(), dto.getOpenToken());
         boolean changed = tokenChanged || account.isMaster() != dto.isMaster();
-        if (!Objects.equals(account.getFolderId(), dto.getFolderId())) {
-            changed = true;
-        }
 
         account.setRefreshToken(dto.getRefreshToken().trim());
         account.setOpenToken(dto.getOpenToken().trim());
-        account.setFolderId(dto.getFolderId().trim());
         account.setAutoCheckin(dto.isAutoCheckin());
         account.setShowMyAli(dto.isShowMyAli());
         account.setMaster(dto.isMaster());
@@ -798,21 +777,42 @@ public class AccountService {
         if (changed && account.isMaster()) {
             updateMaster();
             account.setMaster(true);
-            updateAList(account);
-            settingRepository.save(new Setting(ALIST_RESTART_REQUIRED, "true"));
-            response.addHeader(ALIST_RESTART_REQUIRED, "true");
+            updateAliAccountByApi(account);
+            //updateAList(account);
+//            settingRepository.save(new Setting(ALIST_RESTART_REQUIRED, "true"));
+//            response.addHeader(ALIST_RESTART_REQUIRED, "true");
         }
 
         if (aliChanged) {
             showMyAliWithAPI(account);
         }
 
-        if (tokenChanged) {
-            log.info("refresh tokens for account {}", id);
-            refreshAccountTokens(account);
+        if (tokenChanged && account.isMaster()) {
+            log.info("sync tokens for account {}", account);
+            syncTokens(account);
         }
 
         return accountRepository.save(account);
+    }
+
+    private void updateAliAccountByApi(Account account) {
+        int status = aListLocalService.getAListStatus();
+        if (status == 1) {
+            Utils.executeUpdate("UPDATE x_setting_items SET value=" + account.getId() + " WHERE key = 'ali_account_id'");
+            throw new BadRequestException("AList服务启动中");
+        }
+
+        String token = status == 2 ? login() : "";
+        HttpHeaders headers = new HttpHeaders();
+        headers.put("Authorization", Collections.singletonList(token));
+        Map<String, Object> body =  new HashMap<>();
+        body.put("key", "x_setting_items");
+        body.put("type", "number");
+        body.put("flag", 1);
+        body.put("value", account.getId());
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<String> response = restTemplate.exchange("/api/admin/setting/save", HttpMethod.POST, entity, String.class);
+        log.info("enable AList storage {} response: {}", account.getId(), response.getBody());
     }
 
     private void updateMaster() {
@@ -842,10 +842,10 @@ public class AccountService {
                 name = String.valueOf(account.getId());
             }
             if (account.isShowMyAli()) {
-                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"r\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
                 Utils.executeUpdate(sql);
                 storageId++;
-                sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"b\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','');";
+                sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','',0);";
                 Utils.executeUpdate(sql);
                 log.info("add AList storage {}", name);
             }
@@ -864,6 +864,7 @@ public class AccountService {
         int storageId = 10000 + (account.getId() - 1) * 2;
         if (status == 2) {
             deleteStorage(storageId, token);
+            deleteStorage(storageId + 1, token);
         }
 
         try {
@@ -872,10 +873,12 @@ public class AccountService {
                 name = String.valueOf(account.getId());
             }
             if (account.isShowMyAli()) {
-                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"r\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
-                Utils.executeUpdate(sql);
-                sql = "INSERT INTO x_storages VALUES(" + (storageId + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"https://api.nn.ci/alist/ali_open/token\",\"client_id\":\"\",\"client_secret\":\"\",\"rorb\":\"b\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','');";
-                Utils.executeUpdate(sql);
+                String sql = "INSERT INTO x_storages VALUES(" + storageId + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/资源盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"resource\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                int code = Utils.executeUpdate(sql);
+                log.debug("{} {}", code, sql);
+                sql = "INSERT INTO x_storages VALUES(" + (storageId + 1) + ",'/\uD83D\uDCC0我的阿里云盘/" + name + "/备份盘',0,'AliyundriveOpen',30,'work','{\"root_folder_id\":\"root\",\"refresh_token\":\"" + account.getOpenToken() + "\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\",\"drive_type\":\"backup\",\"account_id\":" + account.getId() + "}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                code = Utils.executeUpdate(sql);
+                log.debug("{} {}", code, sql);
                 log.info("add AList storage {}", name);
                 if (status == 2) {
                     enableStorage(storageId, token);
@@ -888,6 +891,30 @@ public class AccountService {
             throw new BadRequestException(e);
         }
     }
+
+//    public void addOpenStorage(AliyundriveOpen storage, String token) {
+//        addStorage(storage, token);
+//    }
+//
+//    public void addStorage(Storage<?> storage, String token) {
+//        HttpHeaders headers = new HttpHeaders();
+//        headers.put("Authorization", Collections.singletonList(token));
+//        HttpEntity<Storage<?>> entity = new HttpEntity<>(storage, headers);
+//        ResponseEntity<String> response = restTemplate.exchange("/api/admin/storage/create", HttpMethod.POST, entity, String.class);
+//        log.info("enable AList storage {} response: {}", storage.getId(), response.getBody());
+//    }
+//
+//    public void updateOpenStorage(AliyundriveOpen storage, String token) {
+//        updateStorage(storage, token);
+//    }
+//
+//    public void updateStorage(Storage<?> storage, String token) {
+//        HttpHeaders headers = new HttpHeaders();
+//        headers.put("Authorization", Collections.singletonList(token));
+//        HttpEntity<Storage<?>> entity = new HttpEntity<>(storage, headers);
+//        ResponseEntity<String> response = restTemplate.exchange("/api/admin/storage/update", HttpMethod.POST, entity, String.class);
+//        log.info("enable AList storage {} response: {}", storage.getId(), response.getBody());
+//    }
 
     public void enableStorage(Integer id, String token) {
         HttpHeaders headers = new HttpHeaders();
@@ -917,109 +944,15 @@ public class AccountService {
         }
     }
 
-    public int clean(Integer id) {
-        Account account = accountRepository.findById(id).orElseThrow(NotFoundException::new);
-        return clean(account);
-    }
-
-    private int clean(Account account) {
-        Map<Object, Object> map = getAliToken(account.getRefreshToken());
-        return clean(account, map);
-    }
-
-    private int clean(Account account, Map<Object, Object> map) {
-        log.info("clean files for account {}:{}", account.getId(), account.getNickname());
-        if (map == null) {
-            map = getAliToken(account.getRefreshToken());
-        }
-        String accessToken = (String) map.get(ACCESS_TOKEN);
-        String driveId;
-
-        AliFileList list;
-        try {
-            driveId = (String) getUserInfo(accessToken).get("resource_drive_id");
-            if (StringUtils.isBlank(driveId)) {
-                driveId = (String) map.get("default_drive_id");
-                log.debug("use default_drive_id {}", driveId);
-            } else {
-                log.debug("use resource_drive_id {}", driveId);
-            }
-            list = getFileList(driveId, account.getFolderId(), accessToken);
-        } catch (Exception e) {
-            log.warn("{}", e.getMessage());
-            driveId = (String) map.get("default_drive_id");
-            log.debug("use default_drive_id {}", driveId);
-            list = getFileList(driveId, account.getFolderId(), accessToken);
-        }
-
-        log.debug("AliFileList: {}", list);
-        List<AliFileItem> files = list.getItems().stream().filter(file -> !file.isHidden() && "file".equals(file.getType())).collect(Collectors.toList());
-        return deleteFiles(driveId, files, accessToken);
-    }
-
-    private Map<String, Object> getUserInfo(String accessToken) {
+    private void updateTokenToAList(String key, String value, String token) {
         HttpHeaders headers = new HttpHeaders();
-        headers.put("User-Agent", Collections.singletonList(USER_AGENT));
-        headers.put("Referer", Collections.singletonList("https://www.aliyundrive.com/"));
-        headers.put("Authorization", Collections.singletonList("Bearer " + accessToken));
+        headers.put("Authorization", Collections.singletonList(token));
         Map<String, Object> body = new HashMap<>();
+        body.put("key", key);
+        body.put("value", value);
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-        ResponseEntity<Map> response = restTemplate1.exchange("https://user.aliyundrive.com/v2/user/get", HttpMethod.POST, entity, Map.class);
-        log.debug("getUserInfo: {}", response.getBody());
-        return response.getBody();
-    }
-
-    private AliFileList getFileList(String driveId, String fileId, String accessToken) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.put("User-Agent", Collections.singletonList(USER_AGENT));
-        headers.put("Referer", Collections.singletonList("https://www.aliyundrive.com/"));
-        headers.put("Authorization", Collections.singletonList("Bearer " + accessToken));
-        Map<String, Object> body = new HashMap<>();
-        body.put("drive_id", driveId);
-        body.put("parent_file_id", fileId);
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-        ResponseEntity<AliFileList> response = restTemplate1.exchange("https://api.aliyundrive.com/adrive/v3/file/list", HttpMethod.POST, entity, AliFileList.class);
-        return response.getBody();
-    }
-
-    private int deleteFiles(String driveId, List<AliFileItem> files, String accessToken) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.put("User-Agent", Collections.singletonList(USER_AGENT));
-        headers.put("Referer", Collections.singletonList("https://www.aliyundrive.com/"));
-        headers.put("Authorization", Collections.singletonList("Bearer " + accessToken));
-
-        Instant now = Instant.now();
-        Map<String, AliFileItem> map = new HashMap<>();
-        AliBatchRequest body = new AliBatchRequest();
-        int hours = settingRepository.findById("file_expire_hour").map(Setting::getValue).map(Integer::parseInt).orElse(6);
-        hours = hours > 0 ? hours : 1;
-        log.info("expire time: {} hours", hours);
-        for (AliFileItem file : files) {
-            if (file.getUpdatedAt().plus(hours, ChronoUnit.HOURS).isAfter(now)) {
-                log.info("跳过文件'{}'，更新于{}", file.getName(), file.getUpdatedAt());
-                continue;
-            }
-            map.put(file.getFileId(), file);
-            AliRequest request = new AliRequest();
-            request.setId(file.getFileId());
-            request.getBody().put("drive_id", driveId);
-            request.getBody().put("file_id", file.getFileId());
-            body.getRequests().add(request);
-        }
-
-        log.debug("deleteFiles: {}", body);
-        int count = 0;
-        HttpEntity<AliBatchRequest> entity = new HttpEntity<>(body, headers);
-        ResponseEntity<AliBatchResponse> response = restTemplate1.exchange("https://api.aliyundrive.com/v3/batch", HttpMethod.POST, entity, AliBatchResponse.class);
-        for (AliResponse item : response.getBody().getResponses()) {
-            AliFileItem file = map.get(item.getId());
-            if (item.getStatus() == 204) {
-                count++;
-            }
-            LocalDateTime time = file.getCreatedAt().atZone(ZoneId.of(ZONE_ID)).toLocalDateTime();
-            log.info("删除文件'{}'{}, 创建于{}, 文件大小：{}", file.getName(), item.getStatus() == 204 ? "成功" : "失败", time, Utils.byte2size(file.getSize()));
-        }
-        return count;
+        ResponseEntity<String> response = restTemplate.exchange("/api/admin/token/update", HttpMethod.POST, entity, String.class);
+        log.info("updateTokenToAList {} response: {}", key, response.getBody());
     }
 
     public String getAliRefreshToken(String id) {

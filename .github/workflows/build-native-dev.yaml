@@ -1,7 +1,12 @@
-name: 'release native docker'
+name: 'release native dev docker'
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'The git branch to build.'
+        required: true
+        default: 'dev'
 
 jobs:
   release:
@@ -9,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.branch }}
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
@@ -68,7 +75,7 @@ jobs:
           num1=$(date +%Y)
           num2=$(date +%j)
           sum=$((($num1 - 2023) * 366 + $num2))
-          echo $sum.$(date +%H%M) > data/version
+          echo $sum.$(date +%H%M)-dev > data/version
           echo ${{ github.event.head_commit.message }} >> data/version
           cp data/version data/app_version
           cat data/version
@@ -79,8 +86,7 @@ jobs:
           file: Dockerfile-native
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/xiaoya-tvbox:native
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/xiaoya-tvbox:native-dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args:
-            - BASE=xiaoyaliu
+          build-args: BASE=${{ secrets.DOCKERHUB_USERNAME }}
