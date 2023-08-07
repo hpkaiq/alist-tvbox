@@ -115,9 +115,11 @@ jobs:
           token: ${{ secrets.BOT_TOKEN }}
           message: |
             一键部署(开发版)： wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && sh ./update_xiaoya.sh -t dev
+            
             ${{ github.actor }} created commit on ${{ inputs.branch }} branch:
             Commit message: ${{ env.HEAD_MESSAGE }}
 
             Repository: ${{ github.repository }}:${{ inputs.branch }}
+            Branch: ${{ inputs.branch }}
 
             See changes: https://github.com/${{ github.repository }}/commit/${{github.sha}}
