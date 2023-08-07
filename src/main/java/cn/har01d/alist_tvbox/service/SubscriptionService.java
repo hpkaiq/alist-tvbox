@@ -547,6 +547,20 @@ public class SubscriptionService {
     private void addSite(Map<String, Object> config) {
         int id = 0;
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+
+        try {
+            for (Site site1 : siteRepository.findAll()) {
+                if (site1.isSearchable() && !site1.isDisabled()) {
+                    Map<String, Object> site = buildSite("csp_XiaoYa", site1.getName());
+                    sites.add(id++, site);
+                    log.debug("add XiaoYa site: {}", site);
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+
         try {
             String key = "Alist";
             Map<String, Object> site = buildSite("csp_AList", "AList");
@@ -557,29 +571,12 @@ public class SubscriptionService {
             log.warn("", e);
         }
 
-        if (appProperties.isXiaoya()) {
-            try {
-                for (Site site1 : siteRepository.findAll()) {
-                    if (site1.isSearchable() && !site1.isDisabled()) {
-                        Map<String, Object> site = buildSite("csp_XiaoYa", site1.getName());
-                        sites.add(id++, site);
-                        log.debug("add XiaoYa site: {}", site);
-                        break;
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-        }
-
-        if (appProperties.isXiaoya()) {
-            try {
-                Map<String, Object> site = buildSite("csp_BiliBili", "BiliBili");
-                sites.add(id, site);
-                log.debug("add BiliBili site: {}", site);
-            } catch (Exception e) {
-                log.warn("", e);
-            }
+        try {
+            Map<String, Object> site = buildSite("csp_BiliBili", "BiliBili");
+            sites.add(id, site);
+            log.debug("add BiliBili site: {}", site);
+        } catch (Exception e) {
+            log.warn("", e);
         }
     }
 
