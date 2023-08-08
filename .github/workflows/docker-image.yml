@@ -3,7 +3,7 @@ name: own-release
 on:
   push:
     branches:
-      - own
+      - own-dev
 
 jobs:
   build-and-push:
