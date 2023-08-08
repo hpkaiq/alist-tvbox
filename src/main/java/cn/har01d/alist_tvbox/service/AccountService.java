@@ -347,18 +347,19 @@ public class AccountService {
     }
 
     private boolean shouldRefreshOpenToken(Account account) {
-        Instant time;
-        time = account.getOpenTokenTime();
-        if (time == null || StringUtils.isBlank(account.getOpenToken())) {
+        if (account.getOpenTokenTime() == null) {
             return true;
+        }
+        if (StringUtils.isBlank(account.getOpenToken())) {
+            return false;
         }
         try {
             String json = account.getOpenToken().split("\\.")[1];
             byte[] bytes = Base64.getDecoder().decode(json);
-            Instant now = Instant.now().plusSeconds(60);
-            Map<String, Object> map = objectMapper.readValue(bytes, Map.class);
+            Map<Object, Object> map = objectMapper.readValue(bytes, Map.class);
             long exp = (long) map.get("exp");
-            return now.isBefore(Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS));
+            log.debug("open token: {}", map);
+            return Instant.now().isBefore(Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS));
         } catch (Exception e) {
             log.warn("", e);
         }
