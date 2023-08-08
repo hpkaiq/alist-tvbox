@@ -139,10 +139,11 @@ public final class Utils {
     }
 
     public static int executeUpdate(String sql) {
+        log.debug("executeUpdate {}", sql);
         try {
             ProcessBuilder builder = new ProcessBuilder();
-            builder.command("sqlite3", "/opt/alist/data/data.db", sql);
             builder.inheritIO();
+            builder.command("sqlite3", "/opt/alist/data/data.db", sql);
             Process process = builder.start();
             return process.waitFor();
         } catch (Exception e) {
@@ -152,6 +153,7 @@ public final class Utils {
     }
 
     public static String executeQuery(String sql) {
+        log.debug("executeQuery {}", sql);
         try {
             ProcessBuilder builder = new ProcessBuilder();
             builder.command("sqlite3", "/opt/alist/data/data.db", sql);
