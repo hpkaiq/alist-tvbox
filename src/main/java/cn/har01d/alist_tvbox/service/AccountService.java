@@ -179,13 +179,13 @@ public class AccountService {
     private void updateAliAccountId() {
         accountRepository.getFirstByMasterTrue().map(Account::getId).ifPresent(id -> {
             log.info("updateAliAccountId {}", id);
-            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0);");
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0)");
         });
     }
 
     private void addAdminUser() {
         try {
-            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0);";
+            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0)";
             Utils.executeUpdate(sql);
         } catch (Exception e) {
             log.warn("", e);
@@ -443,23 +443,23 @@ public class AccountService {
             if (login.isEnabled()) {
                 log.info("enable AList login: {}", login.getUsername());
                 if (login.getUsername().equals("guest")) {
-                    sql = "delete from x_users where id = 3;";
+                    sql = "delete from x_users where id = 3";
                     Utils.executeUpdate(sql);
                     sql = "update x_users set disabled = 0, username = '" + login.getUsername() + "' where id = 2";
                     Utils.executeUpdate(sql);
                 } else {
                     sql = "update x_users set disabled = 1 where id = 2";
                     Utils.executeUpdate(sql);
-                    sql = "delete from x_users where id = 3;";
+                    sql = "delete from x_users where id = 3";
                     Utils.executeUpdate(sql);
-                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0);";
+                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0)";
                     Utils.executeUpdate(sql);
                 }
             } else {
                 log.info("enable AList guest");
-                sql = "update x_users set disabled = 0, permission = '368', password = 'guest_Api789' where id = 2;";
+                sql = "update x_users set disabled = 0, permission = '368', password = 'guest_Api789' where id = 2";
                 Utils.executeUpdate(sql);
-                sql = "delete from x_users where id = 3;";
+                sql = "delete from x_users where id = 3";
                 Utils.executeUpdate(sql);
             }
         } catch (Exception e) {
@@ -702,7 +702,7 @@ public class AccountService {
 
         if (count == 0) {
             account.setMaster(true);
-            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0)");
             aListLocalService.startAListServer();
         }
 
@@ -806,7 +806,7 @@ public class AccountService {
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
         Map<String, Object> body = new HashMap<>();
-        body.put("key", "x_setting_items");
+        body.put("key", "ali_account_id");
         body.put("type", "number");
         body.put("flag", 1);
         body.put("value", account.getId());
