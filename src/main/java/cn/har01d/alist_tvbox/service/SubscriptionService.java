@@ -601,54 +601,12 @@ public class SubscriptionService {
         site.put("searchable", 1);
         site.put("quickSearch", 1);
         site.put("filterable", 1);
+        Map<String, Object> viewType = new HashMap<>();
+        Map<String, Object> style = new HashMap<>();
+        style.put("type", "rect");
+        viewType.put("style", style);
+        site.put("viewType", viewType);
         return site;
-    }
-
-    private static String md5(String text) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            md.update(text.getBytes());
-            byte[] digest = md.digest();
-            return DatatypeConverter.printHexBinary(digest).toLowerCase();
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-        return text;
-    }
-
-    private static void addRules(Map<String, Object> config) {
-        List<Map<String, Object>> rules = (List<Map<String, Object>>) config.get("rules");
-        if (rules == null) {
-            rules = new ArrayList<>();
-            config.put("rules", rules);
-        }
-
-        Map<String, Object> rule = new HashMap<>();
-        rule.put("name", "阿里云盘");
-        rule.put("hosts", List.of("pdsapi.aliyundrive.com"));
-        rule.put("regex", List.of("/redirect"));
-
-        rule.put("host", "pdsapi.aliyundrive.com");
-        rule.put("rule", List.of("/redirect"));
-        rules.add(rule);
-
-        rule = new HashMap<>();
-        rule.put("name", "阿里云");
-        rule.put("hosts", List.of("aliyundrive.net"));
-        rule.put("regex", List.of("http((?!http).){12,}?\\\\.(m3u8|mp4|flv|avi|mkv|rm|wmv|mpg|ape|flac|wav|wma|m4a)\\\\?.*", "http((?!http).){12,}\\\\.(m3u8|mp4|flv|avi|mkv|rm|wmv|mpg|ape|flac|wav|wma|m4a)"));
-
-        rule.put("host", "aliyundrive.net");
-        rule.put("rule", List.of("http((?!http).){12,}?\\\\.(m3u8|mp4|flv|avi|mkv|rm|wmv|mpg|ape|flac|wav|wma|m4a)\\\\?.*", "http((?!http).){12,}\\\\.(m3u8|mp4|flv|avi|mkv|rm|wmv|mpg|ape|flac|wav|wma|m4a)"));
-        rules.add(rule);
-
-        rule = new HashMap<>();
-        rule.put("name", "BiliBili");
-        rule.put("hosts", List.of("bilivideo.cn"));
-        rule.put("regex", List.of("https://.+bilivideo.cn.+\\.(mp4|m4s|m4a)\\?.*"));
-
-        rule.put("host", "bilivideo.cn");
-        rule.put("rule", List.of("https://.+bilivideo.cn.+\\.(mp4|m4s|m4a)\\?.*"));
-        rules.add(rule);
     }
 
     private String loadConfigJson(String url) {
