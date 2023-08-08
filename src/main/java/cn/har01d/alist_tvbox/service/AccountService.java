@@ -1,12 +1,20 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
-import cn.har01d.alist_tvbox.dto.*;
-import cn.har01d.alist_tvbox.entity.Setting;
+import cn.har01d.alist_tvbox.dto.AListLogin;
+import cn.har01d.alist_tvbox.dto.AccountDto;
+import cn.har01d.alist_tvbox.dto.CheckinResponse;
+import cn.har01d.alist_tvbox.dto.CheckinResult;
+import cn.har01d.alist_tvbox.dto.RewardResponse;
 import cn.har01d.alist_tvbox.entity.*;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
-import cn.har01d.alist_tvbox.model.*;
+import cn.har01d.alist_tvbox.model.AListUser;
+import cn.har01d.alist_tvbox.model.AliToken;
+import cn.har01d.alist_tvbox.model.AliTokensResponse;
+import cn.har01d.alist_tvbox.model.LoginRequest;
+import cn.har01d.alist_tvbox.model.LoginResponse;
+import cn.har01d.alist_tvbox.model.UserResponse;
 import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
@@ -18,6 +26,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -30,11 +39,33 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.*;
+import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
+import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
+import static cn.har01d.alist_tvbox.util.Constants.ALIST_PASSWORD;
+import static cn.har01d.alist_tvbox.util.Constants.ALIST_USERNAME;
+import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
+import static cn.har01d.alist_tvbox.util.Constants.ATV_PASSWORD;
+import static cn.har01d.alist_tvbox.util.Constants.AUTO_CHECKIN;
+import static cn.har01d.alist_tvbox.util.Constants.CHECKIN_DAYS;
+import static cn.har01d.alist_tvbox.util.Constants.CHECKIN_TIME;
+import static cn.har01d.alist_tvbox.util.Constants.FOLDER_ID;
+import static cn.har01d.alist_tvbox.util.Constants.OPEN_TOKEN;
+import static cn.har01d.alist_tvbox.util.Constants.OPEN_TOKEN_TIME;
+import static cn.har01d.alist_tvbox.util.Constants.REFRESH_TOKEN;
+import static cn.har01d.alist_tvbox.util.Constants.REFRESH_TOKEN_TIME;
+import static cn.har01d.alist_tvbox.util.Constants.SCHEDULE_TIME;
+import static cn.har01d.alist_tvbox.util.Constants.SHOW_MY_ALI;
+import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
+import static cn.har01d.alist_tvbox.util.Constants.ZONE_ID;
 
 @Slf4j
 @Service
@@ -490,19 +521,16 @@ public class AccountService {
         AListUser guest = getUser(2, token);
         guest.setDisabled(login.isEnabled());
         updateUser(guest, token);
-
-        deleteUser(3, token);
-
-        String alistWebToken = Utils.executeQuery("select value from x_setting_items where key = 'token';");
         Site site = siteService.getById(1);
+        deleteUser(3, token);
         if (login.isEnabled()) {
             AListUser user = new AListUser();
             user.setId(3);
             user.setUsername(login.getUsername());
             user.setPassword(login.getPassword());
             createUser(user, token);
-            site.setToken(alistWebToken);
-        } else {
+            site.setToken(Utils.executeQuery("select value from x_setting_items where key = 'token';"));
+        }else {
             site.setToken("");
         }
         siteService.save(site);
@@ -666,7 +694,7 @@ public class AccountService {
 
         if (count > 0 && account.isMaster()) {
             log.info("sync tokens for account {}", account);
-            syncTokens(account);
+            updateTokenToAList(account);
             updateAliAccountByApi(account);
         }
 
@@ -686,7 +714,7 @@ public class AccountService {
         return count;
     }
 
-    private void syncTokens(Account account) {
+    private void updateTokenToAList(Account account) {
         try {
             String token = login();
             updateTokenToAList("RefreshToken-" + account.getId(), account.getRefreshToken(), token);
@@ -771,7 +799,7 @@ public class AccountService {
 
         if (tokenChanged && account.isMaster()) {
             log.info("sync tokens for account {}", account);
-            syncTokens(account);
+            updateTokenToAList(account);
         }
 
         return accountRepository.save(account);
@@ -924,13 +952,30 @@ public class AccountService {
     }
 
     public AliTokensResponse getTokens() {
-        String token = login();
-        HttpHeaders headers = new HttpHeaders();
-        headers.put("Authorization", Collections.singletonList(token));
-        HttpEntity<String> entity = new HttpEntity<>(null, headers);
-        ResponseEntity<AliTokensResponse> response = restTemplate.exchange("/api/admin/token/list", HttpMethod.GET, entity, AliTokensResponse.class);
-        log.debug("getTokens response: {}", response.getBody());
+        try {
+            String token = login();
+            HttpHeaders headers = new HttpHeaders();
+            headers.put("Authorization", Collections.singletonList(token));
+            HttpEntity<String> entity = new HttpEntity<>(null, headers);
+            ResponseEntity<AliTokensResponse> response = restTemplate.exchange("/api/admin/token/list", HttpMethod.GET, entity, AliTokensResponse.class);
+            log.debug("getTokens response: {}", response.getBody());
+            return response.getBody();
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        return new AliTokensResponse();
+    }
 
-        return response.getBody();
+    @Scheduled(cron = "0 30 * * * ?")
+    public void syncTokens() {
+        List<AliToken> tokens = getTokens().getData();
+        if (tokens != null) {
+            Map<String, String> map = tokens.stream().collect(Collectors.toMap(AliToken::getKey, AliToken::getValue));
+            for (Account account : accountRepository.findAll()) {
+                account.setRefreshToken(map.get("RefreshToken-" + account.getId()));
+                account.setOpenToken(map.get("RefreshTokenOpen-" + account.getId()));
+                accountRepository.save(account);
+            }
+        }
     }
 }
