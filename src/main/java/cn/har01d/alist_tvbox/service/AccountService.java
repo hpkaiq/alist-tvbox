@@ -300,12 +300,6 @@ public class AccountService {
 
     public void autoCheckin() {
         for (Account account : accountRepository.findAll()) {
-            try {
-                refreshTokens(account);
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-
             if (account.isAutoCheckin()) {
                 try {
                     checkin(account, false);
@@ -332,20 +326,14 @@ public class AccountService {
 
     public void handleScheduleTask() {
         log.info("auto checkin");
-        List<Account> accounts = accountRepository.findAll();
-        autoCheckin(accounts);
+        for (Account account : accountRepository.findAll()) {
+            try {
+                refreshTokens(account);
+            } catch (Exception e) {
+                log.warn("", e);
+            }
 
-        indexService.getRemoteVersion();
-    }
-
-    public void autoCheckin(List<Account> accounts) {
-        for (Account account : accounts) {
             if (account.isAutoCheckin()) {
-                try {
-                    refreshTokens(account);
-                } catch (Exception e) {
-                    log.warn("", e);
-                }
                 try {
                     checkin(account, true);
                 } catch (Exception e) {
@@ -353,6 +341,8 @@ public class AccountService {
                 }
             }
         }
+
+        indexService.getRemoteVersion();
     }
 
     private boolean shouldRefreshOpenToken(Account account) {
