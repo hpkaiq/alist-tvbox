@@ -40,7 +40,9 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.Collections;
@@ -347,11 +349,11 @@ public class AccountService {
     }
 
     private boolean shouldRefreshOpenToken(Account account) {
-        if (account.getOpenTokenTime() == null) {
-            return true;
-        }
         if (StringUtils.isBlank(account.getOpenToken())) {
             return false;
+        }
+        if (account.getOpenTokenTime() == null) {
+            return true;
         }
         try {
             String json = account.getOpenToken().split("\\.")[1];
@@ -511,9 +513,9 @@ public class AccountService {
         log.info("updateTokens {}", list.size());
         for (Account account : list) {
             String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s',%d,'%s')";
-            Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), OffsetDateTime.now()));
             sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s',%d,'%s')";
-            Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), OffsetDateTime.now()));
         }
     }
 
