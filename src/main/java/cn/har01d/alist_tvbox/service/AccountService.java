@@ -12,11 +12,7 @@ import cn.har01d.alist_tvbox.dto.AliResponse;
 import cn.har01d.alist_tvbox.dto.CheckinResponse;
 import cn.har01d.alist_tvbox.dto.CheckinResult;
 import cn.har01d.alist_tvbox.dto.RewardResponse;
-import cn.har01d.alist_tvbox.entity.Account;
-import cn.har01d.alist_tvbox.entity.AccountRepository;
-import cn.har01d.alist_tvbox.entity.Setting;
-import cn.har01d.alist_tvbox.entity.SettingRepository;
-import cn.har01d.alist_tvbox.entity.UserRepository;
+import cn.har01d.alist_tvbox.entity.*;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.model.AListUser;
@@ -87,6 +83,7 @@ public class AccountService {
     private final UserRepository userRepository;
     private final AListLocalService aListLocalService;
     private final IndexService indexService;
+    private final SiteService siteService;
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final TaskScheduler scheduler;
@@ -97,6 +94,7 @@ public class AccountService {
                           UserRepository userRepository,
                           AListLocalService aListLocalService,
                           IndexService indexService,
+                          SiteService siteService,
                           AppProperties appProperties,
                           TaskScheduler scheduler,
                           RestTemplateBuilder builder) {
@@ -105,6 +103,7 @@ public class AccountService {
         this.userRepository = userRepository;
         this.aListLocalService = aListLocalService;
         this.indexService = indexService;
+        this.siteService = siteService;
         this.scheduler = scheduler;
         this.restTemplate = builder.rootUri("http://localhost:" + (appProperties.isHostmode() ? "5234" : "5244")).build();
         this.restTemplate1 = builder.build();
@@ -525,6 +524,17 @@ public class AccountService {
             user.setUsername(login.getUsername());
             user.setPassword(login.getPassword());
             createUser(user, token);
+        }
+
+        try {
+            Site site = siteService.getById(1);
+            if (login.isEnabled()) {
+                site.setToken(Utils.executeQuery("select value from x_setting_items where key = 'token';"));
+            }else {
+                site.setToken("");
+            }
+            siteService.save(site);
+        }catch (Exception ignored){
         }
     }
 

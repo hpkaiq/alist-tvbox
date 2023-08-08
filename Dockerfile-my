@@ -1,0 +1,12 @@
+FROM haroldli/xiaoya-tvbox:latest
+
+VOLUME /opt/atv/data/
+WORKDIR /opt/atv/
+
+COPY target/application/ ./
+
+EXPOSE 4567 80
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["81", "--spring.profiles.active=production,xiaoya"]

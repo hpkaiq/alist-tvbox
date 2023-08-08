@@ -15,8 +15,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URLDecoder;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @RestController
@@ -137,6 +139,33 @@ public class TvBoxController {
         }
 
         return subscriptionService.repository(id);
+    }
+
+    @GetMapping("/{token}/allsubs")
+    public Map<String, Object> allSubscription(@PathVariable String token, HttpServletRequest request) {
+        if (!subscriptionService.getToken().equals(token)) {
+            throw new BadRequestException();
+        }
+
+        String serverName = request.getServerName();
+        int serverPort = request.getServerPort();
+        String scheme = request.getScheme();
+        Map<String, Object> res = new HashMap<>();
+        List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
+            Integer id = s.getId();
+            String name = s.getName();
+            HashMap<String, String> map = new HashMap<>();
+            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + id);
+            map.put("name", name);
+            return map;
+        }).collect(Collectors.toList());
+        res.put("urls", collect);
+        return res;
+    }
+
+    @GetMapping("/allsubs")
+    public Map<String, Object> allSubscription(HttpServletRequest request) {
+        return allSubscription("", request);
     }
 
     private String decodeUrl(String text) {

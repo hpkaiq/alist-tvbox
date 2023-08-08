@@ -256,7 +256,7 @@ public class SubscriptionService {
                 prefix = parts[0].trim() + "@";
                 url = parts[1].trim();
             }
-            overrideConfig(config, fixUrl(url.trim()), prefix, getConfigData(url.trim()));
+            overrideConfig(config, url.trim(), prefix, FixService.updateOverride(url.trim(), getConfigData(url.trim())));
         }
 
         sortSites(config, sort);
@@ -746,6 +746,8 @@ public class SubscriptionService {
 
             json = Pattern.compile("^\\s*#.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
             json = Pattern.compile("^\\s*//.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
+            json = Pattern.compile("(?m)^\\s*/\\*.*?\\*/", Pattern.DOTALL).matcher(json).replaceAll("");
+            json = json.replace("\n"," ");
 
             return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
