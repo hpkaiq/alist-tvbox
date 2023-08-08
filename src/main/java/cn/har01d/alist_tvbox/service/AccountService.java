@@ -14,13 +14,13 @@ import cn.har01d.alist_tvbox.entity.UserRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.model.AListUser;
-import cn.har01d.alist_tvbox.model.AliToken;
 import cn.har01d.alist_tvbox.model.AliTokensResponse;
 import cn.har01d.alist_tvbox.model.LoginRequest;
 import cn.har01d.alist_tvbox.model.LoginResponse;
 import cn.har01d.alist_tvbox.model.UserResponse;
 import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -30,7 +30,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.TaskScheduler;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -43,6 +42,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -83,6 +83,7 @@ public class AccountService {
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final TaskScheduler scheduler;
+    private final ObjectMapper objectMapper;
     private ScheduledFuture scheduledFuture;
 
     public AccountService(AccountRepository accountRepository,
@@ -92,13 +93,15 @@ public class AccountService {
                           IndexService indexService,
                           AppProperties appProperties,
                           TaskScheduler scheduler,
-                          RestTemplateBuilder builder) {
+                          RestTemplateBuilder builder,
+                          ObjectMapper objectMapper) {
         this.accountRepository = accountRepository;
         this.settingRepository = settingRepository;
         this.userRepository = userRepository;
         this.aListLocalService = aListLocalService;
         this.indexService = indexService;
         this.scheduler = scheduler;
+        this.objectMapper = objectMapper;
         this.restTemplate = builder.rootUri("http://localhost:" + (appProperties.isHostmode() ? "5234" : "5244")).build();
         this.restTemplate1 = builder.build();
     }
@@ -297,6 +300,12 @@ public class AccountService {
 
     public void autoCheckin() {
         for (Account account : accountRepository.findAll()) {
+            try {
+                refreshTokens(account);
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+
             if (account.isAutoCheckin()) {
                 try {
                     checkin(account, false);
@@ -346,15 +355,33 @@ public class AccountService {
         }
     }
 
+    private boolean shouldRefreshOpenToken(Account account) {
+        Instant time;
+        time = account.getOpenTokenTime();
+        if (time == null || StringUtils.isBlank(account.getOpenToken())) {
+            return true;
+        }
+        try {
+            String json = account.getOpenToken().split("\\.")[1];
+            byte[] bytes = Base64.getDecoder().decode(json);
+            Instant now = Instant.now().plusSeconds(60);
+            Map<String, Object> map = objectMapper.readValue(bytes, Map.class);
+            long exp = (long) map.get("exp");
+            return now.isBefore(Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS));
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        return true;
+    }
+
     private Map<Object, Object> refreshTokens(Account account) {
         boolean changed = false;
         Map<Object, Object> response = null;
         Instant now = Instant.now().plusSeconds(60);
         Instant time;
         try {
-            time = account.getOpenTokenTime();
-            if (time == null || time.plus(3, ChronoUnit.DAYS).isBefore(now) && (account.getOpenToken() != null)) {
-                log.info("update open token {}: {}", account.getId(), time);
+            if (shouldRefreshOpenToken(account)) {
+                log.info("update open token {}: {}", account.getId(), account.getRefreshTokenTime());
                 account.setOpenToken(getAliOpenToken(account.getOpenToken()));
                 account.setOpenTokenTime(Instant.now());
                 changed = true;
@@ -378,6 +405,7 @@ public class AccountService {
 
         if (changed) {
             accountRepository.save(account);
+            updateTokenToAList(account);
         }
 
         return response;
@@ -485,18 +513,14 @@ public class AccountService {
     }
 
     public void updateTokens() {
-        String count = Utils.executeQuery("SELECT count(*) FROM x_tokens");
-        log.info("{} tokens in AList", count);
-        if (count.isEmpty()) {
-            Utils.executeUpdate("CREATE TABLE IF NOT EXISTS \"x_tokens\" (`key` text,`value` text,`accountId` integer,`modified` datetime,PRIMARY KEY (`key`))");
-            List<Account> list = accountRepository.findAll();
-            log.info("updateTokens {}", list.size());
-            for (Account account : list) {
-                String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s','%d','%s')";
-                Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
-                sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s','%d','%s')";
-                Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
-            }
+        Utils.executeUpdate("CREATE TABLE IF NOT EXISTS \"x_tokens\" (`key` text,`value` text,`account_id` integer,`modified` datetime,PRIMARY KEY (`key`))");
+        List<Account> list = accountRepository.findAll();
+        log.info("updateTokens {}", list.size());
+        for (Account account : list) {
+            String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s',%d,'%s')";
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
+            sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s',%d,'%s')";
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
         }
     }
 
@@ -745,27 +769,6 @@ public class AccountService {
         return count;
     }
 
-    private void updateAList(Account account) {
-        if (account == null || StringUtils.isAnyBlank(account.getRefreshToken(), account.getOpenToken())) {
-            log.warn("cannot update AList: {}", account);
-            return;
-        }
-
-        try {
-            log.info("update AList storage driver tokens by account: {}", account.getId());
-            Utils.executeUpdate("update x_storages set driver = 'AliyundriveShare2Open' where driver = 'AliyundriveShare'");
-
-            String sql = "update x_storages set addition = json_set(addition, '$.RefreshToken', '" + account.getRefreshToken() + "') where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(sql);
-            sql = "update x_storages set addition = json_set(addition, '$.RefreshTokenOpen', '" + account.getOpenToken() + "') where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(sql);
-//            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
-//            Utils.executeUpdate(sql);
-        } catch (Exception e) {
-            throw new BadRequestException(e);
-        }
-    }
-
     public Account update(Integer id, AccountDto dto) {
         validateUpdate(id, dto);
 
@@ -785,9 +788,6 @@ public class AccountService {
             updateMaster();
             account.setMaster(true);
             updateAliAccountByApi(account);
-            //updateAList(account);
-//            settingRepository.save(new Setting(ALIST_RESTART_REQUIRED, "true"));
-//            response.addHeader(ALIST_RESTART_REQUIRED, "true");
         }
 
         if (aliChanged) {
@@ -961,18 +961,5 @@ public class AccountService {
             log.warn("", e);
         }
         return new AliTokensResponse();
-    }
-
-    @Scheduled(cron = "0 30 * * * ?")
-    public void syncTokens() {
-        List<AliToken> tokens = getTokens().getData();
-        if (tokens != null) {
-            Map<String, String> map = tokens.stream().collect(Collectors.toMap(AliToken::getKey, AliToken::getValue));
-            for (Account account : accountRepository.findAll()) {
-                account.setRefreshToken(map.get("RefreshToken-" + account.getId()));
-                account.setOpenToken(map.get("RefreshTokenOpen-" + account.getId()));
-                accountRepository.save(account);
-            }
-        }
     }
 }
