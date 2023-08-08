@@ -150,6 +150,12 @@ public class AccountService {
 
         if (accountRepository.count() > 0) {
             try {
+                updateAliAccountId();
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+
+            try {
                 updateTokens();
             } catch (Exception e) {
                 log.warn("", e);
@@ -157,12 +163,6 @@ public class AccountService {
 
             try {
                 enableMyAli();
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-
-            try {
-                updateAliAccountId();
             } catch (Exception e) {
                 log.warn("", e);
             }
@@ -810,9 +810,9 @@ public class AccountService {
         body.put("type", "number");
         body.put("flag", 1);
         body.put("value", account.getId());
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        HttpEntity<List<Map<String, Object>>> entity = new HttpEntity<>(List.of(body), headers);
         ResponseEntity<String> response = restTemplate.exchange("/api/admin/setting/save", HttpMethod.POST, entity, String.class);
-        log.info("enable AList storage {} response: {}", account.getId(), response.getBody());
+        log.info("updateAliAccountByApi {} response: {}", account.getId(), response.getBody());
     }
 
     private void updateMaster() {
