@@ -545,7 +545,7 @@ public class AccountService {
         AListUser guest = getUser(2, token);
         guest.setDisabled(login.isEnabled());
         updateUser(guest, token);
-        Site site = siteService.getById(1);
+
         deleteUser(3, token);
         if (login.isEnabled()) {
             AListUser user = new AListUser();
@@ -553,11 +553,19 @@ public class AccountService {
             user.setUsername(login.getUsername());
             user.setPassword(login.getPassword());
             createUser(user, token);
-            site.setToken(Utils.executeQuery("select value from x_setting_items where key = 'token';"));
-        }else {
-            site.setToken("");
         }
-        siteService.save(site);
+
+        try {
+            Site site = siteService.getById(1);
+            if (login.isEnabled()) {
+                site.setToken(Utils.executeQuery("select value from x_setting_items where key = 'token';"));
+            }else {
+                site.setToken("");
+            }
+            siteService.save(site);
+        }catch (Exception ignored){
+        }
+
     }
 
     public String login() {
