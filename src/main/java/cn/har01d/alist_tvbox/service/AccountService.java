@@ -1,23 +1,12 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
-import cn.har01d.alist_tvbox.dto.AListLogin;
-import cn.har01d.alist_tvbox.dto.AccountDto;
-import cn.har01d.alist_tvbox.dto.CheckinResponse;
-import cn.har01d.alist_tvbox.dto.CheckinResult;
-import cn.har01d.alist_tvbox.dto.RewardResponse;
-import cn.har01d.alist_tvbox.entity.Account;
-import cn.har01d.alist_tvbox.entity.AccountRepository;
+import cn.har01d.alist_tvbox.dto.*;
 import cn.har01d.alist_tvbox.entity.Setting;
-import cn.har01d.alist_tvbox.entity.SettingRepository;
-import cn.har01d.alist_tvbox.entity.UserRepository;
+import cn.har01d.alist_tvbox.entity.*;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
-import cn.har01d.alist_tvbox.model.AListUser;
-import cn.har01d.alist_tvbox.model.AliTokensResponse;
-import cn.har01d.alist_tvbox.model.LoginRequest;
-import cn.har01d.alist_tvbox.model.LoginResponse;
-import cn.har01d.alist_tvbox.model.UserResponse;
+import cn.har01d.alist_tvbox.model.*;
 import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
@@ -41,33 +30,11 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
-import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
-import static cn.har01d.alist_tvbox.util.Constants.ALIST_PASSWORD;
-import static cn.har01d.alist_tvbox.util.Constants.ALIST_USERNAME;
-import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
-import static cn.har01d.alist_tvbox.util.Constants.ATV_PASSWORD;
-import static cn.har01d.alist_tvbox.util.Constants.AUTO_CHECKIN;
-import static cn.har01d.alist_tvbox.util.Constants.CHECKIN_DAYS;
-import static cn.har01d.alist_tvbox.util.Constants.CHECKIN_TIME;
-import static cn.har01d.alist_tvbox.util.Constants.FOLDER_ID;
-import static cn.har01d.alist_tvbox.util.Constants.OPEN_TOKEN;
-import static cn.har01d.alist_tvbox.util.Constants.OPEN_TOKEN_TIME;
-import static cn.har01d.alist_tvbox.util.Constants.REFRESH_TOKEN;
-import static cn.har01d.alist_tvbox.util.Constants.REFRESH_TOKEN_TIME;
-import static cn.har01d.alist_tvbox.util.Constants.SCHEDULE_TIME;
-import static cn.har01d.alist_tvbox.util.Constants.SHOW_MY_ALI;
-import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
-import static cn.har01d.alist_tvbox.util.Constants.ZONE_ID;
+import static cn.har01d.alist_tvbox.util.Constants.*;
 
 @Slf4j
 @Service
@@ -78,6 +45,7 @@ public class AccountService {
     private final UserRepository userRepository;
     private final AListLocalService aListLocalService;
     private final IndexService indexService;
+    private final SiteService siteService;
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final TaskScheduler scheduler;
@@ -88,6 +56,7 @@ public class AccountService {
                           UserRepository userRepository,
                           AListLocalService aListLocalService,
                           IndexService indexService,
+                          SiteService siteService,
                           AppProperties appProperties,
                           TaskScheduler scheduler,
                           RestTemplateBuilder builder) {
@@ -96,6 +65,7 @@ public class AccountService {
         this.userRepository = userRepository;
         this.aListLocalService = aListLocalService;
         this.indexService = indexService;
+        this.siteService = siteService;
         this.scheduler = scheduler;
         this.restTemplate = builder.rootUri("http://localhost:" + (appProperties.isHostmode() ? "5234" : "5244")).build();
         this.restTemplate1 = builder.build();
@@ -522,13 +492,20 @@ public class AccountService {
         updateUser(guest, token);
 
         deleteUser(3, token);
+
+        String alistWebToken = Utils.executeQuery("select value from x_setting_items where key = 'token';");
+        Site site = siteService.getById(1);
         if (login.isEnabled()) {
             AListUser user = new AListUser();
             user.setId(3);
             user.setUsername(login.getUsername());
             user.setPassword(login.getPassword());
             createUser(user, token);
+            site.setToken(alistWebToken);
+        } else {
+            site.setToken("");
         }
+        siteService.save(site);
     }
 
     public String login() {
