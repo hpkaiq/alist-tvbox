@@ -14,13 +14,13 @@ import cn.har01d.alist_tvbox.entity.UserRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.model.AListUser;
+import cn.har01d.alist_tvbox.model.AliTokensResponse;
 import cn.har01d.alist_tvbox.model.LoginRequest;
 import cn.har01d.alist_tvbox.model.LoginResponse;
 import cn.har01d.alist_tvbox.model.UserResponse;
 import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
-import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
@@ -483,11 +483,17 @@ public class AccountService {
     }
 
     public void updateTokens() {
-        List<Account> list = accountRepository.findAll();
-        for (Account account : list) {
-            if (account.isMaster()) {
-                updateAList(account);
-                return;
+        String count = Utils.executeQuery("SELECT count(*) FROM x_tokens");
+        log.info("{} tokens in AList", count);
+        if (count.isEmpty()) {
+            Utils.executeUpdate("CREATE TABLE IF NOT EXISTS \"x_tokens\" (`key` text,`value` text,`accountId` integer,`modified` datetime,PRIMARY KEY (`key`))");
+            List<Account> list = accountRepository.findAll();
+            log.info("updateTokens {}", list.size());
+            for (Account account : list) {
+                String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s','%d','%s')";
+                Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
+                sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s','%d','%s')";
+                Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
             }
         }
     }
@@ -677,7 +683,6 @@ public class AccountService {
 
         if (count == 0) {
             account.setMaster(true);
-            updateAList(account);
             Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
             aListLocalService.startAListServer();
         }
@@ -708,7 +713,7 @@ public class AccountService {
         try {
             String token = login();
             updateTokenToAList("RefreshToken-" + account.getId(), account.getRefreshToken(), token);
-            updateTokenToAList("RefreshTokenOpen-" +  + account.getId(), account.getOpenToken(), token);
+            updateTokenToAList("RefreshTokenOpen-" + account.getId(), account.getOpenToken(), token);
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -752,14 +757,14 @@ public class AccountService {
             Utils.executeUpdate(sql);
             sql = "update x_storages set addition = json_set(addition, '$.RefreshTokenOpen', '" + account.getOpenToken() + "') where driver = 'AliyundriveShare2Open'";
             Utils.executeUpdate(sql);
-            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
-            Utils.executeUpdate(sql);
+//            sql = "update x_storages set addition = json_set(addition, '$.account_id', " + account.getId() + ") where driver = 'AliyundriveShare2Open'";
+//            Utils.executeUpdate(sql);
         } catch (Exception e) {
             throw new BadRequestException(e);
         }
     }
 
-    public Account update(Integer id, AccountDto dto, HttpServletResponse response) {
+    public Account update(Integer id, AccountDto dto) {
         validateUpdate(id, dto);
 
         Account account = accountRepository.findById(id).orElseThrow(NotFoundException::new);
@@ -805,7 +810,7 @@ public class AccountService {
         String token = status == 2 ? login() : "";
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
-        Map<String, Object> body =  new HashMap<>();
+        Map<String, Object> body = new HashMap<>();
         body.put("key", "x_setting_items");
         body.put("type", "number");
         body.put("flag", 1);
@@ -892,30 +897,6 @@ public class AccountService {
         }
     }
 
-//    public void addOpenStorage(AliyundriveOpen storage, String token) {
-//        addStorage(storage, token);
-//    }
-//
-//    public void addStorage(Storage<?> storage, String token) {
-//        HttpHeaders headers = new HttpHeaders();
-//        headers.put("Authorization", Collections.singletonList(token));
-//        HttpEntity<Storage<?>> entity = new HttpEntity<>(storage, headers);
-//        ResponseEntity<String> response = restTemplate.exchange("/api/admin/storage/create", HttpMethod.POST, entity, String.class);
-//        log.info("enable AList storage {} response: {}", storage.getId(), response.getBody());
-//    }
-//
-//    public void updateOpenStorage(AliyundriveOpen storage, String token) {
-//        updateStorage(storage, token);
-//    }
-//
-//    public void updateStorage(Storage<?> storage, String token) {
-//        HttpHeaders headers = new HttpHeaders();
-//        headers.put("Authorization", Collections.singletonList(token));
-//        HttpEntity<Storage<?>> entity = new HttpEntity<>(storage, headers);
-//        ResponseEntity<String> response = restTemplate.exchange("/api/admin/storage/update", HttpMethod.POST, entity, String.class);
-//        log.info("enable AList storage {} response: {}", storage.getId(), response.getBody());
-//    }
-
     public void enableStorage(Integer id, String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
@@ -963,5 +944,16 @@ public class AccountService {
                     .orElseThrow(NotFoundException::new);
         }
         return null;
+    }
+
+    public AliTokensResponse getTokens() {
+        String token = login();
+        HttpHeaders headers = new HttpHeaders();
+        headers.put("Authorization", Collections.singletonList(token));
+        HttpEntity<String> entity = new HttpEntity<>(null, headers);
+        ResponseEntity<AliTokensResponse> response = restTemplate.exchange("/api/admin/token/list", HttpMethod.GET, entity, AliTokensResponse.class);
+        log.debug("getTokens response: {}", response.getBody());
+
+        return response.getBody();
     }
 }
