@@ -357,9 +357,10 @@ public class AccountService {
             String json = account.getOpenToken().split("\\.")[1];
             byte[] bytes = Base64.getDecoder().decode(json);
             Map<Object, Object> map = objectMapper.readValue(bytes, Map.class);
-            long exp = (long) map.get("exp");
             log.debug("open token: {}", map);
-            return Instant.now().isBefore(Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS));
+            long exp = (long) map.get("exp");
+            Instant expireTime = Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS);
+            return expireTime.isAfter(Instant.now());
         } catch (Exception e) {
             log.warn("", e);
         }
