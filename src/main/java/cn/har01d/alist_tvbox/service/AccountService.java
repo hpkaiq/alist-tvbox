@@ -40,7 +40,9 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.Collections;
@@ -150,6 +152,12 @@ public class AccountService {
 
         if (accountRepository.count() > 0) {
             try {
+                updateAliAccountId();
+            } catch (Exception e) {
+                log.warn("", e);
+            }
+
+            try {
                 updateTokens();
             } catch (Exception e) {
                 log.warn("", e);
@@ -157,12 +165,6 @@ public class AccountService {
 
             try {
                 enableMyAli();
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-
-            try {
-                updateAliAccountId();
             } catch (Exception e) {
                 log.warn("", e);
             }
@@ -178,13 +180,14 @@ public class AccountService {
 
     private void updateAliAccountId() {
         accountRepository.getFirstByMasterTrue().map(Account::getId).ifPresent(id -> {
-            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0);");
+            log.info("updateAliAccountId {}", id);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0)");
         });
     }
 
     private void addAdminUser() {
         try {
-            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0);";
+            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0)";
             Utils.executeUpdate(sql);
         } catch (Exception e) {
             log.warn("", e);
@@ -346,18 +349,20 @@ public class AccountService {
     }
 
     private boolean shouldRefreshOpenToken(Account account) {
-        Instant time;
-        time = account.getOpenTokenTime();
-        if (time == null || StringUtils.isBlank(account.getOpenToken())) {
+        if (StringUtils.isBlank(account.getOpenToken())) {
+            return false;
+        }
+        if (account.getOpenTokenTime() == null) {
             return true;
         }
         try {
             String json = account.getOpenToken().split("\\.")[1];
             byte[] bytes = Base64.getDecoder().decode(json);
-            Instant now = Instant.now().plusSeconds(60);
-            Map<String, Object> map = objectMapper.readValue(bytes, Map.class);
+            Map<Object, Object> map = objectMapper.readValue(bytes, Map.class);
+            log.debug("open token: {}", map);
             long exp = (long) map.get("exp");
-            return now.isBefore(Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS));
+            Instant expireTime = Instant.ofEpochSecond(exp).plus(3, ChronoUnit.DAYS);
+            return expireTime.isAfter(Instant.now());
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -440,23 +445,23 @@ public class AccountService {
             if (login.isEnabled()) {
                 log.info("enable AList login: {}", login.getUsername());
                 if (login.getUsername().equals("guest")) {
-                    sql = "delete from x_users where id = 3;";
+                    sql = "delete from x_users where id = 3";
                     Utils.executeUpdate(sql);
                     sql = "update x_users set disabled = 0, username = '" + login.getUsername() + "' where id = 2";
                     Utils.executeUpdate(sql);
                 } else {
                     sql = "update x_users set disabled = 1 where id = 2";
                     Utils.executeUpdate(sql);
-                    sql = "delete from x_users where id = 3;";
+                    sql = "delete from x_users where id = 3";
                     Utils.executeUpdate(sql);
-                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0);";
+                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0)";
                     Utils.executeUpdate(sql);
                 }
             } else {
                 log.info("enable AList guest");
-                sql = "update x_users set disabled = 0, permission = '368', password = 'guest_Api789' where id = 2;";
+                sql = "update x_users set disabled = 0, permission = '368', password = 'guest_Api789' where id = 2";
                 Utils.executeUpdate(sql);
-                sql = "delete from x_users where id = 3;";
+                sql = "delete from x_users where id = 3";
                 Utils.executeUpdate(sql);
             }
         } catch (Exception e) {
@@ -508,9 +513,9 @@ public class AccountService {
         log.info("updateTokens {}", list.size());
         for (Account account : list) {
             String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s',%d,'%s')";
-            Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), Instant.now().toString()));
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), OffsetDateTime.now()));
             sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s',%d,'%s')";
-            Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), Instant.now().toString()));
+            Utils.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), OffsetDateTime.now()));
         }
     }
 
@@ -699,7 +704,7 @@ public class AccountService {
 
         if (count == 0) {
             account.setMaster(true);
-            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0);");
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0)");
             aListLocalService.startAListServer();
         }
 
@@ -803,13 +808,13 @@ public class AccountService {
         HttpHeaders headers = new HttpHeaders();
         headers.put("Authorization", Collections.singletonList(token));
         Map<String, Object> body = new HashMap<>();
-        body.put("key", "x_setting_items");
+        body.put("key", "ali_account_id");
         body.put("type", "number");
         body.put("flag", 1);
         body.put("value", account.getId());
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        HttpEntity<List<Map<String, Object>>> entity = new HttpEntity<>(List.of(body), headers);
         ResponseEntity<String> response = restTemplate.exchange("/api/admin/setting/save", HttpMethod.POST, entity, String.class);
-        log.info("enable AList storage {} response: {}", account.getId(), response.getBody());
+        log.info("updateAliAccountByApi {} response: {}", account.getId(), response.getBody());
     }
 
     private void updateMaster() {
