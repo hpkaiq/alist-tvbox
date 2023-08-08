@@ -178,6 +178,7 @@ public class AccountService {
 
     private void updateAliAccountId() {
         accountRepository.getFirstByMasterTrue().map(Account::getId).ifPresent(id -> {
+            log.info("updateAliAccountId {}", id);
             Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + id + "','','number','',1,0);");
         });
     }
