@@ -6,6 +6,7 @@ import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -141,8 +142,12 @@ public class TvBoxController {
         return subscriptionService.repository(id);
     }
 
-    @GetMapping("/allsubs")
-    public Map<String, Object> allSubscription(HttpServletRequest request) {
+    @GetMapping("/{token}/allsubs")
+    public Map<String, Object> allSubscription(@PathVariable String token, HttpServletRequest request) {
+        if (!subscriptionService.getToken().equals(token)) {
+            throw new BadRequestException();
+        }
+        String tokenUrlPart = StringUtils.isEmpty(token) ? "" : token + "/";
         String serverName = request.getServerName();
         int serverPort = request.getServerPort();
         String scheme = request.getScheme();
@@ -151,12 +156,17 @@ public class TvBoxController {
             Integer id = s.getId();
             String name = s.getName();
             HashMap<String, String> map = new HashMap<>();
-            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + id);
+            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + tokenUrlPart + id);
             map.put("name", name);
             return map;
         }).collect(Collectors.toList());
         res.put("urls", collect);
         return res;
+    }
+
+    @GetMapping("/allsubs")
+    public Map<String, Object> allSubscription(HttpServletRequest request) {
+        return allSubscription("", request);
     }
 
     private String decodeUrl(String text) {
