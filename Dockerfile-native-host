@@ -1,10 +1,12 @@
-FROM xiaoyaliu/alist:hostmode
+FROM haroldli/alist:hostmode
 
 LABEL MAINTAINER="Har01d"
 
 VOLUME /opt/atv/data/
 
 WORKDIR /opt/atv/
+
+COPY config/config-host.json /opt/alist/data/config.json
 
 COPY atv-cli/atv-cli /
 COPY index.sh /
