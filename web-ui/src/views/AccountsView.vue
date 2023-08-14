@@ -56,12 +56,12 @@
 
     <el-dialog v-model="formVisible" :title="dialogTitle" width="60%">
       <el-form :model="form">
-        <el-form-item label="阿里refresh token" label-width="150">
+        <el-form-item label="阿里refresh token" label-width="150" required>
           <el-input v-model="form.refreshToken" maxlength="128" placeholder="长度32位" autocomplete="off"/>
           <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive.html" target="_blank">获取阿里token</a><br/>
           <a href="https://aliyuntoken.vercel.app/" class="hint" target="_blank">获取阿里token</a>
         </el-form-item>
-        <el-form-item label="开放refresh token" label-width="140">
+        <el-form-item label="开放refresh token" label-width="140" required>
           <el-input v-model="form.openToken" type="textarea" rows="3" minlength="256" placeholder="长度280位"
                     autocomplete="off"/>
           <a href="https://alist.nn.ci/zh/guide/drivers/aliyundrive_open.html" target="_blank">获取开放token</a>
@@ -200,25 +200,12 @@ import {ElMessage} from "element-plus";
 import {store} from "@/services/store";
 import router from "@/router";
 
-interface Item {
-  path: string
-  text: string
-}
-
-interface Token {
-  key: string
-  value: string
-  accountId: number
-  modified: string
-}
-
 const iat = ref([0])
 const exp = ref([0])
 const forceCheckin = ref(false)
 const updateAction = ref(false)
 const dialogTitle = ref('')
 const accounts = ref([])
-const tokens = ref<Token[]>([])
 const formVisible = ref(false)
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
@@ -247,23 +234,6 @@ const formatTime = (value: string | number) => {
 
 const showDetails = (data: any) => {
   form.value = Object.assign({}, data)
-  for (let token of tokens.value) {
-    if (token.accountId == data.id) {
-      if (token.key.startsWith('RefreshTokenOpen')) {
-        form.value.openToken = token.value
-        form.value.openTokenTime = token.modified
-      } else if (token.key.startsWith('RefreshToken')) {
-        form.value.refreshToken = token.value
-        form.value.refreshTokenTime = token.modified
-      } else if (token.key.startsWith('AccessTokenOpen')) {
-        form.value.accessTokenOpen = token.value
-        form.value.accessTokenOpenTime = token.modified
-      } else if (token.key.startsWith('AccessToken')) {
-        form.value.accessToken = token.value
-        form.value.accessTokenTime = token.modified
-      }
-    }
-  }
   updateAction.value = true
   if (form.value.accessToken) {
     let details = JSON.parse(atob(form.value.accessToken.split('.')[1]))
@@ -370,15 +340,8 @@ const load = () => {
   })
 }
 
-const getTokens = () => {
-  axios.get('/ali/account-tokens').then(({data}) => {
-    tokens.value = data.data
-  })
-}
-
 onMounted(() => {
   load()
-  getTokens()
 })
 </script>
 

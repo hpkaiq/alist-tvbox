@@ -8,13 +8,23 @@ import cn.har01d.alist_tvbox.entity.Site;
 import cn.har01d.alist_tvbox.entity.SiteRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
+import cn.har01d.alist_tvbox.model.Response;
+import cn.har01d.alist_tvbox.util.Constants;
+import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
 import java.net.URL;
@@ -23,6 +33,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -31,25 +42,28 @@ public class SiteService {
     private final SiteRepository siteRepository;
     private final SettingRepository settingRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final RestTemplate restTemplate;
     private String aListToken = "";
 
     public SiteService(AppProperties appProperties,
                        SiteRepository siteRepository,
                        SettingRepository settingRepository,
-                       JdbcTemplate jdbcTemplate) {
+                       JdbcTemplate jdbcTemplate,
+                       RestTemplateBuilder builder) {
         this.appProperties = appProperties;
         this.siteRepository = siteRepository;
         this.settingRepository = settingRepository;
         this.jdbcTemplate = jdbcTemplate;
+        this.restTemplate = builder
+                .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
+                .defaultHeader(HttpHeaders.USER_AGENT, Constants.USER_AGENT)
+                .build();
     }
 
     @PostConstruct
     public void init() {
-        boolean sp = appProperties.isXiaoya();
         if (siteRepository.count() > 0) {
-            if (sp) {
-                siteRepository.findById(1).ifPresent(this::updateSite);
-            }
+            siteRepository.findById(1).ifPresent(this::updateSite);
             fixId();
             return;
         }
@@ -64,14 +78,16 @@ public class SiteService {
             site.setXiaoya(s.isXiaoya());
             site.setIndexFile(s.getIndexFile());
             site.setVersion(s.getVersion());
+            if (order == 1) {
+                aListToken = generateToken();
+                site.setToken(aListToken);
+            }
             site.setOrder(order++);
             siteRepository.save(site);
             log.info("save site to database: {}", site);
         }
 
-        if (sp) {
-            readAList(order);
-        }
+        readAList(order);
     }
 
     private void fixId() {
@@ -141,16 +157,46 @@ public class SiteService {
         }
 
         try {
-            String sql = "select value from x_setting_items where key = 'token'";
-            aListToken = Utils.executeQuery(sql);
-            if (!aListToken.equals(site.getToken())) {
-                log.info("update site token: {}", aListToken);
+            if (StringUtils.isBlank(site.getToken())) {
+                aListToken = generateToken();
                 site.setToken(aListToken);
+            } else {
+                aListToken = site.getToken();
             }
+            String sql = "UPDATE x_setting_items SET value='" + aListToken + "' WHERE key = 'token'";
+            Utils.executeUpdate(sql);
         } catch (Exception e) {
             log.warn("", e);
         }
         siteRepository.save(site);
+    }
+
+    public String generateToken() {
+        String token = "alist-" + UUID.randomUUID() + IdUtils.generate(64);
+        log.info("generate token {}", token);
+        return token;
+    }
+
+    public void resetToken() {
+        String url = appProperties.isHostmode() ? "http://localhost:5234" : "http://localhost:5244";
+        String token = postRestToken(url + "/api/admin/setting/reset_token");
+        log.info("{}", token);
+        for (Site site : siteRepository.findAll()) {
+            if (aListToken.equals(site.getToken())) {
+                site.setToken(token);
+                siteRepository.save(site);
+            }
+        }
+        aListToken = token;
+    }
+
+    private String postRestToken(String url) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Authorization", aListToken);
+        HttpEntity<Void> entity = new HttpEntity<>(null, headers);
+        ResponseEntity<Response<String>> response = restTemplate.exchange(url, HttpMethod.POST, entity, new ParameterizedTypeReference<Response<String>>() {
+        });
+        return response.getBody().getData();
     }
 
     public Site getById(Integer id) {
@@ -261,7 +307,7 @@ public class SiteService {
     }
 
     public void delete(int id) {
-        if (id == 1 && appProperties.isXiaoya()) {
+        if (id == 1) {
             throw new BadRequestException("不能删除默认站点");
         }
         siteRepository.deleteById(id);

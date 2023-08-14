@@ -140,7 +140,7 @@
           <div v-if="movieRemoteVersion&&movieRemoteVersion>movieVersion">
             最新版本：{{
               movieRemoteVersion
-            }}，{{ movieRemoteVersion == cachedMovieVersion ? '已经下载，请' : '后台下载中，请稍后' }}重启Docker容器更新。
+            }}，后台更新中。
           </div>
         </el-card>
       </el-col>
@@ -176,7 +176,7 @@
             @change="updateReplaceAliToken"
           />
         </el-form-item>
-        <el-form-item label="开启HTTPS">
+        <el-form-item label="订阅支持HTTPS">
           <el-switch
             v-model="enableHttps"
             inline-prompt
@@ -185,12 +185,9 @@
             @change="updateEnableHttps"
           />
         </el-form-item>
-<!--        <el-form-item label="小雅外网地址">-->
-<!--          <el-input v-model="dockerAddress"/>-->
-<!--        </el-form-item>-->
-<!--        <el-form-item>-->
-<!--          <el-button type="primary" @click="updateDockerAddress">更新</el-button>-->
-<!--        </el-form-item>-->
+        <el-form-item>
+          <el-button @click="resetAListToken">重置AList认证Token</el-button>
+        </el-form-item>
         <el-form-item>
           <el-button @click="exportDatabase">导出数据库</el-button>
         </el-form-item>
@@ -282,14 +279,14 @@ const updateToken = () => {
   }
 }
 
-const updateOpenTokenUrl = () => {
-  axios.post('/open-token-url', {url: openTokenUrl.value}).then(() => {
-    ElMessage.success('更新成功')
+const resetAListToken = () => {
+  axios.post('/alist/reset_token', {}).then(() => {
+    ElMessage.success('AList认证Token重置成功')
   })
 }
 
-const updateDockerAddress = () => {
-  axios.post('/settings', {name: 'docker_address', value: dockerAddress.value}).then(() => {
+const updateOpenTokenUrl = () => {
+  axios.post('/open-token-url', {url: openTokenUrl.value}).then(() => {
     ElMessage.success('更新成功')
   })
 }
@@ -313,8 +310,9 @@ const updateEnableHttps = () => {
 }
 
 const updateLogin = () => {
-  axios.post('/login', login.value).then(() => {
+  axios.post('/login', login.value).then(({data}) => {
     ElMessage.success('保存成功')
+    login.value = data
   })
 }
 
@@ -326,12 +324,6 @@ const exportDatabase = () => {
 
 const updateScheduleTime = () => {
   axios.post('/schedule', scheduleTime.value).then(() => {
-    ElMessage.success('更新成功')
-  })
-}
-
-const updateFileExpireHour = () => {
-  axios.post('/settings', {name: 'file_expire_hour', value: '' + fileExpireHour.value}).then(() => {
     ElMessage.success('更新成功')
   })
 }

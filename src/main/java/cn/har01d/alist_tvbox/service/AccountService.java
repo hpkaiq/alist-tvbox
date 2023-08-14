@@ -194,7 +194,7 @@ public class AccountService {
 
     private void addAdminUser() {
         try {
-            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0)";
+            String sql = "INSERT INTO x_users VALUES(4,'atv',\"" + generatePassword() + "\",'/',2,258,'',0,0,'')";
             Utils.executeUpdate(sql);
         } catch (Exception e) {
             log.warn("", e);
@@ -251,8 +251,6 @@ public class AccountService {
             }
 
             AListLogin login = new AListLogin();
-            login.setUsername("guest");
-            login.setPassword("guest_Api789");
             Path pass = Paths.get("/data/guestpass.txt");
             if (Files.exists(pass)) {
                 log.info("read guest password from file");
@@ -446,7 +444,7 @@ public class AccountService {
                     Utils.executeUpdate(sql);
                     sql = "delete from x_users where id = 3";
                     Utils.executeUpdate(sql);
-                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0)";
+                    sql = "INSERT INTO x_users VALUES(3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,368,'',0,0,'')";
                     Utils.executeUpdate(sql);
                 }
             } else {
@@ -519,7 +517,7 @@ public class AccountService {
         return time.atOffset(ZONE_OFFSET);
     }
 
-    public void updateLogin(AListLogin login) {
+    public AListLogin updateLogin(AListLogin login) {
         aListLocalService.validateAListStatus();
         if (login.isEnabled()) {
             if (StringUtils.isBlank(login.getUsername())) {
@@ -530,6 +528,9 @@ public class AccountService {
             }
             if (login.getUsername().equals("atv") || login.getUsername().equals("admin")) {
                 throw new BadRequestException("用户名已被使用");
+            }
+            if ("guest".equals(login.getUsername())) {
+                login.setUsername("dav");
             }
         }
 
@@ -550,6 +551,7 @@ public class AccountService {
             user.setPassword(login.getPassword());
             createUser(user, token);
         }
+        return login;
     }
 
     public String login() {
@@ -559,7 +561,7 @@ public class AccountService {
         request.setUsername(username);
         request.setPassword(password);
         LoginResponse response = aListClient.postForObject("/api/auth/login", request, LoginResponse.class);
-        log.info("AList login response: {}", response.getData());
+        log.debug("AList login response: {}", response.getData());
         return response.getData().getToken();
     }
 
@@ -700,10 +702,11 @@ public class AccountService {
         account.setShowMyAli(dto.isShowMyAli());
         account.setClean(dto.isClean());
 
+        account.setMaster(count == 0);
         accountRepository.save(account);
 
         if (count == 0) {
-            account.setMaster(true);
+            updateTokens();
             Utils.executeUpdate("INSERT INTO x_setting_items VALUES('ali_account_id','" + account.getId() + "','','number','',1,0)");
             aListLocalService.startAListServer();
         } else if (account.isMaster()) {
@@ -957,12 +960,21 @@ public class AccountService {
         return new AliTokensResponse();
     }
 
+    private int syncs = 0;
     @Scheduled(initialDelay = 90_000, fixedDelay = 300_000)
     public void syncTokens() {
+        if (syncs > 1 && syncs % 12 != 0) {
+            syncs++;
+            return;
+        }
+        if (aListLocalService.getAListStatus() != 2) {
+            return;
+        }
         List<AliToken> tokens = getTokens().getData();
         if (tokens == null || tokens.isEmpty()) {
             return;
         }
+        syncs++;
         log.info("syncTokens {}", tokens.size());
         Map<String, AliToken> map = tokens.stream().collect(Collectors.toMap(AliToken::getKey, e -> e));
         List<Account> accounts = accountRepository.findAll();

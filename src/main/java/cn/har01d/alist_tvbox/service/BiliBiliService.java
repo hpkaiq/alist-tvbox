@@ -21,6 +21,8 @@ import cn.har01d.alist_tvbox.dto.bili.BiliBiliQrCodeResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfo;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchPgcResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchPgcResult;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResult;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeasonInfo;
@@ -66,6 +68,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -113,7 +116,8 @@ public class BiliBiliService {
     private static final String PLAY_API2 = "https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=127&platform=html5&high_quality=1"; // mp4
     private static final String TOKEN_API = "https://api.bilibili.com/x/player/playurl/token?%said=%d&cid=%d";
     private static final String POPULAR_API = "https://api.bilibili.com/x/web-interface/popular?ps=30&pn=";
-    private static final String SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type?search_type=video&page_size=50&keyword=%s&order=%s&duration=%s&page=%d";
+    private static final String SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type?search_type=%s&page_size=50&keyword=%s&order=%s&duration=%s&page=%d";
+    private static final String SEARCH_API2 = "https://api.bilibili.com/x/web-interface/wbi/search/type";
     private static final String NEW_SEARCH_API = "https://api.bilibili.com/x/space/wbi/arc/search";
     private static final String TOP_FEED_API = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd";
     private static final String FEED_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all?timezone_offset=-480&type=video&offset=%s&page=%d&features=itemOpusStyle";
@@ -194,7 +198,7 @@ public class BiliBiliService {
     private String keyword = "";
     private int searchPage;
     private String favId = "";
-    private Integer mid;
+    private Long mid;
 
     private List<String> feedOffsets = new ArrayList<>(); // 动态列表
     private List<String> chanOffsets = new ArrayList<>(); // 频道列表
@@ -238,9 +242,9 @@ public class BiliBiliService {
         Map<String, Object> result = new HashMap<>();
         if (data != null) {
             if (data.get("mid") instanceof Long) {
-                mid = ((Long) data.get("mid")).intValue();
-            } else {
-                mid = (Integer) data.get("mid");
+                mid = ((Long) data.get("mid"));
+            } else if (data.get("mid") instanceof Integer) {
+                mid = Long.valueOf((Integer) data.get("mid"));
             }
             if (mid != null && mid.equals(BiliBiliUtils.getMid())) {
                 data.put("uname", "内置账号");
@@ -1002,7 +1006,7 @@ public class BiliBiliService {
         int end = start + size;
 
         for (int i = start; i < end; i++) {
-            String url = String.format(SEARCH_API, wd, getSort(type), "0", i + 1);
+            String url = String.format(SEARCH_API, "video", wd, getSort(type), "0", i + 1);
             ResponseEntity<BiliBiliSearchResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliSearchResponse.class);
             List<BiliBiliSearchResult.Video> videos = response.getBody().getData().getResult();
             list.addAll(videos);
@@ -1633,8 +1637,8 @@ public class BiliBiliService {
 
         int pages = 1;
         if (pg > 0) {
-            String url = String.format(SEARCH_API, wd, sort, duration, pg);
-            log.debug("{}", url);
+            String url = String.format(SEARCH_API, "video", wd, sort, duration, pg);
+            log.debug("search: {}", url);
             ResponseEntity<BiliBiliSearchResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliSearchResponse.class);
             List<BiliBiliSearchResult.Video> videos = response.getBody().getData().getResult();
 
@@ -1655,8 +1659,10 @@ public class BiliBiliService {
             list.addAll(videos);
             result.setPagecount(response.getBody().getData().getNumPages());
         } else {
+            result.getList().addAll(searchPGC(entity, wd, sort));
+            result.getList().addAll(searchBangumi(entity, wd, sort));
             for (int i = 1; i <= 2; i++) {
-                String url = String.format(SEARCH_API, wd, sort, duration, i);
+                String url = String.format(SEARCH_API, "video", wd, sort, duration, i);
                 log.debug("{}", url);
                 ResponseEntity<BiliBiliSearchResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliSearchResponse.class);
                 List<BiliBiliSearchResult.Video> videos = response.getBody().getData().getResult();
@@ -1697,44 +1703,79 @@ public class BiliBiliService {
         return result;
     }
 
+    private List<MovieDetail> searchPGC(HttpEntity<Void> entity, String wd, String sort) {
+        String url = String.format(SEARCH_API, "media_ft", wd, sort, "", 1);
+        log.debug("searchPGC: {}", url);
+        ResponseEntity<BiliBiliSearchPgcResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliSearchPgcResponse.class);
+        return response.getBody().getData().getResult().stream().map(this::getSearchMovieDetail).collect(Collectors.toList());
+    }
+
+    private List<MovieDetail> searchBangumi(HttpEntity<Void> entity, String wd, String sort) {
+        try {
+            String url = String.format(SEARCH_API, "media_bangumi", wd, sort, "", 1);
+            log.debug("searchBangumi: {}", url);
+            ResponseEntity<BiliBiliSearchPgcResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliSearchPgcResponse.class);
+            return response.getBody().getData().getResult().stream().map(this::getSearchMovieDetail).collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        return List.of();
+    }
+
+    @Scheduled(cron = "0 30 9 * * *")
+    public void checkin() {
+        String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse(null);
+        if (cookie == null || cookie.contains(String.valueOf(BiliBiliUtils.getMid())) || cookie.contains("3493271303096985")) {
+            return;
+        }
+
+        String url = "https://api.bilibili.com/pgc/activity/score/task/sign";
+        HttpEntity<Void> entity = buildHttpEntity(null);
+        ResponseEntity<BiliBiliInfoResponse> response = restTemplate.exchange(url, HttpMethod.POST, entity, BiliBiliInfoResponse.class);
+        if (response.getBody() != null && response.getBody().getCode() == 0) {
+            log.info("B站用户签到成功");
+        } else {
+            log.warn("B站用户签到失败：{} {}", response.getBody().getCode(), response.getBody().getMessage());
+        }
+    }
+
     private static int getType(String sort) {
         if (sort == null) {
             return 1;
         }
-        switch (sort) {
-            case "click":
-                return 2;
-            case "pubdate":
-                return 3;
-            case "dm":
-                return 4;
-            case "stow":
-                return 5;
-            case "scores":
-                return 6;
-            default:
-                return 1;
-        }
+        return switch (sort) {
+            case "click" -> 2;
+            case "pubdate" -> 3;
+            case "dm" -> 4;
+            case "stow" -> 5;
+            case "scores" -> 6;
+            default -> 1;
+        };
     }
 
     private static String getSort(Integer type) {
         if (type == null) {
             return "";
         }
-        switch (type) {
-            case 2:
-                return "click";
-            case 3:
-                return "pubdate";
-            case 4:
-                return "dm";
-            case 5:
-                return "stow";
-            case 6:
-                return "scores";
-            default:
-                return "";
-        }
+        return switch (type) {
+            case 2 -> "click";
+            case 3 -> "pubdate";
+            case 4 -> "dm";
+            case 5 -> "stow";
+            case 6 -> "scores";
+            default -> "";
+        };
+    }
+
+    private MovieDetail getSearchMovieDetail(BiliBiliSearchPgcResult.Video info) {
+        MovieDetail movieDetail = new MovieDetail();
+        movieDetail.setVod_id("ss" + info.getSeason_id());
+        movieDetail.setVod_name(fixTitle(info.getTitle()));
+        movieDetail.setVod_tag(FILE);
+        movieDetail.setType_name(info.getStyles());
+        movieDetail.setVod_pic(fixCover(info.getCover()));
+        movieDetail.setVod_remarks(info.getIndex_show());
+        return movieDetail;
     }
 
     private MovieDetail getSearchMovieDetail(BiliBiliSearchResult.Video info) {

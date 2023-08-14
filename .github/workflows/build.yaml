@@ -19,10 +19,13 @@ on:
       - 'Dockerfile'
       - 'Dockerfile-base'
       - 'Dockerfile-base-new'
+      - 'Dockerfile-native-base'
       - 'Dockerfile-jre'
+      - 'scripts/install.sh'
       - '.github/workflows/build-base.yaml'
       - '.github/workflows/build-base-new.yaml'
       - '.github/workflows/build-native-dev.yaml'
+      - '.github/workflows/build-native-base.yaml'
       - '.github/workflows/build-dev.yaml'
       - '.github/workflows/build-java.yaml'
       - '.github/workflows/build-v7.yaml'
@@ -75,7 +78,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Set APP version
         run: |
-          mkdir data
+          [ -d data ] || mkdir data
           export TZ=Asia/Shanghai
           num1=$(date +%Y)
           num2=$(date +%j)

@@ -48,7 +48,6 @@ if [ ! -f update.zip ]; then
 fi
 if [ ! -f update.zip ]; then
   echo "Failed to download update database file, the database upgrade process has aborted"
-  exit 1
 else
   unzip -o -q -P abcd update.zip
   entries=$(grep -c 'INSERT INTO x_storages' update.sql)
@@ -62,7 +61,6 @@ else
   fi
 
   sed -i '/alist.xiaoya.pro/d' update.sql
-  grep -c 'alist.xiaoya.pro' update.sql
 
   sqlite3 /opt/alist/data/data.db <<EOF
 drop table x_storages;
@@ -120,3 +118,15 @@ app_ver=$(head -n1 /opt/atv/data/app_version)
 sqlite3 /opt/alist/data/data.db <<EOF
 INSERT INTO x_storages VALUES(20000,'/©️ $version-$app_ver',0,'Alias',30,'work','{"paths":"/每日更新"}','','2022-11-12 13:05:12+00:00',0,'','','',0,'302_redirect','');
 EOF
+
+LOCAL="0.0"
+if [ -f /data/atv/base_version ]; then
+  LOCAL=$(head -n 1 </data/atv/base_version)
+fi
+REMOTE=$(curl -fsSL http://d.har01d.cn/base_version | head -n 1)
+echo "movie base version: $LOCAL $REMOTE"
+if [ "$LOCAL" != "$REMOTE" ]; then
+  wget http://d.har01d.cn/data.zip -O data.zip && \
+  unzip -q -o data.zip -d /tmp && \
+  cp /tmp/data/data.sql /data/atv/
+fi

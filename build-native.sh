@@ -45,8 +45,15 @@ if [ "$BUILD" = "true" ]; then
   cd ../atv-cli && \
   go build && \
   cd .. && \
-  mvn clean package -DskipTests -Pnative || exit 1
+  mvn clean package -DskipTests -Pnative
 fi
+
+[ -d data ] || mkdir data
+export TZ=Asia/Shanghai
+num1=$(date +%Y)
+num2=$(date +%j)
+sum=$((($num1 - 2023) * 366 + $num2))
+echo $sum.$(date +%H%M) > data/version
 
 echo -e "\e[36m使用配置目录：\e[0m $MOUNT"
 echo -e "\e[36m端口映射：\e[0m $PORT1:4567  $PORT2:80"

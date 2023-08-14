@@ -139,17 +139,18 @@ public final class Utils {
     }
 
     public static int executeUpdate(String sql) {
-        log.debug("executeUpdate {}", sql);
+        int code = 1;
         try {
             ProcessBuilder builder = new ProcessBuilder();
             builder.inheritIO();
             builder.command("sqlite3", "/opt/alist/data/data.db", sql);
             Process process = builder.start();
-            return process.waitFor();
+            code = process.waitFor();
         } catch (Exception e) {
             log.warn("", e);
         }
-        return 1;
+        log.debug("executeUpdate {} result: {}", sql, code);
+        return code;
     }
 
     public static String executeQuery(String sql) {
@@ -171,6 +172,21 @@ public final class Utils {
             log.warn("", e);
         }
         return "";
+    }
+
+    public static int execute(String command) {
+        int code = 1;
+        try {
+            ProcessBuilder builder = new ProcessBuilder();
+            builder.inheritIO();
+            builder.command("bash", "-c", command);
+            Process process = builder.start();
+            code = process.waitFor();
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        log.debug("execute {} result: {}", command, code);
+        return code;
     }
 
     public static String getAliasPaths(String content) {
