@@ -6,6 +6,7 @@ import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -146,16 +147,16 @@ public class TvBoxController {
         if (!subscriptionService.getToken().equals(token)) {
             throw new BadRequestException();
         }
-
+        String tokenPart = StringUtils.isEmpty(token) ? "" : token + "/";
         String serverName = request.getServerName();
         int serverPort = request.getServerPort();
         String scheme = request.getScheme();
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
-            Integer id = s.getId();
+            String sid = s.getSid();
             String name = s.getName();
             HashMap<String, String> map = new HashMap<>();
-            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + id);
+            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + tokenPart + sid);
             map.put("name", name);
             return map;
         }).collect(Collectors.toList());
