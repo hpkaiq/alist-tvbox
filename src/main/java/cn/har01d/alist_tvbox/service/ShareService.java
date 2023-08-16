@@ -45,8 +45,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static cn.har01d.alist_tvbox.util.Constants.OPEN_TOKEN_URL;
-import static cn.har01d.alist_tvbox.util.Constants.TACIT_0924_ID;
-import static cn.har01d.alist_tvbox.util.Constants.TACIT_FOLDER_ID;
 
 @Slf4j
 @Service
@@ -109,13 +107,21 @@ public class ShareService {
             list = loadSharesFromFile();
         }
 
+        Share share = loadTacit0924();
+        if (share != null) {
+            list.add(share);
+        }
+
+        share = loadLatestShare();
+        if (share != null) {
+            list.add(share);
+        }
+
         loadAListShares(list);
         loadAListAlias();
         pikPakService.loadPikPak();
         configFileService.writeFiles();
         readTvTxt();
-
-        loadTacit0924();
 
         if (accountRepository.count() > 0 || pikPakAccountRepository.count() > 0) {
             aListLocalService.startAListServer();
@@ -342,6 +348,10 @@ public class ShareService {
                         int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getFolderId(), account2.getUsername(), account2.getPassword(), share.getShareId(), share.getPassword()));
                         pikpak = true;
                         log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
+                    } else if (share.getType() == 2) {
+                        String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','');";
+                        int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
+                        log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
                     }
                     shareId = Math.max(shareId, share.getId() + 1);
                     if (share.getType() == null) {
@@ -379,6 +389,8 @@ public class ShareService {
             return "/\uD83C\uDE34我的阿里分享/" + path;
         } else if (share.getType() == 1) {
             return "/\uD83D\uDD78️我的PikPak分享/" + path;
+        } else if (share.getType() == 2) {
+            return "/\uD83C\uDF1E我的夸克网盘/" + path;
         }
         return path;
     }
@@ -417,6 +429,9 @@ public class ShareService {
     }
 
     private void parseShare(Share share) {
+        if (StringUtils.isBlank(share.getShareId())) {
+            return;
+        }
         String url = share.getShareId();
         if (url.startsWith("https://www.aliyundrive.com/s/")) {
             url = url.substring(30);
@@ -448,6 +463,10 @@ public class ShareService {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getFolderId(), account.getUsername(), account.getPassword(), share.getShareId(), share.getPassword()));
+            } else if (share.getType() == 2) {
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','',0);";
+                int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
+                log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
             }
             log.info("insert result: {}", result);
 
@@ -482,6 +501,10 @@ public class ShareService {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getFolderId(), account.getUsername(), account.getPassword(), share.getShareId(), share.getPassword()));
+            } else if (share.getType() == 2) {
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','',0);";
+                int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
+                log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
             }
             log.info("insert result: {}", result);
 
@@ -493,17 +516,30 @@ public class ShareService {
     }
 
     private void validate(Share share) {
-        if (share.getType() == 1 && (StringUtils.isBlank(share.getFolderId()))) {
-            throw new BadRequestException("文件夹ID不能为空");
-        }
-        if (StringUtils.isBlank(share.getShareId())) {
-            throw new BadRequestException("分享ID不能为空");
-        }
         if (StringUtils.isBlank(share.getPath())) {
             throw new BadRequestException("挂载路径不能为空");
         }
+
+        if (share.getType() == 1 && (StringUtils.isBlank(share.getFolderId()))) {
+            throw new BadRequestException("文件夹ID不能为空");
+        }
+
+        if (share.getType() == 2) {
+            if (StringUtils.isBlank(share.getCookie())) {
+                throw new BadRequestException("Cookie不能为空");
+            }
+        } else {
+            if (StringUtils.isBlank(share.getShareId())) {
+                throw new BadRequestException("分享ID不能为空");
+            }
+        }
+
         if (StringUtils.isBlank(share.getFolderId())) {
-            share.setFolderId("root");
+            if (share.getType() == 2) {
+                share.setFolderId("0");
+            } else {
+                share.setFolderId("root");
+            }
         }
     }
 
@@ -566,49 +602,61 @@ public class ShareService {
     private static final Pattern SHARE = Pattern.compile("(https://www.aliyundrive.com/s/\\w+)</span>");
     private static final String TACIT_URL = "https://docs.qq.com/doc/DQmx1WEdTRXpGeEZ6";
 
-    private void loadTacit0924() {
+    private Share loadTacit0924() {
         try {
-            String link = settingRepository.findById(TACIT_0924_ID).map(Setting::getValue).orElse("");
-            String folder = settingRepository.findById(TACIT_FOLDER_ID).map(Setting::getValue).orElse("");
-            if (link.isEmpty() || folder.isEmpty()) {
+            Share share = shareRepository.findById(7000).orElse(null);
+            if (share == null) {
                 String html = restTemplate1.getForObject(TACIT_URL, String.class);
                 Matcher matcher = SHARE.matcher(html);
                 if (matcher.find()) {
-                    link = matcher.group(1).substring(30);
-                    settingRepository.save(new Setting(TACIT_0924_ID, link));
-                    folder = getFolderId(link);
-                    settingRepository.save(new Setting(TACIT_FOLDER_ID, folder));
+                    String link = matcher.group(1).substring(30);
+                    String folder = getFolderId(link);
+                    share = new Share();
+                    share.setType(0);
+                    share.setId(7000);
+                    share.setShareId(link);
+                    share.setFolderId(folder);
+                    share.setPath("/\uD83C\uDE34我的阿里分享/Tacit0924");
+                    return shareRepository.save(share);
                 }
             }
-            String sql = "INSERT INTO x_storages VALUES(7000,'/\uD83C\uDE34我的阿里分享/Tacit0924',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"\",\"RefreshTokenOpen\":\"\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'302_redirect','')";
-            Utils.executeUpdate(String.format(sql, link, folder));
+            return share;
         } catch (Exception e) {
             log.warn("", e);
         }
+        return null;
     }
 
-    @Scheduled(cron = "0 0 23 * * ?")
+    private Share loadLatestShare() {
+        try {
+            Share share = new Share();
+            share.setType(0);
+            share.setId(7001);
+            share.setShareId("mxAfB6eRgY4");
+            share.setFolderId("63833bb670c164d4eeb14aa09c62ee770d9112ba");
+            share.setPath("/\uD83C\uDE34我的阿里分享/近期更新");
+            return shareRepository.save(share);
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        return null;
+    }
+
+    @Scheduled(cron = "0 15 0,9-23 * * ?")
     public void getTacit0924() {
         try {
             String html = restTemplate1.getForObject(TACIT_URL, String.class);
             Matcher matcher = SHARE.matcher(html);
             if (matcher.find()) {
-                String link = settingRepository.findById(TACIT_0924_ID).map(Setting::getValue).orElse("");
-                String url = matcher.group(1).substring(30);
-                log.debug("{} {}", link, url);
-                if (!link.equals(url)) {
-                    String folder = getFolderId(link);
-                    settingRepository.save(new Setting(TACIT_FOLDER_ID, folder));
-                    settingRepository.save(new Setting(TACIT_0924_ID, url));
-                    String token = accountService.login();
-                    deleteStorage(7000, token);
-
-                    String sql = "INSERT INTO x_storages VALUES(7000,'/\uD83C\uDE34我的阿里分享/Tacit0924',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"\",\"RefreshTokenOpen\":\"\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0)";
-                    int result = Utils.executeUpdate(String.format(sql, url, folder));
-                    log.info("insert result: {}", result);
-
-                    enableStorage(7000, token);
-                }
+                String link = matcher.group(1).substring(30);
+                String folder = getFolderId(link);
+                Share share = new Share();
+                share.setType(0);
+                share.setId(7000);
+                share.setShareId(link);
+                share.setFolderId(folder);
+                share.setPath("/\uD83C\uDE34我的阿里分享/Tacit0924");
+                update(7000, share);
             }
         } catch (Exception e) {
             log.warn("", e);
