@@ -353,7 +353,9 @@ public class ShareService {
                         int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
                         log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
                     }
-                    shareId = Math.max(shareId, share.getId() + 1);
+                    if (share.getId() < 6000) {
+                        shareId = Math.max(shareId, share.getId() + 1);
+                    }
                     if (share.getType() == null) {
                         share.setType(0);
                         shareRepository.save(share);
@@ -456,15 +458,14 @@ public class ShareService {
 
             int result = 0;
             if (share.getType() == null || share.getType() == 0) {
-                Account account = accountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
-                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
-                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId()));
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"\",\"RefreshTokenOpen\":\"\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getShareId(), share.getPassword(), share.getFolderId()));
             } else if (share.getType() == 1) {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getFolderId(), account.getUsername(), account.getPassword(), share.getShareId(), share.getPassword()));
             } else if (share.getType() == 2) {
-                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','',0);";
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'native_proxy','',0);";
                 int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
                 log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
             }
@@ -494,15 +495,14 @@ public class ShareService {
 
             int result = 0;
             if (share.getType() == null || share.getType() == 0) {
-                Account account = accountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
-                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"%s\",\"RefreshTokenOpen\":\"%s\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
-                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), account.getRefreshToken(), account.getOpenToken(), share.getShareId(), share.getPassword(), share.getFolderId()));
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'AliyundriveShare2Open',30,'work','{\"RefreshToken\":\"\",\"RefreshTokenOpen\":\"\",\"TempTransferFolderID\":\"root\",\"share_id\":\"%s\",\"share_pwd\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\",\"oauth_token_url\":\"\",\"client_id\":\"\",\"client_secret\":\"\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+                result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getShareId(), share.getPassword(), share.getFolderId()));
             } else if (share.getType() == 1) {
                 PikPakAccount account = pikPakAccountRepository.getFirstByMasterTrue().orElseThrow(BadRequestException::new);
                 String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'PikPakShare',30,'work','{\"root_folder_id\":\"%s\",\"username\":\"%s\",\"password\":\"%s\",\"share_id\":\"%s\",\"share_pwd\":\"%s\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
                 result = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getFolderId(), account.getUsername(), account.getPassword(), share.getShareId(), share.getPassword()));
             } else if (share.getType() == 2) {
-                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','',0);";
+                String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'native_proxy','',0);";
                 int count = Utils.executeUpdate(String.format(sql, share.getId(), getMountPath(share), share.getCookie(), share.getFolderId()));
                 log.info("insert Share {} {}: {}, result: {}", share.getId(), share.getShareId(), getMountPath(share), count);
             }
@@ -604,14 +604,13 @@ public class ShareService {
 
     private Share loadTacit0924() {
         try {
-            Share share = shareRepository.findById(7000).orElse(null);
-            if (share == null) {
+            if (!shareRepository.existsById(7000)) {
                 String html = restTemplate1.getForObject(TACIT_URL, String.class);
                 Matcher matcher = SHARE.matcher(html);
                 if (matcher.find()) {
                     String link = matcher.group(1).substring(30);
                     String folder = getFolderId(link);
-                    share = new Share();
+                    Share share = new Share();
                     share.setType(0);
                     share.setId(7000);
                     share.setShareId(link);
@@ -620,7 +619,6 @@ public class ShareService {
                     return shareRepository.save(share);
                 }
             }
-            return share;
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -629,13 +627,15 @@ public class ShareService {
 
     private Share loadLatestShare() {
         try {
-            Share share = new Share();
-            share.setType(0);
-            share.setId(7001);
-            share.setShareId("mxAfB6eRgY4");
-            share.setFolderId("63833bb670c164d4eeb14aa09c62ee770d9112ba");
-            share.setPath("/\uD83C\uDE34我的阿里分享/近期更新");
-            return shareRepository.save(share);
+            if (!shareRepository.existsById(7001)) {
+                Share share = new Share();
+                share.setType(0);
+                share.setId(7001);
+                share.setShareId("mxAfB6eRgY4");
+                share.setFolderId("63833bb670c164d4eeb14aa09c62ee770d9112ba");
+                share.setPath("/\uD83C\uDE34我的阿里分享/近期更新");
+                return shareRepository.save(share);
+            }
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -649,14 +649,17 @@ public class ShareService {
             Matcher matcher = SHARE.matcher(html);
             if (matcher.find()) {
                 String link = matcher.group(1).substring(30);
-                String folder = getFolderId(link);
-                Share share = new Share();
-                share.setType(0);
-                share.setId(7000);
-                share.setShareId(link);
-                share.setFolderId(folder);
-                share.setPath("/\uD83C\uDE34我的阿里分享/Tacit0924");
-                update(7000, share);
+                String shareId = shareRepository.findById(7000).map(Share::getShareId).orElse("");
+                if (!shareId.equals(link)) {
+                    String folder = getFolderId(link);
+                    Share share = new Share();
+                    share.setType(0);
+                    share.setId(7000);
+                    share.setShareId(link);
+                    share.setFolderId(folder);
+                    share.setPath("/\uD83C\uDE34我的阿里分享/Tacit0924");
+                    update(7000, share);
+                }
             }
         } catch (Exception e) {
             log.warn("", e);

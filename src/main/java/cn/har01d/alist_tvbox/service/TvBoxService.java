@@ -566,6 +566,16 @@ public class TvBoxService {
         return siteService.getByName(id);
     }
 
+    private boolean exclude(String name) {
+        for (String text : Set.of("订阅", "福利", "会员", "微信", "QQ群", "招募", "代找")) {
+            if (name.contains(text)) {
+                log.warn("exclude {}", name);
+                return true;
+            }
+        }
+        return false;
+    }
+
     public MovieList getMovieList(String tid, String filter, String sort, int page) {
         Site site = getSite(tid);
         String[] parts = tid.split("\\$");
@@ -593,7 +603,8 @@ public class TvBoxService {
         int total = fsResponse.getTotal();
 
         for (FsInfo fsInfo : fsResponse.getFiles()) {
-            if (fsInfo.getType() != 1 && !isMediaFormat(fsInfo.getName())) {
+            if ((fsInfo.getType() == 1 && exclude(fsInfo.getName()))
+                    || (fsInfo.getType() != 1 && !isMediaFormat(fsInfo.getName()))) {
                 total--;
                 continue;
             }
@@ -687,12 +698,8 @@ public class TvBoxService {
             }
         } else {
             if (aListAlias != null) {
-                if (dir.isEmpty()) {
-                    paths = Arrays.stream(aListAlias.getContent().split("\n")).map(e -> e.split(":")[0]).collect(Collectors.toList());
-                    log.debug("{}: {} {}", path, aListAlias, paths);
-                } else {
-                    paths.add(fixPath(dir));
-                }
+                paths = Arrays.stream(aListAlias.getContent().split("\n")).map(e -> e.split(":")[0]).collect(Collectors.toList());
+                log.debug("{}: {} {}", path, aListAlias, paths);
             } else {
                 paths.add(path);
             }
@@ -703,12 +710,8 @@ public class TvBoxService {
         Page<Meta> list = new PageImpl<>(List.of());
         for (String line : paths) {
             path = line;
-            log.debug("get movies from {}", path);
-            if (pageable.getSort() != null) {
-                pageable = PageRequest.of(page - pages - 1, size, pageable.getSort());
-            } else {
-                pageable = PageRequest.of(page - pages - 1, size);
-            }
+            log.debug("get movies from {} {}", path, pages);
+            pageable = PageRequest.of(page - pages - 1, size, pageable.getSort());
             if (year.isEmpty()) {
                 if ("normal".equals(score)) {
                     list = metaRepository.findByPathStartsWithAndScoreGreaterThanEqual(path, 60, pageable);
@@ -806,7 +809,7 @@ public class TvBoxService {
         result.setPage(page);
         result.setTotal((int) list.getTotalElements());
         result.setLimit(files.size());
-        result.setPagecount(list.getTotalPages());
+        result.setPagecount(pages + 1);
         log.debug("list: {}", result);
         return result;
     }
@@ -817,29 +820,24 @@ public class TvBoxService {
         }
         Comparator<MovieDetail> comparator;
         switch (sort) {
-            case "name,asc":
-                comparator = Comparator.comparing(e -> new FileNameInfo(e.getVod_name()));
-                break;
-            case "time,asc":
-                comparator = Comparator.comparing(MovieDetail::getVod_time);
-                break;
-            case "size,asc":
-                comparator = Comparator.comparing(MovieDetail::getSize);
-                break;
-            case "name,desc":
+            case "name,asc" -> comparator = Comparator.comparing(e -> new FileNameInfo(e.getVod_name()));
+            case "time,asc" -> comparator = Comparator.comparing(MovieDetail::getVod_time);
+            case "size,asc" -> comparator = Comparator.comparing(MovieDetail::getSize);
+            case "name,desc" -> {
                 comparator = Comparator.comparing(e -> new FileNameInfo(e.getVod_name()));
                 comparator = comparator.reversed();
-                break;
-            case "time,desc":
+            }
+            case "time,desc" -> {
                 comparator = Comparator.comparing(MovieDetail::getVod_time);
                 comparator = comparator.reversed();
-                break;
-            case "size,desc":
+            }
+            case "size,desc" -> {
                 comparator = Comparator.comparing(MovieDetail::getSize);
                 comparator = comparator.reversed();
-                break;
-            default:
+            }
+            default -> {
                 return;
+            }
         }
         folders.sort(comparator);
         files.sort(comparator);
