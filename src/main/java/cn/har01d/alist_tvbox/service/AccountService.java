@@ -410,15 +410,15 @@ public class AccountService {
     }
 
     public Map<Object, Object> getAliOpenToken(String token) {
+        String url = settingRepository.findById(OPEN_TOKEN_URL).map(Setting::getValue).orElse("https://api.xhofe.top/alist/ali_open/token");
         HttpHeaders headers = new HttpHeaders();
         headers.put(HttpHeaders.USER_AGENT, Collections.singletonList(USER_AGENT));
-        headers.put(HttpHeaders.REFERER, Collections.singletonList("https://xhofe.top/"));
+        headers.put(HttpHeaders.REFERER, Collections.singletonList(FixService.getRoot(url) + "/"));
         Map<String, String> body = new HashMap<>();
         body.put(REFRESH_TOKEN, token);
         body.put("grant_type", REFRESH_TOKEN);
         log.debug("body: {}", body);
         HttpEntity<Map<String, String>> entity = new HttpEntity<>(body, headers);
-        String url = settingRepository.findById(OPEN_TOKEN_URL).map(Setting::getValue).orElse("https://api.xhofe.top/alist/ali_open/token");
         ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
         log.debug("get open token response: {}", response.getBody());
         return response.getBody();

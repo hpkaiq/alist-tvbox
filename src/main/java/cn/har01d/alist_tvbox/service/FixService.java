@@ -99,10 +99,11 @@ public class FixService {
         }
     }
 
-    private static String getRoot(String path) {
+    public static String getRoot(String path) {
         try {
             URL url = new URL(path);
             int port = url.getPort();
+            port = port == -1 ? url.getDefaultPort() : port;
             return url.getProtocol() + "://" + url.getHost() + (port == 80 || port == 443 ? "" : ":" + port);
         } catch (Exception e) {
         }
