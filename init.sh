@@ -15,6 +15,8 @@ init() {
   mv sou /www/cgi-bin/sou
   mv whatsnew /www/cgi-bin/whatsnew
   mv header.html /www/cgi-bin/header.html
+  mv emby.conf /etc/nginx/http.d/emby.conf
+  mv emby.js /etc/nginx/http.d/emby.js
 
   sed '/location \/dav/i\    location ~* alist {\n        deny all;\n    }\n' nginx.conf >/etc/nginx/http.d/default.conf
 
@@ -44,6 +46,12 @@ init() {
 cat data/app_version
 date
 
+if [ ! -f /etc/nginx/http.d/emby.js ]; then
+  unzip -q /var/lib/data.zip -d /tmp
+  mv /tmp/emby.conf /etc/nginx/http.d/emby.conf
+  mv /tmp/emby.js /etc/nginx/http.d/emby.js
+fi
+
 if [ -f /opt/alist/data/data.db ]; then
   echo "已经初始化成功"
 else
@@ -51,6 +59,18 @@ else
 fi
 
 cd /tmp/
+
+if [ -s /data/emby_server.txt ]; then
+	emby_server=$(head -n1 /data/emby_server.txt)
+	_docker_address=$(head -n1 /data/docker_address.txt)
+	sed -i "s#EMBY_SERVER#$emby_server#" /etc/nginx/http.d/emby.conf
+	sed -i -e "s#EMBY_SERVER#$emby_server#" -e "s#_DOCKER_ADDRESS#$_docker_address#" /etc/nginx/http.d/emby.js
+fi
+
+if [ -s /data/infuse_api_key.txt ]; then
+	infuse_api_key=$(head -n1 /data/infuse_api_key.txt)
+	sed -i "s#INFUSE_API_KEY#$infuse_api_key#" /etc/nginx/http.d/emby.js
+fi
 
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36" -T 10 -t 2 -q http://docker.xiaoya.pro/update/version.txt || \
 wget -T 10 -t 2 http://data.har01d.cn/version.txt -O version.txt
@@ -86,8 +106,6 @@ EOF
   sed -i "s#https://api.nn.ci/alist/ali_open/token#$opentoken_url#" /opt/alist/data/config.json
   rm -f update.zip update.sql opentoken_url.txt
 fi
-
-sqlite3 /opt/alist/data/data.db 'delete from x_storages where driver="AList V3";'
 
 if [ ! -f version.txt ]; then
   echo "Failed to download version.txt file, the index file upgrade process has aborted"

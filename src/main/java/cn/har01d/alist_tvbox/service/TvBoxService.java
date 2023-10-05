@@ -371,6 +371,7 @@ public class TvBoxService {
                 }
             }
 
+            list = list.stream().distinct().toList();
             for (MovieDetail movie : list) {
                 if (movie.getVod_pic() != null && movie.getVod_pic().contains(".doubanio.com/")) {
                     fixCover(movie);
@@ -450,7 +451,7 @@ public class TvBoxService {
         return list;
     }
 
-    private List<MovieDetail> searchByApi(Site site, String keyword) {
+    private List<MovieDetail> searchByApi(Site site, String keyword) throws IOException {
         if (site.isXiaoya()) {
             try {
                 return searchByXiaoya(site, keyword);
@@ -459,42 +460,58 @@ public class TvBoxService {
             }
         }
 
-        log.info("search \"{}\" from site {}:{}", keyword, site.getId(), site.getName());
-        return aListService.search(site, keyword)
-                .stream()
-                .map(e -> {
-                    boolean isMediaFile = isMediaFile(e.getName());
-                    String path = fixPath(e.getParent() + "/" + e.getName() + (isMediaFile ? "" : PLAYLIST));
-                    if (StringUtils.isNotBlank(site.getFolder()) && !"/".equals(site.getFolder())) {
-                        if (path.startsWith(site.getFolder())) {
-                            path = path.substring(site.getFolder().length());
-                        } else {
-                            return null;
-                        }
-                    }
+        List<MovieDetail> result = new ArrayList<>();
+        File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
+        if (customIndexFile.exists()) {
+            result.addAll(searchFromIndexFile(site, keyword, customIndexFile.getAbsolutePath()));
+            log.debug("search \"{}\" from site {}:{}, result: {}", keyword, site.getId(), customIndexFile, result.size());
+        }
 
-                    MovieDetail movieDetail = new MovieDetail();
-                    movieDetail.setVod_id(site.getId() + "$" + encodeUrl(path) + "$1");
-                    movieDetail.setVod_name(e.getName());
-                    movieDetail.setVod_pic(Constants.ALIST_PIC);
-                    movieDetail.setVod_tag(FILE);
-                    if (!isMediaFile) {
-                        setDoubanInfo(site, movieDetail, getParent(path), false);
-                    }
-                    return movieDetail;
-                })
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+        try {
+            var list = aListService.search(site, keyword)
+                    .stream()
+                    .map(e -> {
+                        boolean isMediaFile = isMediaFile(e.getName());
+                        String path = fixPath(e.getParent() + "/" + e.getName() + (isMediaFile ? "" : PLAYLIST));
+                        if (StringUtils.isNotBlank(site.getFolder()) && !"/".equals(site.getFolder())) {
+                            if (path.startsWith(site.getFolder())) {
+                                path = path.substring(site.getFolder().length());
+                            } else {
+                                return null;
+                            }
+                        }
+
+                        MovieDetail movieDetail = new MovieDetail();
+                        movieDetail.setVod_id(site.getId() + "$" + encodeUrl(path) + "$1");
+                        movieDetail.setVod_name(e.getName());
+                        movieDetail.setVod_pic(Constants.ALIST_PIC);
+                        movieDetail.setVod_tag(FILE);
+                        if (!isMediaFile) {
+                            setDoubanInfo(site, movieDetail, getParent(path), false);
+                        }
+                        return movieDetail;
+                    })
+                    .filter(Objects::nonNull)
+                    .toList();
+            result.addAll(list);
+        } catch (Exception e) {
+            log.warn("search by API failed", e);
+        }
+
+        log.debug("search \"{}\" from site {}:{}, result: {}", keyword, site.getId(), site.getName(), result.size());
+        return result;
     }
 
     private List<MovieDetail> searchByXiaoya(Site site, String keyword) throws IOException {
+        List<MovieDetail> list = new ArrayList<>();
+        File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
+        if (customIndexFile.exists()) {
+            list.addAll(searchFromIndexFile(site, keyword, customIndexFile.getAbsolutePath()));
+            log.debug("search \"{}\" from site {}:{}, result: {}", keyword, site.getId(), customIndexFile, list.size());
+        }
+
         if (site.getId() == 1) {
-            List<MovieDetail> list = searchFromIndexFile(site, keyword, "/data/index/index.video.txt");
-            File customIndexFile = new File("/data/index/" + site.getId() + "/custom_index.txt");
-            log.debug("custom index file: {}", customIndexFile);
-            if (customIndexFile.exists()) {
-                list.addAll(searchFromIndexFile(site, keyword, customIndexFile.getAbsolutePath()));
-            }
+            list.addAll(searchFromIndexFile(site, keyword, "/data/index/index.video.txt"));
             return list;
         }
 
@@ -503,7 +520,6 @@ public class TvBoxService {
         Document doc = Jsoup.connect(url).get();
         Elements links = doc.select("div a[href]");
 
-        List<MovieDetail> list = new ArrayList<>();
         for (Element element : links) {
             MovieDetail movieDetail = new MovieDetail();
             String path = URLDecoder.decode(element.attr("href"), "UTF-8");
@@ -868,6 +884,9 @@ public class TvBoxService {
         if (isMediaFile(path)) {
             log.info("get play url - site {}:{}  path: {}", site.getId(), site.getName(), path);
             fsDetail = aListService.getFile(site, path);
+            if (fsDetail == null) {
+                throw new BadRequestException("找不到文件 " + path);
+            }
         } else {
             FsResponse fsResponse = aListService.listFiles(site, path, 1, 100);
             for (FsInfo fsInfo : fsResponse.getFiles()) {
@@ -882,13 +901,6 @@ public class TvBoxService {
             log.info("get play url - site {}:{}  path: {}", site.getId(), site.getName(), path + "/" + fsDetail.getName());
         }
         String url = fixHttp(fsDetail.getRawUrl());
-        if (url.contains("abnormal.png")) {
-            throw new IllegalStateException("阿里云盘账号异常");
-        } else if (url.contains("diskfull.png")) {
-            throw new IllegalStateException("阿里云盘空间不足");
-        } else if (url.contains(".png")) {
-            log.warn("play url: {}", url);
-        }
         Map<String, Object> result = new HashMap<>();
         result.put("parse", 0);
         result.put("playUrl", "");
