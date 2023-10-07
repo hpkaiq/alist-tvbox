@@ -243,25 +243,30 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 
 ![索引模板](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_index_template.png)
 
+#### 索引文件
+路径开头加上-：表示此路径屏蔽搜索和刮削。
+
+路径开头加上+：表示此路径屏蔽刮削，允许搜索。
+
+下载索引文件修改后再上传。
+
+#### 索引与刮削
+在电影数据列表页面对索引文件进行刮削，根据路径提取电影名称。如果无法正确识别名称，需要手动刮削。
+
+索引文件修改：
+路径#名称#豆瓣ID
+
+比如：
+1. 修正名称后刮削：
+/电影/中国/F 封神：朝歌风云 [2023][4K]动作 战争 奇幻 古装[正式版]#封神第一部：朝歌风云
+
+2. 提供豆瓣ID刮削：
+/电影/中国/F 封神：朝歌风云 [2023][4K]动作 战争 奇幻 古装[正式版]##10604086
+
 ### 别名
 把一些路径合并成一个路径。
 
 ![别名页面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_alias.png)
-
-### 日志
-Nginx代理/logs：
-```text
-    location /logs {
-        proxy_pass http://127.0.0.1:4567;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        chunked_transfer_encoding off;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_redirect off;
-        proxy_hide_header Cache-Control;
-    }
-```
 
 ### 其它
 不再生效的文件可以保留，以后删除数据库后可以恢复。

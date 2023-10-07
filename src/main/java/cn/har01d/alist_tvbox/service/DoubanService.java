@@ -60,7 +60,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static cn.har01d.alist_tvbox.util.Constants.MOVIE_VERSION;
@@ -409,7 +408,7 @@ public class DoubanService {
     }
 
     @Async
-    public void scrape(Integer siteId) throws IOException {
+    public void scrape(Integer siteId, boolean force) throws IOException {
         Path path = Paths.get("/data/index", String.valueOf(siteId), "custom_index.txt");
         if (!Files.exists(path)) {
             throw new BadRequestException("索引文件不存在");
@@ -427,14 +426,14 @@ public class DoubanService {
                 break;
             }
             String line = lines.get(i).trim();
-            if (line.isEmpty() || line.startsWith("-")) {
+            if (line.isEmpty() || line.startsWith("-") || line.startsWith("+")) {
                 continue;
             }
 
             try {
                 log.debug("handle {} {}", i, line);
                 taskService.updateTaskSummary(task.getId(), (i + 1) + ":" + line);
-                Movie movie = handleIndexLine(i, line, failed);
+                Movie movie = handleIndexLine(i, line, force, failed);
                 if (movie != null) {
                     count++;
                     taskService.updateTaskData(task.getId(), "成功刮削数量：" + count);
@@ -453,7 +452,7 @@ public class DoubanService {
         }
     }
 
-    private Movie handleIndexLine(int id, String path, Set<String> failed) {
+    private Movie handleIndexLine(int id, String path, boolean force, Set<String> failed) {
         String[] parts = path.split("#");
         path = parts[0];
 
@@ -461,32 +460,30 @@ public class DoubanService {
         if (meta == null) {
             meta = new Meta();
             meta.setPath(path);
-        } else if (meta.getMovie() != null) {
+        } else if (meta.getMovie() != null && !force) {
             return meta.getMovie();
         }
 
-        String name;
+        String name = "";
         Movie movie = null;
         if (parts.length == 2) {
             name = TextUtils.fixName(parts[1]);
         } else if (parts.length > 2) {
             name = TextUtils.fixName(parts[1]);
-            if (parts[2].startsWith("tt")) {
-                // tt
-            } else if (!parts[2].equals("_") && !parts[2].isBlank()) {
+            String number = parts[2];
+            log.debug("{} {}", name, number);
+            if (number.length() > 5) {
                 try {
-                    String number = parts[2];
-                    if (number.endsWith("/")) {
-                        number = number.substring(0, number.length() - 1);
-                    }
-                    if (!"11 - à Zélie".equals(number) && number.length() > 5) {
-                        movie = getById(Integer.parseInt(number));
-                    }
+                    movie = getById(Integer.parseInt(number));
                 } catch (Exception e) {
                     log.warn("{} {}", id + 1, path, e);
                 }
+                if (movie != null) {
+                    name = movie.getName();
+                }
             }
-        } else {
+        }
+        if (name.isBlank()) {
             name = getName(path);
         }
 
@@ -550,6 +547,7 @@ public class DoubanService {
             String newname = TextUtils.updateName(name);
             if (failed.contains(newname) || !TextUtils.isNormal(newname)) {
                 log.debug("exclude {}: {}", path, newname);
+                failed.add(name);
                 return null;
             }
 
@@ -797,6 +795,7 @@ public class DoubanService {
 
     private Movie parse(Integer id) {
         try {
+            log.debug("parse by id: {}", id);
             String url = DB_PREFIX + id + "/";
             String html = getHtml(url);
 
