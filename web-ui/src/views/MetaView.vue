@@ -6,25 +6,26 @@
       <el-button type="primary" @click="search" :disabled="!keyword">
         搜索
       </el-button>
+      <el-button @click="scrapeVisible=true">刮削</el-button>
       <el-button @click="refresh">刷新</el-button>
       <el-button type="primary" @click="addMeta">添加</el-button>
     </el-row>
     <div class="space"></div>
 
     <el-table :data="files" border style="width: 100%">
-      <el-table-column prop="id" label="ID" width="70"/>
+      <el-table-column prop="id" label="ID" width="75"/>
       <el-table-column prop="name" label="电影名称" width="250"/>
       <el-table-column prop="movieId" label="豆瓣ID" width="100">
         <template #default="scope">
           <a v-if="scope.row.movieId" :href="'https://movie.douban.com/subject/' + scope.row.movieId" target="_blank">
-            {{scope.row.movieId}}
+            {{ scope.row.movieId }}
           </a>
         </template>
       </el-table-column>
       <el-table-column prop="path" label="路径">
         <template #default="scope">
           <a :href="url + scope.row.path" target="_blank">
-            {{scope.row.path}}
+            {{ scope.row.path }}
           </a>
         </template>
       </el-table-column>
@@ -48,7 +49,7 @@
           <el-input v-model="form.path" autocomplete="off" readonly/>
         </el-form-item>
         <el-form-item label="豆瓣ID" required>
-          <el-input v-model="form.movieId" autocomplete="off"/>
+          <el-input-number v-model="form.movieId" autocomplete="off"/>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="updateMeta">更新</el-button>
@@ -57,7 +58,8 @@
           <el-input v-model="form.name" autocomplete="off"/>
         </el-form-item>
         <el-form-item label="搜索">
-          <a :href="'https://search.douban.com/movie/subject_search?search_text='+form.name" target="_blank">{{form.name}}</a>
+          <a :href="'https://search.douban.com/movie/subject_search?search_text='+form.name"
+             target="_blank">{{ form.name }}</a>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="scrape">刮削</el-button>
@@ -73,10 +75,10 @@
     <el-dialog v-model="addVisible" title="添加电影数据" width="60%">
       <el-form label-width="140px">
         <el-form-item label="路径" required>
-          <el-input v-model="form.path" autocomplete="off" readonly/>
+          <el-input v-model="form.path" autocomplete="off"/>
         </el-form-item>
         <el-form-item label="豆瓣ID" required>
-          <el-input v-model="form.movieId" autocomplete="off"/>
+          <el-input-number v-model="form.movieId" autocomplete="off"/>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -97,6 +99,22 @@
       </span>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="scrapeVisible" title="刮削索引文件">
+      <el-form-item label="站点">
+        <el-select v-model="siteId">
+          <el-option :label="site.name" :value="site.id" v-for="site of sites"/>
+        </el-select>
+      </el-form-item>
+      <p>索引文件：/data/index/{{ siteId }}/custom_index.txt</p>
+      <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="scrapeVisible = false">取消</el-button>
+        <el-button type="primary" @click="scrapeIndex">刮削</el-button>
+      </span>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -105,16 +123,20 @@ import {onMounted, ref} from 'vue'
 import axios from "axios"
 import {ElMessage} from "element-plus";
 import {store} from "@/services/store";
+import type {Site} from "@/model/Site";
 
 const url = ref('http://' + window.location.hostname + ':5244')
 const keyword = ref('')
+const siteId = ref(1)
 const page = ref(1)
 const size = ref(20)
 const total = ref(0)
 const files = ref([])
+const sites = ref([] as Site[])
 const dialogVisible = ref(false)
 const formVisible = ref(false)
 const addVisible = ref(false)
+const scrapeVisible = ref(false)
 const fullscreen = ref(false)
 const form = ref({
   id: 0,
@@ -199,11 +221,27 @@ const scrape = () => {
   })
 }
 
+const scrapeIndex = () => {
+  axios.post('/api/meta-scrape?siteId=' + siteId.value).then(() => {
+    ElMessage.success('刮削开始')
+    scrapeVisible.value = false
+  })
+}
+
 const load = (value: number) => {
   page.value = value
   axios.get('/api/meta?page=' + (page.value - 1) + '&size=' + size.value + '&q=' + keyword.value).then(({data}) => {
     files.value = data.content
     total.value = data.totalElements
+  })
+}
+
+const loadSites = () => {
+  axios.get('/api/sites').then(({data}) => {
+    sites.value = data
+    if (sites.value && sites.value.length > 0) {
+      siteId.value = sites.value[0].id
+    }
   })
 }
 
@@ -235,6 +273,7 @@ const loadBaseUrl = () => {
 
 onMounted(() => {
   loadBaseUrl()
+  loadSites()
   refresh()
 })
 </script>
@@ -246,5 +285,9 @@ onMounted(() => {
 
 .space {
   margin-bottom: 6px;
+}
+
+.el-input-number {
+  width: 200px;
 }
 </style>

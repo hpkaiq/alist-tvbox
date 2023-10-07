@@ -1,6 +1,8 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.domain.TaskResult;
+import cn.har01d.alist_tvbox.domain.TaskStatus;
 import cn.har01d.alist_tvbox.dto.MetaDto;
 import cn.har01d.alist_tvbox.dto.Versions;
 import cn.har01d.alist_tvbox.entity.Alias;
@@ -11,6 +13,8 @@ import cn.har01d.alist_tvbox.entity.Movie;
 import cn.har01d.alist_tvbox.entity.MovieRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
+import cn.har01d.alist_tvbox.entity.Site;
+import cn.har01d.alist_tvbox.entity.Task;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
@@ -33,6 +37,7 @@ import org.jsoup.select.Elements;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -47,12 +52,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static cn.har01d.alist_tvbox.util.Constants.MOVIE_VERSION;
 import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
@@ -60,6 +69,10 @@ import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
 @Slf4j
 @Service
 public class DoubanService {
+    private static final Pattern NUMBER = Pattern.compile("Season (\\d{1,2})");
+    private static final Pattern NUMBER2 = Pattern.compile("SE(\\d{1,2})");
+    private static final Pattern NUMBER3 = Pattern.compile("^S(\\d{1,2})$");
+    private static final Pattern NUMBER1 = Pattern.compile("第(\\d{1,2})季");
     private static final Pattern YEAR_PATTERN = Pattern.compile("\\((\\d{4})\\)");
     private static final String DB_PREFIX = "https://movie.douban.com/subject/";
     private static final String[] tokens = new String[]{"导演:", "编剧:", "主演:", "类型:", "制片国家/地区:", "语言:", "上映日期:",
@@ -70,6 +83,8 @@ public class DoubanService {
     private final MovieRepository movieRepository;
     private final AliasRepository aliasRepository;
     private final SettingRepository settingRepository;
+    private final SiteService siteService;
+    private final TaskService taskService;
 
     private final RestTemplate restTemplate;
     private final JdbcTemplate jdbcTemplate;
@@ -83,6 +98,8 @@ public class DoubanService {
                          MovieRepository movieRepository,
                          AliasRepository aliasRepository,
                          SettingRepository settingRepository,
+                         SiteService siteService,
+                         TaskService taskService,
                          RestTemplateBuilder builder,
                          JdbcTemplate jdbcTemplate) {
         this.appProperties = appProperties;
@@ -90,6 +107,8 @@ public class DoubanService {
         this.movieRepository = movieRepository;
         this.aliasRepository = aliasRepository;
         this.settingRepository = settingRepository;
+        this.siteService = siteService;
+        this.taskService = taskService;
         this.restTemplate = builder
                 .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
@@ -127,6 +146,21 @@ public class DoubanService {
                 }
             }
         }
+
+        fixMetaId();
+    }
+
+    private void fixMetaId() {
+        if (settingRepository.existsById("fix_meta_id")) {
+            return;
+        }
+        log.info("fix meta id");
+        try {
+            jdbcTemplate.execute("UPDATE ID_GENERATOR SET NEXT_ID = 500000 WHERE ENTITY_NAME = 'meta'");
+        } catch (Exception e) {
+            jdbcTemplate.execute("INSERT INTO ID_GENERATOR VALUES ('meta', 500000)");
+        }
+        settingRepository.save(new Setting("fix_meta_id", "true"));
     }
 
     @Scheduled(cron = "0 0 22 * * ?")
@@ -139,12 +173,12 @@ public class DoubanService {
         try {
             String remote = restTemplate.getForObject("http://data.har01d.cn/movie_version", String.class).trim();
             versions.setMovie(remote);
-            String local = settingRepository.findById(MOVIE_VERSION).map(Setting::getValue).orElse("").trim();
+            String local = settingRepository.findById(MOVIE_VERSION).map(Setting::getValue).orElse("0.0").trim();
             String cached = getCachedVersion();
             versions.setCachedMovie(cached);
             if (!local.equals(remote) && !remote.equals(cached) && !downloading) {
                 log.info("local: {} cached: {} remote: {}", local, cached, remote);
-                executor.execute(() -> downloadMovieData(remote));
+                executor.execute(() -> upgradeMovieData(local, remote));
             }
             return remote;
         } catch (Exception e) {
@@ -165,7 +199,7 @@ public class DoubanService {
         return "0.0";
     }
 
-    private void downloadMovieData(String remote) {
+    private void upgradeMovieData(String local, String remote) {
         try {
             downloading = true;
             log.info("download movie data");
@@ -177,20 +211,7 @@ public class DoubanService {
             int code = process.waitFor();
             if (code == 0) {
                 log.info("movie data downloaded");
-                Path file = Paths.get("/data/atv/diff.sql");
-                if (Files.exists(file)) {
-                    List<String> lines = Files.readAllLines(file);
-                    for (String line : lines) {
-                        try {
-                            jdbcTemplate.execute(line);
-                        } catch (Exception e) {
-                            log.debug("{}", e);
-                        }
-                    }
-                    log.info("movie data upgraded");
-                    settingRepository.save(new Setting(MOVIE_VERSION, remote));
-                    Files.delete(file);
-                }
+                getSqlFiles(local).forEach(this::upgradeSqlFile);
             } else {
                 log.warn("download movie data failed: {}", code);
             }
@@ -198,6 +219,37 @@ public class DoubanService {
             log.warn("", e);
         } finally {
             downloading = false;
+        }
+    }
+
+    private Stream<Path> getSqlFiles(String version) throws IOException {
+        double local = Double.parseDouble(version);
+        return Files.list(Path.of("/data/atv/sql"))
+                .filter(e -> Double.compare(getSqlVersion(e), local) > 0)
+                .sorted((a, b) -> Double.compare(getSqlVersion(a), getSqlVersion(b)));
+    }
+
+    private double getSqlVersion(Path path) {
+        String name = path.toFile().getName();
+        int index = name.lastIndexOf('.');
+        return Double.parseDouble(name.substring(0, index));
+    }
+
+    private void upgradeSqlFile(Path file) {
+        try {
+            List<String> lines = Files.readAllLines(file);
+            for (String line : lines) {
+                try {
+                    jdbcTemplate.execute(line);
+                } catch (Exception e) {
+                    log.debug("execute sql failed: {}", e);
+                }
+            }
+            String version = String.valueOf(getSqlVersion(file));
+            settingRepository.save(new Setting(MOVIE_VERSION, version));
+            log.info("movie data upgraded: {}", version);
+        } catch (Exception e) {
+            log.warn("upgrade SQL file failed: {}", file, e);
         }
     }
 
@@ -305,7 +357,7 @@ public class DoubanService {
     }
 
     public boolean updateMetaMovie(@PathVariable Integer id, Integer movieId) {
-        if (movieId == null || movieId == 0) {
+        if (movieId == null || movieId < 100000) {
             throw new BadRequestException("电影ID不正确");
         }
         var meta = metaRepository.findById(id).orElse(null);
@@ -345,6 +397,290 @@ public class DoubanService {
         return false;
     }
 
+    private Set<String> loadFailed() {
+        Path path = Paths.get("/data/atv/failed.txt");
+        try {
+            List<String> lines = Files.readAllLines(path).stream().filter(e -> !e.startsWith("/")).toList();
+            return new HashSet<>(lines);
+        } catch (IOException e) {
+            log.warn("", e);
+        }
+        return new HashSet<>();
+    }
+
+    @Async
+    public void scrape(Integer siteId) throws IOException {
+        Path path = Paths.get("/data/index", String.valueOf(siteId), "custom_index.txt");
+        if (!Files.exists(path)) {
+            throw new BadRequestException("索引文件不存在");
+        }
+        log.info("readIndexFile: {}", path);
+        List<String> lines = Files.readAllLines(path);
+        log.info("get {} lines from index file {}", lines.size(), path);
+        Set<String> failed = loadFailed();
+        int count = 0;
+        Site site = siteService.getById(siteId);
+        Task task = taskService.addScrapeTask(site);
+        taskService.startTask(task.getId());
+        for (int i = 0; i < lines.size(); i++) {
+            if (isCancelled(task.getId())) {
+                break;
+            }
+            String line = lines.get(i).trim();
+            if (line.isEmpty() || line.startsWith("-")) {
+                continue;
+            }
+
+            try {
+                log.debug("handle {} {}", i, line);
+                taskService.updateTaskSummary(task.getId(), (i + 1) + ":" + line);
+                Movie movie = handleIndexLine(i, line, failed);
+                if (movie != null) {
+                    count++;
+                    taskService.updateTaskData(task.getId(), "成功刮削数量：" + count);
+                }
+            } catch (Exception e) {
+                log.warn("{}: {}", i, line, e);
+            }
+        }
+
+        taskService.completeTask(task.getId());
+
+        try {
+            Files.writeString(Paths.get("/data/atv/failed.txt"), String.join("\n", failed));
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+    }
+
+    private Movie handleIndexLine(int id, String path, Set<String> failed) {
+        String[] parts = path.split("#");
+        path = parts[0];
+
+        Meta meta = metaRepository.findByPath(path);
+        if (meta == null) {
+            meta = new Meta();
+            meta.setPath(path);
+        } else if (meta.getMovie() != null) {
+            return meta.getMovie();
+        }
+
+        String name;
+        Movie movie = null;
+        if (parts.length == 2) {
+            name = TextUtils.fixName(parts[1]);
+        } else if (parts.length > 2) {
+            name = TextUtils.fixName(parts[1]);
+            if (parts[2].startsWith("tt")) {
+                // tt
+            } else if (!parts[2].equals("_") && !parts[2].isBlank()) {
+                try {
+                    String number = parts[2];
+                    if (number.endsWith("/")) {
+                        number = number.substring(0, number.length() - 1);
+                    }
+                    if (!"11 - à Zélie".equals(number) && number.length() > 5) {
+                        movie = getById(Integer.parseInt(number));
+                    }
+                } catch (Exception e) {
+                    log.warn("{} {}", id + 1, path, e);
+                }
+            }
+        } else {
+            name = getName(path);
+        }
+
+        if (isSpecialFolder(name)) {
+            name = getParentName(path);
+        }
+
+        parts = name.split("丨");
+        if (parts.length > 3) {
+            name = parts[0];
+        }
+
+        if (id > 0 && id % 1000 == 0) {
+            log.info("{} {} {}", id, name, path);
+        }
+
+        if (movie != null && TextUtils.isNormal(name) && TextUtils.isNormal(movie.getName())) {
+            log.info("[{}] - add {} {} for path {}", id, movie.getId(), movie.getName(), path);
+            return updateMeta(path, meta, movie);
+        }
+
+        if (name.startsWith("Season ")) {
+            Matcher m = NUMBER.matcher(name);
+            if (m.find()) {
+                String text = m.group(1);
+                String newNum = TextUtils.number2text(text);
+                name = TextUtils.fixName(getParentName(path)) + " 第" + newNum + "季";
+            }
+        } else if (name.startsWith("第")) {
+            Matcher m = NUMBER1.matcher(name);
+            if (m.matches()) {
+                String text = m.group(1);
+                String newNum = TextUtils.number2text(text);
+                name = TextUtils.fixName(getParentName(path)) + " 第" + newNum + "季";
+            } else if (name.endsWith("季")) {
+                name = TextUtils.fixName(getParentName(path)) + " " + name;
+            }
+        } else if (name.startsWith("SE")) {
+            Matcher m = NUMBER2.matcher(name);
+            if (m.find()) {
+                String text = m.group(1);
+                String newNum = TextUtils.number2text(text);
+                name = TextUtils.fixName(getParentName(path)) + " 第" + newNum + "季";
+            }
+        } else if (name.startsWith("S")) {
+            Matcher m = NUMBER3.matcher(name);
+            if (m.matches()) {
+                String text = m.group(1);
+                String newNum = TextUtils.number2text(text);
+                name = TextUtils.fixName(getParentName(path)) + " 第" + newNum + "季";
+            }
+        }
+
+        name = TextUtils.fixName(name);
+        if (failed.contains(name)) {
+            return null;
+        }
+
+        movie = getByName(name);
+        if (movie == null && TextUtils.isNormal(name)) {
+            String newname = TextUtils.updateName(name);
+            if (failed.contains(newname) || !TextUtils.isNormal(newname)) {
+                log.debug("exclude {}: {}", path, newname);
+                return null;
+            }
+
+            try {
+                log.info("[{}] handle name: {} - path: {}", id, newname, path);
+                movie = search(newname);
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            } finally {
+                try {
+                    Thread.sleep(2000L);
+                } catch (InterruptedException e) {
+                    Thread.interrupted();
+                }
+            }
+
+            if (failed.contains(getParent(path))) {
+                return null;
+            }
+
+            if (movie != null && TextUtils.isNormal(movie.getName())) {
+                meta.setPath(path);
+                meta.setMovie(movie);
+                meta.setYear(movie.getYear());
+                meta.setName(movie.getName());
+                if (StringUtils.isNotBlank(movie.getDbScore())) {
+                    meta.setScore((int) (Double.parseDouble(movie.getDbScore()) * 10));
+                }
+                metaRepository.save(meta);
+                log.info("{} - add {} '{}' for path {}", id, movie.getId(), movie.getName(), path);
+                return movie;
+            }
+        }
+
+        if (movie != null && TextUtils.isNormal(name) && TextUtils.isNormal(movie.getName())) {
+            log.info("[{}] add {} {} for path {}", id, movie.getId(), movie.getName(), path);
+            return updateMeta(path, meta, movie);
+        } else {
+            log.debug("add failed: {}", name);
+            failed.add(name);
+        }
+
+        return null;
+    }
+
+    private boolean isCancelled(Integer taskId) {
+        Task task = taskService.getById(taskId);
+        return task.getStatus() == TaskStatus.COMPLETED && task.getResult() == TaskResult.CANCELLED;
+    }
+
+    private Movie updateMeta(String path, Meta meta, Movie movie) {
+        meta.setPath(path);
+        meta.setMovie(movie);
+        meta.setYear(movie.getYear());
+        meta.setName(movie.getName());
+        if (StringUtils.isNotBlank(movie.getDbScore())) {
+            meta.setScore((int) (Double.parseDouble(movie.getDbScore()) * 10));
+        }
+        metaRepository.save(meta);
+        return movie;
+    }
+
+    private boolean isSpecialFolder(String name) {
+        if (name.toLowerCase().startsWith("4k")) {
+            return true;
+        }
+        if (name.toLowerCase().startsWith("2160p")) {
+            return true;
+        }
+        if (name.toLowerCase().startsWith("1080p")) {
+            return true;
+        }
+        if (name.equals("SDR")) {
+            return true;
+        }
+        if (name.equals("国语")) {
+            return true;
+        }
+        if (name.equals("国语版")) {
+            return true;
+        }
+        if (name.equals("粤语")) {
+            return true;
+        }
+        if (name.equals("粤语版")) {
+            return true;
+        }
+        if (name.equals("番外彩蛋")) {
+            return true;
+        }
+        if (name.equals("彩蛋")) {
+            return true;
+        }
+        if (name.equals("付费花絮合集")) {
+            return true;
+        }
+        if (name.equals("大结局点映礼")) {
+            return true;
+        }
+        if (name.equals("心动记录+彩蛋")) {
+            return true;
+        }
+        return false;
+    }
+
+    private String getName(String path) {
+        int index = path.lastIndexOf('/');
+        if (index > -1) {
+            return path.substring(index + 1);
+        }
+        return path;
+    }
+
+    private String getParentName(String path) {
+        int index = path.lastIndexOf('/');
+        if (index > -1) {
+            path = path.substring(0, index);
+        }
+        return getName(path);
+    }
+
+    private String getParent(String path) {
+        int index = path.lastIndexOf('/');
+        if (index > 0) {
+            return path.substring(0, index);
+        }
+        return path;
+    }
+
     public Movie scrape(String name) {
         try {
             log.info("刮削: {}", name);
@@ -365,7 +701,7 @@ public class DoubanService {
         Document doc = Jsoup.parse(html);
         Elements elements = doc.select("ul.search_results_subjects li a");
 
-        int similarity = 999;
+        int distance = 9;
         Integer best = null;
 
         for (Element element : elements) {
@@ -378,17 +714,17 @@ public class DoubanService {
                     return getById(id);
                 } else {
                     int temp = TextUtils.minDistance(text, name);
-                    if (temp < similarity) {
+                    if (temp < distance) {
                         best = id;
-                        similarity = temp;
+                        distance = temp;
                     }
                 }
             }
         }
 
-        double target = 0.99;
-        if (similarity > target) {
-            log.info("similarity: {}", similarity);
+        int target = 0;
+        if (distance <= target) {
+            log.info("distance: {}", distance);
             return getById(best);
         }
 
@@ -404,17 +740,17 @@ public class DoubanService {
                         return getById(id);
                     } else {
                         int temp = TextUtils.minDistance(text, name);
-                        if (temp < similarity) {
+                        if (temp < distance) {
                             best = id;
-                            similarity = temp;
+                            distance = temp;
                         }
                     }
                 }
             }
         }
 
-        if (similarity > target) {
-            log.info("similarity: {}", similarity);
+        if (distance <= target) {
+            log.info("min distance: {}", distance);
             return getById(best);
         }
 
@@ -427,16 +763,23 @@ public class DoubanService {
     }
 
     public boolean addMeta(MetaDto dto) {
-        if (dto.getMovieId() == null || dto.getMovieId() == 0) {
+        if (dto.getMovieId() == null || dto.getMovieId() < 100000) {
             throw new BadRequestException("电影ID不正确");
         }
-        if (StringUtils.isBlank(dto.getPath())) {
+        String path = dto.getPath();
+        if (StringUtils.isBlank(path)) {
             throw new BadRequestException("路径不正确");
         }
-        Meta meta = metaRepository.findByPath(dto.getPath());
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        if (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        Meta meta = metaRepository.findByPath(path);
         if (meta == null) {
             meta = new Meta();
-            meta.setPath(dto.getPath());
+            meta.setPath(path);
         }
         Movie movie = getById(dto.getMovieId());
         if (movie != null) {
