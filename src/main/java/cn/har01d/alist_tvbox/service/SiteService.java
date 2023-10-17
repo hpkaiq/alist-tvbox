@@ -81,6 +81,7 @@ public class SiteService {
             if (order == 1) {
                 aListToken = generateToken();
                 site.setToken(aListToken);
+                Utils.executeUpdate("UPDATE x_setting_items SET value='" + aListToken + "' WHERE key='token'");
             }
             site.setOrder(order++);
             siteRepository.save(site);
@@ -163,8 +164,7 @@ public class SiteService {
             } else {
                 aListToken = site.getToken();
             }
-            String sql = "UPDATE x_setting_items SET value='" + aListToken + "' WHERE key = 'token'";
-            Utils.executeUpdate(sql);
+            Utils.executeUpdate("UPDATE x_setting_items SET value='" + aListToken + "' WHERE key='token'");
         } catch (Exception e) {
             log.warn("", e);
         }
@@ -180,7 +180,11 @@ public class SiteService {
     public void resetToken() {
         String url = appProperties.isHostmode() ? "http://localhost:5234" : "http://localhost:5244";
         String token = postRestToken(url + "/api/admin/setting/reset_token");
-        log.info("{}", token);
+        log.info("new token {}", token);
+        if (StringUtils.isBlank(token)) {
+            token = generateToken();
+            Utils.executeUpdate("UPDATE x_setting_items SET value='" + token + "' WHERE key='token'");
+        }
         for (Site site : siteRepository.findAll()) {
             if (aListToken.equals(site.getToken())) {
                 site.setToken(token);
@@ -191,6 +195,9 @@ public class SiteService {
     }
 
     private String postRestToken(String url) {
+        if (StringUtils.isBlank(aListToken)) {
+            return null;
+        }
         HttpHeaders headers = new HttpHeaders();
         headers.add("Authorization", aListToken);
         HttpEntity<Void> entity = new HttpEntity<>(null, headers);
