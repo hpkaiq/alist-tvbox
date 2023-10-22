@@ -11,6 +11,7 @@ import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.Site;
 import cn.har01d.alist_tvbox.entity.Task;
+import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.model.FsInfo;
 import cn.har01d.alist_tvbox.model.FsResponse;
 import cn.har01d.alist_tvbox.tvbox.IndexContext;
@@ -342,6 +343,10 @@ public class IndexService {
     }
 
     public IndexResponse index(IndexRequest indexRequest) {
+        indexRequest.setPaths(indexRequest.getPaths().stream().filter(StringUtils::isNotBlank).toList());
+        if (indexRequest.getPaths().isEmpty()) {
+            throw new BadRequestException("路径不能为空");
+        }
         cn.har01d.alist_tvbox.entity.Site site = siteService.getById(indexRequest.getSiteId());
         Task task = taskService.addIndexTask(site);
 
@@ -501,7 +506,7 @@ public class IndexService {
                         continue;
                     }
 
-                    if (context.getMaxDepth() == 1) {
+                    if (context.getMaxDepth() == depth + 1 && !context.getIndexRequest().isIncludeFiles()) {
                         files.add(fsInfo.getName());
                     } else {
                         if (context.getIndexRequest().getSleep() > 0) {
