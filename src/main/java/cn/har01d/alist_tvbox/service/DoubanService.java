@@ -20,7 +20,6 @@ import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.TextUtils;
-import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import jakarta.annotation.PostConstruct;
@@ -137,14 +136,15 @@ public class DoubanService {
         }
 
         if (metaRepository.count() > 10000) {
-            Path source = Path.of("/tmp/data/base_version");
+            Path source = Path.of("/tmp/base_version");
             if (Files.exists(source)) {
                 try {
-                    Utils.execute("mv /tmp/data/base_version /data/atv/base_version");
+                    Files.delete(source);
                 } catch (Exception e) {
                     log.warn("", e);
                 }
 
+                log.debug("reset data.sql");
                 writeText("/data/atv/data.sql", "SELECT COUNT(*) FROM META;");
             }
         }
@@ -369,9 +369,15 @@ public class DoubanService {
 
     public Movie getByName(String name) {
         try {
+            Alias alias = aliasRepository.findById(name).orElse(null);
+            if (alias != null) {
+                log.debug("name: {} alias: {}", name, alias.getAlias());
+                return alias.getMovie();
+            }
+
             name = TextUtils.fixName(name);
 
-            Alias alias = aliasRepository.findById(name).orElse(null);
+            alias = aliasRepository.findById(name).orElse(null);
             if (alias != null) {
                 log.debug("name: {} alias: {}", name, alias.getAlias());
                 return alias.getMovie();
