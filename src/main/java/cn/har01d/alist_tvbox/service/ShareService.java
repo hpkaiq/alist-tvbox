@@ -316,12 +316,13 @@ public class ShareService {
                     share.setId(shareId);
                     share.setPath(parts[0]);
                     share.setShareId(parts[1]);
-                    if (parts.length > 2) {
-                        share.setFolderId(parts[2]);
-                    } else if (share.getType() == 1) {
+                    share.setType(dto.getType());
+                    if (share.getType() == 1) {
                         share.setFolderId("");
                     }
-                    share.setType(dto.getType());
+                    if (parts.length > 2) {
+                        share.setFolderId(parts[2]);
+                    }
                     share.setPath(getMountPath(share));
                     if (shareRepository.existsByPath(share.getPath())) {
                         continue;
