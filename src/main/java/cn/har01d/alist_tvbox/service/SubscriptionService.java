@@ -703,7 +703,6 @@ public class SubscriptionService {
     }
 
     public Map<String, Object> convertResult(String json, String configKey) {
-        json = json.replaceAll("\\s*", "");
         Map<String, Object> map = new HashMap<>();
         map.put("sites", new ArrayList<>());
         map.put("rules", new ArrayList<>());
@@ -712,6 +711,7 @@ public class SubscriptionService {
         }
 
         try {
+            json = json.replaceAll("\\s*", "");
             return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
             // ignore
