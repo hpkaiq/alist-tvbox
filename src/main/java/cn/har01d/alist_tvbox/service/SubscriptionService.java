@@ -11,7 +11,6 @@ import cn.har01d.alist_tvbox.entity.SubscriptionRepository;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.IdUtils;
-import com.alibaba.fastjson.JSON;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -704,11 +703,7 @@ public class SubscriptionService {
     }
 
     public Map<String, Object> convertResult(String json, String configKey) {
-        try {
-            json = JSON.parseObject(json).toString();
-        }catch (Exception ignored){
-
-        }
+        json = json.replaceAll("\\s*", "");
         Map<String, Object> map = new HashMap<>();
         map.put("sites", new ArrayList<>());
         map.put("rules", new ArrayList<>());
