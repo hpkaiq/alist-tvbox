@@ -714,7 +714,6 @@ public class SubscriptionService {
         }
 
         try {
-            json = json.replaceAll("\\s*", "");
             return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
             // ignore
@@ -751,12 +750,9 @@ public class SubscriptionService {
                 json = json.substring(index);
             }
 
-            json = Pattern.compile("^\\s*#.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
-            json = Pattern.compile("^\\s*//.*\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
-            json = Pattern.compile("(?m)^\\s*/\\*.*?\\*/", Pattern.DOTALL).matcher(json).replaceAll("");
-            json = json.replace("\n"," ");
             json = Pattern.compile("^\\s*#.*\r?\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
             json = Pattern.compile("^\\s*//.*\r?\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
+            json = Pattern.compile("(?m)^\\s*/\\*.*?\\*/", Pattern.DOTALL).matcher(json).replaceAll("");
             json = json.replace("\r", " ").replace("\n", " ");
 
             return objectMapper.readValue(json, Map.class);
