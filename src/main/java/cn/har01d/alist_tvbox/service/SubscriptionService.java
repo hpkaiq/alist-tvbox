@@ -720,6 +720,8 @@ public class SubscriptionService {
         }
 
         try {
+            json = Pattern.compile("(?m)^\\s*//.*?(\n|\r|$)", Pattern.DOTALL).matcher(json).replaceAll("");
+            json = Pattern.compile("(?m)^\\s*/\\*.*?\\*/", Pattern.DOTALL).matcher(json).replaceAll("");
             String content = json.replace("\r", " ").replace("\n", " ");
             Pattern pattern = Pattern.compile("[A-Za-z0]{8}\\*\\*");
             Matcher matcher = pattern.matcher(content);
