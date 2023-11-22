@@ -79,7 +79,6 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -291,7 +290,6 @@ public class BiliBiliService {
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.OK_USER_AGENT)
                 .build();
         this.restTemplate = builder
-                .defaultHeader(HttpHeaders.REFERER, "https://www.bilibili.com/")
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.USER_AGENT)
                 .build();
         this.objectMapper = objectMapper;
@@ -380,10 +378,17 @@ public class BiliBiliService {
 
     public CategoryList getCategoryList() {
         getLoginStatus();
+        List<NavigationDto> ups = new ArrayList<>();
+        List<NavigationDto> list = navigationService.list();
+        boolean merge = list.stream().filter(NavigationDto::isShow).map(NavigationDto::getValue).anyMatch("ups"::equals);
         CategoryList result = new CategoryList();
-        navigationService.list().stream()
+        list.stream()
                 .filter(NavigationDto::isShow)
                 .forEach(item -> {
+                    if (merge && item.getType() == 5) {
+                        ups.add(item);
+                        return;
+                    }
                     Category category = new Category();
                     String value = item.getValue();
                     if (item.getType() == 3) {
@@ -435,6 +440,11 @@ public class BiliBiliService {
                     }
                     result.getCategories().add(category);
                 });
+
+        if (merge && !ups.isEmpty()) {
+            List<FilterValue> filters = ups.stream().map(e -> new FilterValue(e.getName(), e.getValue())).toList();
+            result.getFilters().put("ups", List.of(new Filter("type", "作者", filters), new Filter("sort", "排序", filters6)));
+        }
 
         result.setTotal(result.getCategories().size());
         result.setLimit(result.getCategories().size());
@@ -711,11 +721,11 @@ public class BiliBiliService {
             movieDetail.setVod_name(info.getTitle());
             movieDetail.setVod_tag(FILE);
             movieDetail.setVod_pic(fixCover(info.getPic()));
-            movieDetail.setVod_remarks(info.getLength());
+            movieDetail.setVod_remarks(playCount(info.getPlay()) + info.getLength());
             list.add(movieDetail);
         }
 
-        long seconds = searchInfo.getList().getVlist().stream().map(BiliBiliSearchInfo.Video::getDescription).mapToLong(Utils::durationToSeconds).sum();
+        long seconds = searchInfo.getList().getVlist().stream().map(BiliBiliSearchInfo.Video::getLength).mapToLong(Utils::durationToSeconds).sum();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id("up$" + mid + "$" + sort + "$" + page);
         movieDetail.setVod_name("合集" + page);
@@ -767,7 +777,7 @@ public class BiliBiliService {
         List<BiliBiliSearchInfo.Video> videos = response.getData().getList().getVlist();
         list.addAll(videos);
 
-        long seconds = list.stream().map(BiliBiliSearchInfo.Video::getDescription).mapToLong(Utils::durationToSeconds).sum();
+        long seconds = list.stream().map(BiliBiliSearchInfo.Video::getLength).mapToLong(Utils::durationToSeconds).sum();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id("up$" + id + "$0$" + page);
         movieDetail.setVod_name("合集" + page);
@@ -1013,12 +1023,23 @@ public class BiliBiliService {
             List<BiliBiliInfo> list = response.getBody().getData();
             log.debug("related videos: {} {}", url, list);
             if (!list.isEmpty()) {
-                movieDetail.setVod_play_from(BILI_BILI + "$$$相关视频");
+                movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$相关视频");
                 String related = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + e.getAid() + "-" + e.getCid()).collect(Collectors.joining("#"));
                 movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + related);
             }
         } catch (Exception e) {
-            log.warn("", e);
+            log.warn("get related videos failed", e);
+        }
+
+        if (info.getOwner() != null) {
+            try {
+                MovieList movieList = getUpPlaylist("up$" + info.getOwner().getMid());
+                movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$UP主视频");
+                String others = movieList.getList().get(0).getVod_play_url();
+                movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + others);
+            } catch (Exception e) {
+                log.warn("get UP playlist failed", e);
+            }
         }
 
         MovieList result = new MovieList();
@@ -1193,7 +1214,7 @@ public class BiliBiliService {
         headers.add(HttpHeaders.REFERER, "https://api.bilibili.com/");
         headers.add(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7,ja;q=0.6,zh-TW;q=0.5");
         headers.add(HttpHeaders.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
-        headers.add(HttpHeaders.USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36");
+        headers.add(HttpHeaders.USER_AGENT, Constants.USER_AGENT);
         if (urlencoded) {
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
         }
@@ -1319,6 +1340,9 @@ public class BiliBiliService {
             HttpEntity<Void> entity = buildHttpEntity(null);
             ResponseEntity<BiliBiliV2InfoResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliV2InfoResponse.class);
             for (BiliBiliV2Info.Subtitle subtitle : response.getBody().getData().getSubtitle().getSubtitles()) {
+                if (subtitle.getLan_doc().contains("中文") && subtitle.getLan_doc().contains("自动生成")) {
+                    continue;
+                }
                 Sub sub = new Sub();
                 sub.setName(subtitle.getLan_doc());
                 sub.setLang(subtitle.getLan());
@@ -1436,6 +1460,24 @@ public class BiliBiliService {
     }
 
     public MovieList getMovieList(String tid, FilterDto filter, int page) {
+        if (tid.equals("ups")) {
+            String id = filter.getType();
+            if (StringUtils.isBlank(id)) {
+                List<String> ups = new ArrayList<>();
+                for (var item : navigationService.list()) {
+                    if (item.getType() == 5) {
+                        ups.add(item.getValue());
+                    }
+                }
+                if (!ups.isEmpty()) {
+                    page--;
+                    id = ups.get(page % ups.size());
+                    page = page / ups.size() + 1;
+                }
+            }
+            return getUpMedia(id, filter.getSort(), page);
+        }
+
         if (tid.startsWith("search:")) {
             String[] parts = tid.split(":");
             return search(parts[1], filter.getSort(), filter.getDuration(), page);
