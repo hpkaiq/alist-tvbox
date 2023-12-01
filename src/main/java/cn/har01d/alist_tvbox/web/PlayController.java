@@ -50,9 +50,6 @@ public class PlayController {
 
         if (StringUtils.isNotBlank(bvid)) {
                 Map<String, Object> playUrl = biliBiliService.getPlayUrl(bvid, dash);
-                if (playUrl == null || playUrl.get("url") == null || StringUtils.isBlank(playUrl.get("url").toString())){
-                    playUrl = biliBiliService.getPlayUrl(bvid, !dash);
-                }
                 log.info("PlayController biliBiliService getPlayUrl res {}", playUrl);
                 return playUrl;
         }
