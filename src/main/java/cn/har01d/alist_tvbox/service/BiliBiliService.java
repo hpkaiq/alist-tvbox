@@ -1285,6 +1285,7 @@ public class BiliBiliService {
         if (dash) {
             fnval = settingRepository.findById("bilibili_fnval").map(Setting::getValue).map(Integer::parseInt).orElse(FN_VAL);
         }
+        log.info("BiliBiliService getPlayUrl bvid: {} dash: {} ", bvid, dash);
         if (parts.length > 2) {
             aid = parts[0];
             cid = parts[1];
@@ -1319,6 +1320,7 @@ public class BiliBiliService {
             log.debug("url: {}  response: {}", url, response.getBody());
             if (response.getBody().getCode() != 0) {
                 log.warn("获取失败: {} {}", response.getBody().getCode(), response.getBody().getMessage());
+                return result;
             }
 
             result = DashUtils.convert(response.getBody());
@@ -1331,6 +1333,7 @@ public class BiliBiliService {
             log.debug("getPlayUrl url: {}  response: {}", url, res);
             if (res.getCode() != 0) {
                 log.warn("获取失败: {} {}", res.getCode(), res.getMessage());
+                return result;
             }
 
             BiliBiliPlay data = res.getData() == null ? res.getResult() : res.getData();

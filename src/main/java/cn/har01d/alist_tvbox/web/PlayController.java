@@ -45,15 +45,16 @@ public class PlayController {
         }
 
         String client = request.getHeader("X-CLIENT");
-        log.info("get play url detail {} {} {} {}", request.getMethod(), request.getRequestURI(), decodeUrl(request.getQueryString()), client);
-        log.info("get play url - site: {}  path: {}  id: {}  bvid: {}  type: {} dash: {}", site, path, id, bvid, type, dash);
+        log.debug("get play url detail {} {} {} {}", request.getMethod(), request.getRequestURI(), decodeUrl(request.getQueryString()), client);
+        log.debug("get play url - site: {}  path: {}  id: {}  bvid: {}  type: {} dash: {}", site, path, id, bvid, type, dash);
 
         if (StringUtils.isNotBlank(bvid)) {
-            try{
-                return biliBiliService.getPlayUrl(bvid, dash);
-            }catch (Exception e){
-                return biliBiliService.getPlayUrl(bvid, !dash);
-            }
+                Map<String, Object> playUrl = biliBiliService.getPlayUrl(bvid, dash);
+                if (playUrl == null || playUrl.get("url") == null || StringUtils.isBlank(playUrl.get("url").toString())){
+                    playUrl = biliBiliService.getPlayUrl(bvid, !dash);
+                }
+                log.info("PlayController biliBiliService getPlayUrl res {}", playUrl);
+                return playUrl;
         }
 
         if (StringUtils.isNotBlank(id)) {
