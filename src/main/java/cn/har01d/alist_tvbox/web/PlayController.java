@@ -49,7 +49,11 @@ public class PlayController {
         log.info("get play url - site: {}  path: {}  id: {}  bvid: {}  type: {} dash: {}", site, path, id, bvid, type, dash);
 
         if (StringUtils.isNotBlank(bvid)) {
-            return biliBiliService.getPlayUrl(bvid, dash);
+            try{
+                return biliBiliService.getPlayUrl(bvid, dash);
+            }catch (Exception e){
+                return biliBiliService.getPlayUrl(bvid, !dash);
+            }
         }
 
         if (StringUtils.isNotBlank(id)) {
