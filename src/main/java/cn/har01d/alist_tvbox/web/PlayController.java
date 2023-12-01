@@ -49,9 +49,7 @@ public class PlayController {
         log.debug("get play url - site: {}  path: {}  id: {}  bvid: {}  type: {} dash: {}", site, path, id, bvid, type, dash);
 
         if (StringUtils.isNotBlank(bvid)) {
-                Map<String, Object> playUrl = biliBiliService.getPlayUrl(bvid, dash);
-                log.info("PlayController biliBiliService getPlayUrl res {}", playUrl);
-                return playUrl;
+            return biliBiliService.getPlayUrl(bvid, dash);
         }
 
         if (StringUtils.isNotBlank(id)) {
