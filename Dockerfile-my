@@ -1,4 +1,4 @@
-FROM hpkaiq/alist-tvbox:20231130
+FROM haroldli/xiaoya-tvbox:latest
 
 VOLUME /opt/atv/data/
 WORKDIR /opt/atv/
