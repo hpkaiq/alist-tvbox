@@ -147,16 +147,12 @@ public class TvBoxController {
         if (!subscriptionService.getToken().equals(token)) {
             throw new BadRequestException();
         }
-        String tokenPart = StringUtils.isEmpty(token) ? "" : token + "/";
-        String serverName = request.getServerName();
-        int serverPort = request.getServerPort();
-        String scheme = request.getScheme();
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
             String sid = s.getSid();
             String name = s.getName();
             HashMap<String, String> map = new HashMap<>();
-            map.put("url", scheme + "://" + serverName + (serverPort == 80 || serverPort == 443 ? "" : ":" + serverPort) + "/sub/" + tokenPart + sid);
+            map.put("url", subscriptionService.readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
             map.put("name", name);
             return map;
         }).collect(Collectors.toList());

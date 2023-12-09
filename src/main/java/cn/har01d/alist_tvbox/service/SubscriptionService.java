@@ -697,7 +697,7 @@ public class SubscriptionService {
         return readHostAddress("");
     }
 
-    private String readHostAddress(String path) {
+    public String readHostAddress(String path) {
         UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequestUri()
                 .scheme(appProperties.isEnableHttps() ? "https" : "http")
                 .replacePath(path)
