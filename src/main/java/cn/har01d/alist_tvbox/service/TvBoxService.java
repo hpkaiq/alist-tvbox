@@ -41,6 +41,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.File;
 import java.io.IOException;
@@ -977,11 +978,7 @@ public class TvBoxService {
             if (fsDetail == null) {
                 throw new BadRequestException("找不到文件 " + path);
             }
-            if (client != null && client.contains("com.github.tvbox")) {
-                url = fixHttp(fsDetail.getRawUrl());
-            } else {
-                url = buildUrl(site, path, fsDetail.getSign());
-            }
+            url = buildUrl(site, path, fsDetail.getSign());
             result.put("url", url);
             log.info("getPlayUrl: {}", url);
         }
@@ -1447,7 +1444,6 @@ public class TvBoxService {
         }
         if (url.startsWith("http://localhost/p/") || url.startsWith("http://localhost/d/")) {
             String proxy = ServletUriComponentsBuilder.fromCurrentRequest()
-                    .scheme(appProperties.isEnableHttps() ? "https" : "http")
                     .port(appProperties.isHostmode() ? "5234" : environment.getProperty("ALIST_PORT", "5344"))
                     .replacePath("/d")
                     .replaceQuery("")
@@ -1463,14 +1459,19 @@ public class TvBoxService {
     private String buildUrl(Site site, String path, String sign) {
         if (site.getUrl().contains("//localhost")) {
             return ServletUriComponentsBuilder.fromCurrentRequest()
-                    .scheme(appProperties.isEnableHttps() ? "https" : "http")
                     .port(appProperties.isHostmode() ? "5234" : environment.getProperty("ALIST_PORT", "5344"))
                     .replacePath("/d" + path)
                     .replaceQuery("sign=" + sign)
                     .build()
-                    .toUriString();
+                    .toUri()
+                    .toASCIIString();
         } else {
-            return site.getUrl() + "/d" + path + "?sign=" + sign;
+            return UriComponentsBuilder.fromHttpUrl(site.getUrl())
+                    .replacePath("/d" + path)
+                    .replaceQuery("sign=" + sign)
+                    .build()
+                    .toUri()
+                    .toASCIIString();
         }
     }
 
