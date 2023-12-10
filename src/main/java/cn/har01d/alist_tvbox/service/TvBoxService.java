@@ -983,6 +983,7 @@ public class TvBoxService {
                 url = buildUrl(site, path, fsDetail.getSign());
             }
             result.put("url", url);
+            log.info("getPlayUrl: {}", url);
         }
 
         if (url.contains("aliyundrive")) {
