@@ -937,39 +937,43 @@ public class TvBoxService {
         List<Subtitle> subtitles = new ArrayList<>();
 
         if ("com.fongmi.android.tv".equals(client)) {
-            var preview = aListService.preview(site, fullPath);
-            log.debug("preview: {} {}", fullPath, preview);
-            List<String> urls = new ArrayList<>();
+            try {
+                var preview = aListService.preview(site, fullPath);
+                log.debug("preview: {} {}", fullPath, preview);
+                List<String> urls = new ArrayList<>();
 
-            Collections.reverse(preview.getPlayInfo().getVideos());
-            if (preview.getPlayInfo().getVideos().size() > 1 && preview.getPlayInfo().getVideos().get(0).getId().contains("限速")) {
-                var item = preview.getPlayInfo().getVideos().get(0);
-                preview.getPlayInfo().getVideos().set(0, preview.getPlayInfo().getVideos().get(1));
-                preview.getPlayInfo().getVideos().set(1, item);
-            }
-
-            for (var item : preview.getPlayInfo().getVideos()) {
-                if (!"finished".equals(item.getStatus())) {
-                    continue;
+                Collections.reverse(preview.getPlayInfo().getVideos());
+                if (preview.getPlayInfo().getVideos().size() > 1 && preview.getPlayInfo().getVideos().get(0).getId().contains("限速")) {
+                    var item = preview.getPlayInfo().getVideos().get(0);
+                    preview.getPlayInfo().getVideos().set(0, preview.getPlayInfo().getVideos().get(1));
+                    preview.getPlayInfo().getVideos().set(1, item);
                 }
-                urls.add(item.getId());
-                urls.add(item.getUrl());
-            }
-            if (urls.size() > 1) {
-                url = urls.get(1);
-                result.put("url", urls);
-            }
 
-            if (preview.getPlayInfo().getSubtitles() != null) {
-                for (var item : preview.getPlayInfo().getSubtitles()) {
+                for (var item : preview.getPlayInfo().getVideos()) {
                     if (!"finished".equals(item.getStatus())) {
                         continue;
                     }
-                    Subtitle subtitle = new Subtitle();
-                    subtitle.setUrl(item.getUrl());
-                    subtitle.setLang(item.getLanguage());
-                    subtitles.add(subtitle);
+                    urls.add(item.getId());
+                    urls.add(item.getUrl());
                 }
+                if (urls.size() > 1) {
+                    url = urls.get(1);
+                    result.put("url", urls);
+                }
+
+                if (preview.getPlayInfo().getSubtitles() != null) {
+                    for (var item : preview.getPlayInfo().getSubtitles()) {
+                        if (!"finished".equals(item.getStatus())) {
+                            continue;
+                        }
+                        Subtitle subtitle = new Subtitle();
+                        subtitle.setUrl(item.getUrl());
+                        subtitle.setLang(item.getLanguage());
+                        subtitles.add(subtitle);
+                    }
+                }
+            }catch (Exception ignored){
+
             }
         }
 
