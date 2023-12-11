@@ -699,7 +699,7 @@ public class SubscriptionService {
 
     public String readHostAddress(String path) {
         UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequestUri()
-                .scheme(appProperties.isEnableHttps() ? "https" : "http")
+                .scheme(appProperties.isEnableHttps() ? "https" : "http") // nginx https
                 .replacePath(path)
                 .build();
         return uriComponents.toUriString();
