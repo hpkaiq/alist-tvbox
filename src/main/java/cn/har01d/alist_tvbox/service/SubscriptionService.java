@@ -11,6 +11,7 @@ import cn.har01d.alist_tvbox.entity.SubscriptionRepository;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.IdUtils;
+import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -159,6 +160,15 @@ public class SubscriptionService {
             }
             jdbcTemplate.execute("update id_generator set next_id=" + list.size() + " where entity_name = 'subscription';");
             settingRepository.save(new Setting("fix_sub_id", "true"));
+        }
+    }
+
+    public String getToken(String apiKey) {
+        String key = settingRepository.findById("api_key").map(Setting::getValue).orElse("");
+        if (key.equals(apiKey)) {
+            return token;
+        } else {
+            return "";
         }
     }
 
@@ -697,9 +707,9 @@ public class SubscriptionService {
         return readHostAddress("");
     }
 
-    public String readHostAddress(String path) {
-        UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequestUri()
-                .scheme(appProperties.isEnableHttps() ? "https" : "http") // nginx https
+    private String readHostAddress(String path) {
+        UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
+                .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath(path)
                 .build();
         return uriComponents.toUriString();

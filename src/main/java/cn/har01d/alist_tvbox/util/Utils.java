@@ -4,6 +4,7 @@ import cn.har01d.alist_tvbox.exception.BadRequestException;
 import jakarta.xml.bind.DatatypeConverter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -265,8 +266,8 @@ public final class Utils {
 
     private static String bytesToHex(byte[] hash) {
         StringBuilder hexString = new StringBuilder(2 * hash.length);
-        for (int i = 0; i < hash.length; i++) {
-            String hex = Integer.toHexString(0xff & hash[i]);
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
             if (hex.length() == 1) {
                 hexString.append('0');
             }
@@ -292,4 +293,10 @@ public final class Utils {
     public static String hashPassword(String password, String slat) {
         return hash(hash(password, StaticHashSalt), slat);
     }
+
+    public static boolean isLocalAddress() {
+        String uri = ServletUriComponentsBuilder.fromCurrentRequest().toUriString();
+        return uri.startsWith("http://192.168.");
+    }
+
 }

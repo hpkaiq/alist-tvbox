@@ -2057,7 +2057,7 @@ public class BiliBiliService {
 
     private String fixSubtitleUrl(String url) {
         return ServletUriComponentsBuilder.fromCurrentRequest()
-                .scheme(appProperties.isEnableHttps() ? "https" : "http") // nginx https
+                .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath("/subtitles")
                 .query("url=" + fixUrl(url))
                 .build()
