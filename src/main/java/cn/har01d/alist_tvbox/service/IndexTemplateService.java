@@ -21,7 +21,7 @@ import java.time.Instant;
 @Service
 public class IndexTemplateService {
     public static final String AUTO_INDEX_VERSION = "auto_index_version";
-    private static final int indexVersion = 6;
+    private static final int indexVersion = 7;
     public static final String paths =
             "\"/\uD83C\uDE34我的阿里分享/Tacit0924/【更新中的】和完结的电视剧.动漫.电影.综艺纪录片/【 剧 l 集 】/【电 l 视 l 剧】和完结的/【更新中】电视剧/【国产港台等剧】\", " +
             "\"/\uD83C\uDE34我的阿里分享/Tacit0924/【更新中的】和完结的电视剧.动漫.电影.综艺纪录片/【 剧 l 集 】/【电 l 视 l 剧】和完结的/【更新中】电视剧/【日韩印泰等剧】\", " +
@@ -33,7 +33,7 @@ public class IndexTemplateService {
             "\"/\uD83C\uDE34我的阿里分享/Tacit0924/【更新中的】和完结的电视剧.动漫.电影.综艺纪录片/【 剧 l 集 】/【电 l 视 l 剧】和完结的/【近期完结的电视剧】(700多部剧)(40TB)(未整理国内外仅首字母)\", " +
             "\"/\uD83C\uDE34我的阿里分享/Tacit0924/【更新中的】和完结的电视剧.动漫.电影.综艺纪录片/【动.漫.动.画电.影】/更新中的【动漫.动画电影】和完结的，还有一些大合集/【近期完结的动漫】3TB(未整理国内外仅首字母)\", " +
             "\"/电视剧/中国/同步更新中\", \"/\uD83C\uDE34我的阿里分享/近期更新/01.电视剧.更新中\", \"/\uD83C\uDE34我的阿里分享/近期更新/02.电视剧.完结/2022年\", \"/\uD83C\uDE34我的阿里分享/近期更新/02.电视剧.完结/2023年\", " +
-            "\"/\uD83C\uDE34我的阿里分享/近期更新/03.电影/最新电影\", \"/\uD83C\uDE34我的阿里分享/近期更新/04.动漫剧集.更新中\", \"/\uD83C\uDE34我的阿里分享/近期更新/05.动漫剧集.完结\", \"/\uD83C\uDE34我的阿里分享/近期更新/06.综艺\", \"/\uD83C\uDE34我的阿里分享/近期更新/07.纪录片\"\n";
+            "\"/\uD83C\uDE34我的阿里分享/近期更新/03.电影/最新电影\", \"/\uD83C\uDE34我的阿里分享/近期更新/04.动漫剧集.更新中\", \"/\uD83C\uDE34我的阿里分享/近期更新/05.动漫剧集.完结\", \"/\uD83C\uDE34我的阿里分享/近期更新/06.综艺\", \"/\uD83C\uDE34我的阿里分享/近期更新/07.纪录片\"";
 
     private final IndexTemplateRepository indexTemplateRepository;
     private final SettingRepository settingRepository;
