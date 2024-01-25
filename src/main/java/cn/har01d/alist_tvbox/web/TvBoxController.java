@@ -58,7 +58,7 @@ public class TvBoxController {
                       @RequestParam(required = false, defaultValue = "1") Integer pg,
                       @RequestParam(required = false, defaultValue = "1") Integer type,
                       HttpServletRequest request) {
-        if (!subscriptionService.getToken().equals(token)) {
+        if (!subscriptionService.checkToken(token)) {
             throw new BadRequestException();
         }
 
@@ -85,12 +85,6 @@ public class TvBoxController {
         return subscriptionService.getProfiles();
     }
 
-    @GetMapping("/token")
-    public String getToken2(HttpServletRequest request) {
-        String apiKey = request.getHeader("X-API-KEY");
-        return subscriptionService.getToken(apiKey);
-    }
-
     @GetMapping("/api/token")
     public String getToken() {
         return subscriptionService.getToken();
@@ -113,26 +107,26 @@ public class TvBoxController {
 
     @GetMapping("/sub/{token}/{id}")
     public Map<String, Object> subscription(@PathVariable String token, @PathVariable String id) {
-        if (!subscriptionService.getToken().equals(token)) {
+        if (!subscriptionService.checkToken(token)) {
             throw new BadRequestException();
         }
 
         return subscriptionService.subscription(id);
     }
 
-    @GetMapping("/open")
-    public Map<String, Object> open() {
-        return open("");
-    }
-
-    @GetMapping("/open/{token}")
-    public Map<String, Object> open(@PathVariable String token) {
-        if (!subscriptionService.getToken().equals(token)) {
-            throw new BadRequestException();
-        }
-
-        return subscriptionService.open();
-    }
+//    @GetMapping("/open")
+//    public Map<String, Object> open() {
+//        return open("");
+//    }
+//
+//    @GetMapping("/open/{token}")
+//    public Map<String, Object> open(@PathVariable String token) {
+//        if (!subscriptionService.checkToken(token)) {
+//            throw new BadRequestException();
+//        }
+//
+//        return subscriptionService.open();
+//    }
 
     @GetMapping(value = "/repo/{id}", produces = "application/json")
     public String repository(@PathVariable int id) {
@@ -141,7 +135,7 @@ public class TvBoxController {
 
     @GetMapping(value = "/repo/{token}/{id}", produces = "application/json")
     public String repository(@PathVariable String token, @PathVariable int id) {
-        if (!subscriptionService.getToken().equals(token)) {
+        if (!subscriptionService.checkToken(token)) {
             throw new BadRequestException();
         }
 

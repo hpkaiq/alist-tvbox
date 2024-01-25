@@ -163,13 +163,14 @@ public class SubscriptionService {
         }
     }
 
-    public String getToken(String apiKey) {
-        String key = settingRepository.findById("api_key").map(Setting::getValue).orElse("");
-        if (key.equals(apiKey)) {
-            return token;
-        } else {
-            return "";
+    public boolean checkToken(String rawToken) {
+        for (String t : token.split(",")) {
+            if (t.equals(rawToken)) {
+                return true;
+            }
         }
+
+        return false;
     }
 
     public String getToken() {
@@ -186,7 +187,7 @@ public class SubscriptionService {
         if (StringUtils.isBlank(dto.getToken())) {
             token = IdUtils.generate(8);
         } else {
-            token = dto.getToken();
+            token = Arrays.stream(dto.getToken().split(",")).filter(StringUtils::isNotBlank).collect(Collectors.joining(","));
         }
 
         settingRepository.save(new Setting(TOKEN, token));
@@ -650,7 +651,7 @@ public class SubscriptionService {
         site.put("type", 3);
         Map<String, String> map = new HashMap<>();
         map.put("api", url);
-        map.put("apiKey", settingRepository.findById("api_key").map(Setting::getValue).orElse(""));
+        map.put("token", token.split(",")[0]);
         String ext = objectMapper.writeValueAsString(map).replaceAll("\\s", "");
         ext = Base64.getEncoder().encodeToString(ext.getBytes());
         site.put("ext", ext);
@@ -828,7 +829,7 @@ public class SubscriptionService {
             File file = new File("/www/tvbox/juhe.json");
             if (file.exists()) {
                 String json = FileUtils.readFileToString(file, StandardCharsets.UTF_8);
-                String url = readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + id);
+                String url = readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token.split(",")[0] : "") + "/" + id);
                 json = json.replace("DOCKER_ADDRESS/tvbox/my.json", url);
                 return json;
             }
