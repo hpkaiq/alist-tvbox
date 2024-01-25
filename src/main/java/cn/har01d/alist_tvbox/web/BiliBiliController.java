@@ -3,7 +3,6 @@ package cn.har01d.alist_tvbox.web;
 import cn.har01d.alist_tvbox.dto.FilterDto;
 import cn.har01d.alist_tvbox.dto.bili.CookieData;
 import cn.har01d.alist_tvbox.dto.bili.QrCode;
-import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.service.BiliBiliService;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,9 +48,7 @@ public class BiliBiliController {
                       @RequestParam(required = false, defaultValue = "1") Integer pg,
                       HttpServletRequest request,
                       HttpServletResponse response) throws IOException {
-        if (!subscriptionService.checkToken(token)) {
-            throw new BadRequestException();
-        }
+        subscriptionService.checkToken(token);
         response.setContentType("application/json");
 
         log.debug("{} {} {}", request.getMethod(), request.getRequestURI(), decodeUrl(request.getQueryString()));
