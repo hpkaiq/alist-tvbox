@@ -144,7 +144,7 @@ public class TvBoxController {
 
     @GetMapping("/{token}/allsubs")
     public Map<String, Object> allSubscription(@PathVariable String token, HttpServletRequest request) {
-        if (!subscriptionService.getToken().equals(token)) {
+        if (!subscriptionService.checkToken(token)) {
             throw new BadRequestException();
         }
         Map<String, Object> res = new HashMap<>();
