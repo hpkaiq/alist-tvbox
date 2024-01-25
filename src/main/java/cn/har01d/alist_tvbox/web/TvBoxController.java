@@ -137,9 +137,7 @@ public class TvBoxController {
 
     @GetMapping("/{token}/allsubs")
     public Map<String, Object> allSubscription(@PathVariable String token, HttpServletRequest request) {
-        if (!subscriptionService.checkToken(token)) {
-            throw new BadRequestException();
-        }
+        subscriptionService.checkToken(token);
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
             String sid = s.getSid();
