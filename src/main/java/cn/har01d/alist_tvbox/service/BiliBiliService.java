@@ -56,6 +56,7 @@ import cn.har01d.alist_tvbox.util.BiliBiliUtils;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -1299,14 +1300,14 @@ public class BiliBiliService {
         return response.getBody().getData().getToken();
     }
 
-    public Map<String, Object> getPlayUrl(String bvid, boolean dash, String client) {
+    public Map<String, Object> getPlayUrl(String bvid, boolean dash, String client) throws IOException {
         String url;
         String aid;
         String cid;
         String[] parts = bvid.split("-");
         int fnval = 16;
         Map<String, Object> result = new HashMap<>();
-        dash = dash || appProperties.isSupportDash();
+        dash = dash || "open".equals(client) || appProperties.isSupportDash();
         if (dash) {
             fnval = settingRepository.findById("bilibili_fnval").map(Setting::getValue).map(Integer::parseInt).orElse(FN_VAL);
         }
@@ -1340,8 +1341,8 @@ public class BiliBiliService {
             if (response.getBody().getCode() != 0) {
                 log.warn("获取失败: {} {}", response.getBody().getCode(), response.getBody().getMessage());
             }
-            result = DashUtils.convert(response.getBody());
-            result.put("dash", aid + "+" + cid + "+127");
+
+            result = DashUtils.convert(response.getBody(), "open".equals(client));
         } else {
             ResponseEntity<BiliBiliPlayResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliPlayResponse.class);
             BiliBiliPlayResponse res = response.getBody();
@@ -1353,11 +1354,16 @@ public class BiliBiliService {
             if (res.getCode() != 0) {
                 log.warn("获取失败: {} {}", res.getCode(), res.getMessage());
             }
+
             BiliBiliPlay data = res.getData() == null ? res.getResult() : res.getData();
             result.put("url", data.getDurl().get(0).getUrl());
         }
         String cookie = entity.getHeaders().getFirst("Cookie");
-        result.put("header", "{\"Referer\":\"https://www.bilibili.com\",\"cookie\":\"" + cookie + "\",\"User-Agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36\"}");
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Referer", "https://www.bilibili.com");
+        headers.put("cookie", cookie);
+        headers.put("User-Agent", USER_AGENT);
+        result.put("header", objectMapper.writeValueAsString(headers));
 
         result.put("subs", getSubtitles(aid, cid));
 

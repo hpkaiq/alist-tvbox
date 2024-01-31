@@ -2,6 +2,8 @@ package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.TokenDto;
+import cn.har01d.alist_tvbox.entity.Account;
+import cn.har01d.alist_tvbox.entity.AccountRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.Site;
@@ -35,6 +37,8 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.spec.AlgorithmParameterSpec;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -64,6 +68,7 @@ public class SubscriptionService {
     private final JdbcTemplate jdbcTemplate;
     private final SettingRepository settingRepository;
     private final SubscriptionRepository subscriptionRepository;
+    private final AccountRepository accountRepository;
     private final SiteRepository siteRepository;
     private final AListLocalService aListLocalService;
 
@@ -76,6 +81,7 @@ public class SubscriptionService {
                                JdbcTemplate jdbcTemplate,
                                SettingRepository settingRepository,
                                SubscriptionRepository subscriptionRepository,
+                               AccountRepository accountRepository,
                                SiteRepository siteRepository,
                                AListLocalService aListLocalService) {
         this.environment = environment;
@@ -88,6 +94,7 @@ public class SubscriptionService {
         this.jdbcTemplate = jdbcTemplate;
         this.settingRepository = settingRepository;
         this.subscriptionRepository = subscriptionRepository;
+        this.accountRepository = accountRepository;
         this.siteRepository = siteRepository;
         this.aListLocalService = aListLocalService;
     }
@@ -204,63 +211,18 @@ public class SubscriptionService {
         return subscriptionRepository.findAll();
     }
 
-    public Map<String, Object> open() {
-        Map<String, Object> config = new HashMap<>();
-        Map<String, Object> video = new HashMap<>();
-        Map<String, Object> pan = new HashMap<>();
-        List<Map<String, Object>> sites = new ArrayList<>();
-        List<Map<String, Object>> panSites = new ArrayList<>();
-        video.put("sites", sites);
-        config.put("video", video);
-        pan.put("sites", panSites);
-        config.put("pan", pan);
-        addOpenSite(video);
-        return config;
-    }
-
-    private void addOpenSite(Map<String, Object> config) {
-        int id = 0;
-        List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
-        try {
-            String key = "Alist";
-            Map<String, Object> site = buildOpenSite("xiaoya", "xiaoya", "小雅AList");
-            sites.removeIf(item -> key.equals(item.get("key")));
-            sites.add(id++, site);
-            log.debug("add AList site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            for (Site site1 : siteRepository.findAll()) {
-                if (site1.isSearchable() && !site1.isDisabled()) {
-                    Map<String, Object> site = buildOpenSite("xiaoya-tvbox", "xiaoya", site1.getName());
-                    sites.add(id++, site);
-                    log.debug("add XiaoYa site: {}", site);
-                    break;
-                }
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            Map<String, Object> site = buildOpenSite("bilibili", "bilibili", "BiliBili");
-            sites.add(id, site);
-            log.debug("add BiliBili site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-    }
-
-    private Map<String, Object> buildOpenSite(String key, String api, String name) {
-        Map<String, Object> site = new HashMap<>();
-        site.put("key", key);
-        site.put("api", readHostAddress("/tvbox/" + api + ".js"));
-        site.put("name", name);
-        site.put("type", 3);
-        site.put("ext", readHostAddress("/" + api));
-        return site;
+    public Map<String, Object> open() throws IOException {
+        String secret = tokens.isEmpty() ? "" : ("/" + tokens.split(",")[0]);
+        Path path = Path.of("/www/cat/config_open.json");
+        String json = Files.readString(path);
+        json = json.replace("VOD_EXT", readHostAddress("/vod1" + secret));
+        json = json.replace("BILIBILI_EXT", readHostAddress("/bilibili" + secret));
+        json = json.replace("ALIST_URL", readAlistAddress());
+        String ali = accountRepository.getFirstByMasterTrue().map(Account::getRefreshToken).orElse("");
+        json = json.replace("ALI_TOKEN", ali);
+        String token = siteRepository.findById(1).map(Site::getToken).orElse("");
+        json = json.replace("ALIST_TOKEN", token);
+        return objectMapper.readValue(json, Map.class);
     }
 
     public Map<String, Object> subscription(String token, String id) {
@@ -713,6 +675,15 @@ public class SubscriptionService {
         UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
                 .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath(path)
+                .build();
+        return uriComponents.toUriString();
+    }
+
+    private String readAlistAddress() {
+        UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
+                .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
+                .port(appProperties.isHostmode() ? 5234 : 5344)
+                .replacePath("")
                 .build();
         return uriComponents.toUriString();
     }
