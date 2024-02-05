@@ -8,7 +8,7 @@
     <div class="space"></div>
 
     <el-table :data="subscriptions" border style="width: 100%">
-<!--      <el-table-column prop="id" label="ID" sortable width="70"/>-->
+      <!--      <el-table-column prop="id" label="ID" sortable width="70"/>-->
       <el-table-column prop="sid" label="订阅ID" sortable width="180"/>
       <el-table-column prop="name" label="名称" sortable width="180"/>
       <el-table-column prop="url" label="原始配置URL" sortable>
@@ -44,9 +44,14 @@
 
     <el-row>
       猫影视配置接口：
-      <a :href="currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')+'/open'+token" target="_blank">
-        {{currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')}}/open{{token}}
+      <a
+        :href="currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')+'/open'+token"
+        target="_blank">
+        {{ currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@') }}/open{{ token }}
       </a>
+    </el-row>
+    <el-row>
+      <el-button @click="syncCat">同步文件</el-button>
     </el-row>
 
     <el-dialog v-model="formVisible" :title="dialogTitle">
@@ -83,7 +88,7 @@
       </div>
       <h2>JSON数据</h2>
       <el-scrollbar height="800px">
-        <json-viewer :value="jsonData" expanded copyable :expand-depth=5></json-viewer>
+        <json-viewer :value="jsonData" expanded copyable show-double-quotes :show-array-index="false" :expand-depth=5></json-viewer>
       </el-scrollbar>
       <div class="json"></div>
       <template #footer>
@@ -109,6 +114,7 @@
 <script setup lang="ts">
 import {onMounted, ref} from 'vue'
 import axios from "axios"
+import {ElMessage} from "element-plus";
 
 const currentUrl = window.location.origin
 const token = ref('')
@@ -185,6 +191,16 @@ const handleConfirm = () => {
   axios.post('/api/subscriptions', form.value).then(() => {
     formVisible.value = false
     load()
+  })
+}
+
+const syncCat = () => {
+  axios.post('/api/cat/sync').then(({data}) => {
+    if (data) {
+      ElMessage.warning('同步失败')
+    } else {
+      ElMessage.success('同步成功')
+    }
   })
 }
 

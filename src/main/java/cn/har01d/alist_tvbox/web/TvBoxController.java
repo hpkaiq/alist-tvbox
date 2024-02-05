@@ -3,6 +3,7 @@ package cn.har01d.alist_tvbox.web;
 import cn.har01d.alist_tvbox.dto.TokenDto;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
+import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -60,6 +61,7 @@ public class TvBoxController {
                       HttpServletRequest request) {
         subscriptionService.checkToken(token);
 
+        String client = request.getHeader("X-CLIENT");
         log.debug("{} {} {}", request.getMethod(), request.getRequestURI(), decodeUrl(request.getQueryString()));
         log.info("type: {}  path: {}  folder: {}  ac: {}  keyword: {}  filter: {}  sort: {}  page: {}", type, ids, t, ac, wd, f, sort, pg);
         if (ids != null && !ids.isEmpty()) {
@@ -73,7 +75,7 @@ public class TvBoxController {
             if (t.equals("0")) {
                 return tvBoxService.recommend(ac, pg);
             }
-            return tvBoxService.getMovieList(ac, t, f, sort, pg);
+            return tvBoxService.getMovieList(client, ac, t, f, sort, pg);
         } else if (wd != null && !wd.isEmpty()) {
             return tvBoxService.search(type, wd);
         } else {
@@ -125,13 +127,18 @@ public class TvBoxController {
         return subscriptionService.open();
     }
 
+    @PostMapping("/api/cat/sync")
+    public int syncCat() {
+        return Utils.execute("unzip -q -o /cat.zip -d /www/cat && cp -r /data/cat/* /www/cat/");
+    }
+
     @GetMapping(value = "/repo/{id}", produces = "application/json")
-    public String repository(@PathVariable int id) {
+    public String repository(@PathVariable String id) {
         return repository("", id);
     }
 
     @GetMapping(value = "/repo/{token}/{id}", produces = "application/json")
-    public String repository(@PathVariable String token, @PathVariable int id) {
+    public String repository(@PathVariable String token, @PathVariable String id) {
         subscriptionService.checkToken(token);
 
         return subscriptionService.repository(token, id);
