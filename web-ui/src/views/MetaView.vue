@@ -1,6 +1,6 @@
 <template>
   <div class="files">
-    <h1>电影数据列表</h1>
+    <h1>豆瓣电影数据列表</h1>
     <el-row justify="end">
       <el-input v-model="keyword" @change="search" class="search" autocomplete="off"/>
       <el-button type="primary" @click="search" :disabled="!keyword">
@@ -22,6 +22,14 @@
         <template #default="scope">
           <a v-if="scope.row.movieId" :href="'https://movie.douban.com/subject/' + scope.row.movieId" target="_blank">
             {{ scope.row.movieId }}
+          </a>
+        </template>
+      </el-table-column>
+      <el-table-column prop="tmId" label="TMDB ID" width="100">
+        <template #default="scope">
+          <a v-if="scope.row.tmId" :href="'https://www.themoviedb.org/' + scope.row.type + '/' + scope.row.tmId"
+             target="_blank">
+            {{ scope.row.tmId }}
           </a>
         </template>
       </el-table-column>

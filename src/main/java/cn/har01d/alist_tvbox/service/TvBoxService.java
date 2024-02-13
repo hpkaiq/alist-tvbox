@@ -2,10 +2,24 @@ package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.Subtitle;
-import cn.har01d.alist_tvbox.entity.*;
+import cn.har01d.alist_tvbox.entity.AListAlias;
+import cn.har01d.alist_tvbox.entity.AListAliasRepository;
+import cn.har01d.alist_tvbox.entity.Account;
+import cn.har01d.alist_tvbox.entity.AccountRepository;
+import cn.har01d.alist_tvbox.entity.Meta;
+import cn.har01d.alist_tvbox.entity.MetaRepository;
+import cn.har01d.alist_tvbox.entity.Movie;
+import cn.har01d.alist_tvbox.entity.ShareRepository;
+import cn.har01d.alist_tvbox.entity.Site;
+import cn.har01d.alist_tvbox.entity.Tmdb;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
-import cn.har01d.alist_tvbox.model.*;
+import cn.har01d.alist_tvbox.model.FileNameInfo;
+import cn.har01d.alist_tvbox.model.Filter;
+import cn.har01d.alist_tvbox.model.FilterValue;
+import cn.har01d.alist_tvbox.model.FsDetail;
+import cn.har01d.alist_tvbox.model.FsInfo;
+import cn.har01d.alist_tvbox.model.FsResponse;
 import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
@@ -21,7 +35,11 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.springframework.core.env.Environment;
-import org.springframework.data.domain.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -35,14 +53,27 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.*;
+import static cn.har01d.alist_tvbox.util.Constants.ALIST_PIC;
+import static cn.har01d.alist_tvbox.util.Constants.FILE;
+import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
+import static cn.har01d.alist_tvbox.util.Constants.PLAYLIST;
+import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
 
 @Slf4j
 @Service
@@ -62,6 +93,7 @@ public class TvBoxService {
     private final SiteService siteService;
     private final AppProperties appProperties;
     private final DoubanService doubanService;
+    private final TmdbService tmdbService;
     private final SubscriptionService subscriptionService;
     private final ObjectMapper objectMapper;
     private final Environment environment;
@@ -103,6 +135,7 @@ public class TvBoxService {
                         SiteService siteService,
                         AppProperties appProperties,
                         DoubanService doubanService,
+                        TmdbService tmdbService,
                         SubscriptionService subscriptionService,
                         ObjectMapper objectMapper,
                         Environment environment) {
@@ -115,6 +148,7 @@ public class TvBoxService {
         this.siteService = siteService;
         this.appProperties = appProperties;
         this.doubanService = doubanService;
+        this.tmdbService = tmdbService;
         this.subscriptionService = subscriptionService;
         this.objectMapper = objectMapper;
         this.environment = environment;
@@ -298,7 +332,11 @@ public class TvBoxService {
             Movie movie = meta.getMovie();
             String name;
             if (movie == null) {
-                name = getNameFromPath(meta.getPath());
+                if (meta.getTmdb() != null) {
+                    name = meta.getTmdb().getName();
+                } else {
+                    name = getNameFromPath(meta.getPath());
+                }
             } else {
                 name = movie.getName();
             }
@@ -310,7 +348,7 @@ public class TvBoxService {
             movieDetail.setVod_name(name);
             movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(meta.getPath());
-            setDoubanInfo(movieDetail, movie, "videolist".equals(ac));
+            setMovieInfo(movieDetail, movie, meta.getTmdb(), "videolist".equals(ac));
             list.add(movieDetail);
         }
 
@@ -339,7 +377,11 @@ public class TvBoxService {
                 Movie movie = meta.getMovie();
                 String name;
                 if (movie == null) {
-                    name = getNameFromPath(meta.getPath());
+                    if (meta.getTmdb() != null) {
+                        name = meta.getTmdb().getName();
+                    } else {
+                        name = getNameFromPath(meta.getPath());
+                    }
                 } else {
                     name = movie.getName();
                 }
@@ -351,7 +393,7 @@ public class TvBoxService {
                 movieDetail.setVod_name(name);
                 movieDetail.setVod_pic(Constants.ALIST_PIC);
                 movieDetail.setVod_content(meta.getPath());
-                setDoubanInfo(movieDetail, movie, false);
+                setMovieInfo(movieDetail, movie, meta.getTmdb(), false);
                 list.add(movieDetail);
             }
         } else {
@@ -451,7 +493,7 @@ public class TvBoxService {
             movieDetail.setVod_content(path.replace(PLAYLIST, ""));
             movieDetail.setVod_tag(FILE);
             if (!isMediaFile) {
-                setDoubanInfo(site, movieDetail, getParent(path), false);
+                setMovieInfo(site, movieDetail, getParent(path), false);
             }
             list.add(movieDetail);
         }
@@ -495,7 +537,7 @@ public class TvBoxService {
                         movieDetail.setVod_pic(Constants.ALIST_PIC);
                         movieDetail.setVod_tag(FILE);
                         if (!isMediaFile) {
-                            setDoubanInfo(site, movieDetail, getParent(path), false);
+                            setMovieInfo(site, movieDetail, getParent(path), false);
                         }
                         return movieDetail;
                     })
@@ -547,7 +589,7 @@ public class TvBoxService {
             movieDetail.setVod_content(path.replace(PLAYLIST, ""));
             movieDetail.setVod_tag(FILE);
             if (!isMediaFile) {
-                setDoubanInfo(site, movieDetail, getParent(path), false);
+                setMovieInfo(site, movieDetail, getParent(path), false);
             }
             list.add(movieDetail);
             if (list.size() > appProperties.getMaxSearchResult()) {
@@ -653,7 +695,7 @@ public class TvBoxService {
                     }
                     movieDetail.setCate(new CategoryList());
                 }
-                setDoubanInfo(site, movieDetail, newPath, false);
+                setMovieInfo(site, movieDetail, newPath, false);
                 folders.add(movieDetail);
             } else {
                 files.add(movieDetail);
@@ -810,7 +852,11 @@ public class TvBoxService {
             Movie movie = meta.getMovie();
             String name;
             if (movie == null) {
-                name = getNameFromPath(meta.getPath());
+                if (meta.getTmdb() != null) {
+                    name = meta.getTmdb().getName();
+                } else {
+                    name = getNameFromPath(meta.getPath());
+                }
             } else {
                 name = movie.getName();
             }
@@ -833,7 +879,7 @@ public class TvBoxService {
             }
             movieDetail.setVod_name(name);
             movieDetail.setVod_pic(Constants.ALIST_PIC);
-            setDoubanInfo(movieDetail, movie, "videolist".equals(ac));
+            setMovieInfo(movieDetail, movie, meta.getTmdb(), "videolist".equals(ac));
             files.add(movieDetail);
             log.debug("{}", movieDetail);
         }
@@ -882,7 +928,7 @@ public class TvBoxService {
         movieDetail.setVod_id(encodeUrl(path) + "$1");
         movieDetail.setVod_name("播放列表");
         movieDetail.setVod_tag(FILE);
-        movieDetail.setVod_pic(LIST_PIC);
+        movieDetail.setVod_pic(getListPic());
         if (total < appProperties.getPageSize()) {
             movieDetail.setVod_remarks("共" + files.size() + "集");
         }
@@ -891,6 +937,10 @@ public class TvBoxService {
         list.add(movieDetail);
 
         return list;
+    }
+
+    private String getListPic() {
+        return ServletUriComponentsBuilder.fromCurrentRequest().replacePath("/list.png").build().toUriString();
     }
 
     public Map<String, Object> getPlayUrl(Integer siteId, String path, boolean getSub, String client) {
@@ -1118,7 +1168,7 @@ public class TvBoxService {
             movieDetail.setVod_play_url(playUrl);
 
             movieDetail.setVod_content(getParent(path));
-            setDoubanInfo(movieDetail, meta.getMovie(), true);
+            setMovieInfo(movieDetail, meta.getMovie(), meta.getTmdb(), true);
             result.getList().add(movieDetail);
         } else {
             FsDetail fsDetail = aListService.getFile(site, path);
@@ -1136,7 +1186,7 @@ public class TvBoxService {
                 movieDetail.setVod_play_url(fsDetail.getName() + "$" + buildPlayUrl(site, path));
             }
             movieDetail.setVod_content(getParent(path));
-            setDoubanInfo(site, movieDetail, getParent(path), true);
+            setMovieInfo(site, movieDetail, getParent(path), true);
             if ("PikPakShare".equals(fsDetail.getProvider())) {
                 movieDetail.setVod_remarks("P" + movieDetail.getVod_remarks());
             }
@@ -1245,9 +1295,9 @@ public class TvBoxService {
         movieDetail.setVod_play_from(site.getName());
         movieDetail.setVod_content(site.getName() + ":" + newPath);
         movieDetail.setVod_tag(FILE);
-        movieDetail.setVod_pic(LIST_PIC);
+        movieDetail.setVod_pic(getListPic());
 
-        setDoubanInfo(site, movieDetail, newPath, true);
+        setMovieInfo(site, movieDetail, newPath, true);
 
         FsResponse fsResponse = aListService.listFiles(site, newPath, 1, 0);
         List<FsInfo> files = fsResponse.getFiles().stream()
@@ -1324,7 +1374,11 @@ public class TvBoxService {
         return result;
     }
 
-    private void setDoubanInfo(Site site, MovieDetail movieDetail, String path, boolean details) {
+    private void setMovieInfo(Site site, MovieDetail movieDetail, String path, boolean details) {
+        if (setTmdbInfo(site, movieDetail, path, details)) {
+            return;
+        }
+
         try {
             Movie movie = null;
             if (site.isXiaoya()) {
@@ -1338,20 +1392,67 @@ public class TvBoxService {
                 movie = doubanService.getByName(movieDetail.getVod_name());
             }
 
-            setDoubanInfo(movieDetail, movie, details);
+            setMovieInfo(movieDetail, movie, null, details);
         } catch (Exception e) {
             log.warn("", e);
         }
     }
 
-    private void setDoubanInfo(MovieDetail movieDetail, Movie movie, boolean details) {
+    private void setMovieInfo(MovieDetail movieDetail, Movie movie, Tmdb tmdb, boolean details) {
+        if (tmdb != null) {
+            setTmdbInfo(movieDetail, tmdb, details);
+            return;
+        }
+
         if (movie == null) {
             return;
         }
-        fixCover(movie);
         movieDetail.setVod_pic(movie.getCover());
         movieDetail.setVod_year(String.valueOf(movie.getYear()));
         movieDetail.setVod_remarks(movie.getDbScore());
+        if (!details) {
+            return;
+        }
+        movieDetail.setVod_actor(movie.getActors());
+        movieDetail.setVod_director(movie.getDirectors());
+        movieDetail.setVod_area(movie.getCountry());
+        movieDetail.setType_name(movie.getGenre());
+        movieDetail.setVod_lang(movie.getLanguage());
+        if (StringUtils.isNotEmpty(movie.getDescription())) {
+            movieDetail.setVod_content(movieDetail.getVod_content() + ";\n" + movie.getDescription());
+        }
+    }
+
+    private boolean setTmdbInfo(Site site, MovieDetail movieDetail, String path, boolean details) {
+        Tmdb movie = null;
+        try {
+            if (site.isXiaoya()) {
+                movie = tmdbService.getByPath(path);
+                if (movie == null) {
+                    movie = tmdbService.getByPath(getParent(path));
+                }
+            }
+
+            if (movie == null) {
+                movie = tmdbService.getByName(movieDetail.getVod_name());
+            }
+
+            setTmdbInfo(movieDetail, movie, details);
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+        return movie != null;
+    }
+
+    private void setTmdbInfo(MovieDetail movieDetail, Tmdb movie, boolean details) {
+        if (movie == null) {
+            return;
+        }
+        movieDetail.setVod_pic(movie.getCover());
+        movieDetail.setVod_year(String.valueOf(movie.getYear()));
+        if (!"0.0".equals(movie.getScore())) {
+            movieDetail.setVod_remarks(movie.getScore());
+        }
         if (!details) {
             return;
         }
@@ -1402,7 +1503,7 @@ public class TvBoxService {
     private static String getCover(String thumb, int type) {
         String pic = thumb;
         if (pic.isEmpty() && type == 1) {
-            pic = FOLDER_PIC;
+            pic = ServletUriComponentsBuilder.fromCurrentRequest().replacePath("/folder.png").build().toUriString();
         }
         return pic;
     }
