@@ -67,6 +67,7 @@ public class TmdbService {
 
     private String apiKey;
     private long lastRequestTime;
+    private int siteId = 1;  // TODO: move to context
 
     public TmdbService(TmdbRepository tmdbRepository,
                        TmdbMetaRepository tmdbMetaRepository,
@@ -128,26 +129,33 @@ public class TmdbService {
         if (list.isEmpty()) {
             return;
         }
-        log.info("sync {} meta", list.size());
-        List<Meta> result = new ArrayList<>();
-        for (var meta : list) {
-            result.add(syncMeta(meta));
+        var task = taskService.addSyncMeta();
+        taskService.startTask(task.getId());
+        int count = list.size();
+        log.info("sync {} meta", count);
+        int start = 0;
+        while (start < count) {
+            int end = start + 1000;
+            if (end > count) {
+                end = count;
+            }
+            List<Meta> result = new ArrayList<>();
+            for (var meta : list.subList(start, end)) {
+                result.add(syncMeta(meta));
+            }
+            metaRepository.saveAll(result);
+            taskService.updateTaskSummary(task.getId(), "已经同步" + end + "/" + count);
+            start = end;
         }
-        metaRepository.saveAll(result);
+
+        taskService.completeTask(task.getId());
         log.info("sync meta completed");
     }
 
     public void sync() {
         var page = metaRepository.findAll(PageRequest.of(1, 1, Sort.Direction.DESC, "id"));
         if (page.hasContent() && page.getContent().get(0).getId() < 500000) {
-            var list = tmdbMetaRepository.findAll();
-            log.info("sync {} meta", list.size());
-            List<Meta> result = new ArrayList<>();
-            for (var meta : list) {
-                result.add(syncMeta(meta));
-            }
-            metaRepository.saveAll(result);
-            log.info("sync meta completed");
+            new Thread(this::syncMeta).start();
         }
     }
 
@@ -170,6 +178,7 @@ public class TmdbService {
             meta = new TmdbMeta();
             meta.setPath(path);
             meta.setType(dto.getType());
+            meta.setSiteId(dto.getSiteId());
         }
         Tmdb movie = getById(dto.getType(), dto.getTmId());
         if (movie != null) {
@@ -217,9 +226,14 @@ public class TmdbService {
         if (tmdbMeta.getScore() != null) {
             meta.setScore(tmdbMeta.getScore());
         }
+        meta.setSiteId(tmdbMeta.getSiteId());
+        if (meta.getSiteId() == null) {
+            meta.setSiteId(1);
+        }
         meta.setType(tmdbMeta.getType());
         meta.setTmId(tmdbMeta.getTmId());
         meta.setTmdb(tmdbMeta.getTmdb());
+        meta.setTime(tmdbMeta.getTime());
         return meta;
     }
 
@@ -234,6 +248,7 @@ public class TmdbService {
         Tmdb movie = getDetails(dto.getType(), dto.getTmId());
         if (movie != null) {
             meta.setType(dto.getType());
+            meta.setSiteId(dto.getSiteId());
             meta.setTmdb(movie);
             meta.setTmId(movie.getTmdbId());
             meta.setYear(movie.getYear());
@@ -259,6 +274,7 @@ public class TmdbService {
         log.info("get {} lines from index file {}", lines.size(), path);
         Site site = siteService.getById(siteId);
         Task task = taskService.addScrapeTask(site);
+        this.siteId = siteId;
         scrapeIndexFile(task, lines, force);
     }
 
@@ -281,8 +297,9 @@ public class TmdbService {
             try {
                 log.debug("handle {} {}", i, line);
                 taskService.updateTaskSummary(task.getId(), (i + 1) + ":" + line);
-                Tmdb movie = handleIndexLine(i, line, "tv", force, failed);
-                if (movie == null) {
+                String type = guessType(line);
+                Tmdb movie = handleIndexLine(i, line, type == null ? "tv" : type, force, failed);
+                if (movie == null && type == null) {
                     handleIndexLine(i, line, "movie", force, failed);
                 }
                 if (movie != null) {
@@ -305,6 +322,19 @@ public class TmdbService {
 
         writeText("/data/atv/tmdb_paths.txt", String.join("\n", paths));
         writeText("/data/atv/tmdb_failed.txt", String.join("\n", failed));
+    }
+
+    private String guessType(String path) {
+        if (path.contains("电影") || path.toLowerCase().contains("movie")) {
+            return "movie";
+        }
+        if (path.contains("电视剧") || path.contains("连续剧") || path.contains("剧集") || path.contains("短剧")
+                || path.contains("国产剧") || path.contains("港台剧") || path.contains("港剧") || path.contains("台剧")
+                || path.contains("美剧") || path.contains("日剧") || path.contains("韩剧")
+                || path.toLowerCase().contains("season")) {
+            return "tv";
+        }
+        return null;
     }
 
     private static void writeText(String path, String content) {
@@ -336,6 +366,7 @@ public class TmdbService {
         if (meta == null) {
             meta = new TmdbMeta();
             meta.setPath(path);
+            meta.setSiteId(siteId);
         } else if (meta.getTmdb() != null && !force) {
             return meta.getTmdb();
         }
@@ -407,7 +438,7 @@ public class TmdbService {
             }
 
             if (movie == null) {
-                parts = original.split("[ \t\r\n\\[\\]、【】()（）《》.丨-]+");
+                parts = original.split("[ \t\r\n\\[\\]、【】()（）《》.丨_-]+");
                 if (parts.length > 1) {
                     int count = 0;
                     for (int i = 0; i < parts.length && count < 3; i++) {
@@ -499,6 +530,9 @@ public class TmdbService {
     }
 
     private boolean isSpecialFolder(String name) {
+        if (name.matches("Season \\d+")) {
+            return true;
+        }
         if (name.toLowerCase().startsWith("4k")) {
             return true;
         }
@@ -570,7 +604,7 @@ public class TmdbService {
         if (meta == null) {
             return false;
         }
-        Tmdb movie = scrape(type, name, meta.getPath());
+        Tmdb movie = scrape(type, name, meta);
         if (movie != null) {
             meta.setTmdb(movie);
             meta.setTmId(movie.getTmdbId());
@@ -585,12 +619,11 @@ public class TmdbService {
         return false;
     }
 
-    public Tmdb scrape(String type, String name, String path) {
+    public Tmdb scrape(String type, String name, TmdbMeta meta) {
         if (StringUtils.isBlank(name)) {
-            name = TextUtils.fixName(getNameFromPath(path));
+            name = TextUtils.fixName(getNameFromPath(meta.getPath()));
         }
-        TmdbMeta meta = new TmdbMeta();
-        Integer year = getYearFromPath(path);
+        Integer year = getYearFromPath(meta.getPath());
         Tmdb movie = search(type, name, year);
         if (movie != null) {
             meta.setTmdb(movie);

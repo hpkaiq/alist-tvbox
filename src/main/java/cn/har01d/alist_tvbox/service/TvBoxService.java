@@ -95,6 +95,7 @@ public class TvBoxService {
     private final DoubanService doubanService;
     private final TmdbService tmdbService;
     private final SubscriptionService subscriptionService;
+    private final ConfigFileService configFileService;
     private final ObjectMapper objectMapper;
     private final Environment environment;
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
@@ -115,6 +116,8 @@ public class TvBoxService {
             new FilterValue("年份⬆️", "year,asc;score,desc"),
             new FilterValue("名字⬇️", "name,desc;year,desc;score,desc"),
             new FilterValue("名字⬆️", "name,asc;year,desc;score,desc"),
+            new FilterValue("时间⬇️", "time,desc"),
+            new FilterValue("时间⬆️", "time,asc"),
             new FilterValue("ID⬇️", "movie_id,desc"),
             new FilterValue("ID⬆️", "movie_id,asc")
     );
@@ -137,6 +140,7 @@ public class TvBoxService {
                         DoubanService doubanService,
                         TmdbService tmdbService,
                         SubscriptionService subscriptionService,
+                        ConfigFileService configFileService,
                         ObjectMapper objectMapper,
                         Environment environment) {
         this.accountRepository = accountRepository;
@@ -150,6 +154,7 @@ public class TvBoxService {
         this.doubanService = doubanService;
         this.tmdbService = tmdbService;
         this.subscriptionService = subscriptionService;
+        this.configFileService = configFileService;
         this.objectMapper = objectMapper;
         this.environment = environment;
     }
@@ -326,7 +331,7 @@ public class TvBoxService {
 
     public MovieList recommend(String ac, int pg) {
         List<MovieDetail> list = new ArrayList<>();
-        Pageable pageable = PageRequest.of(pg - 1, 60, Sort.Direction.DESC, "id");
+        Pageable pageable = PageRequest.of(pg - 1, 60, Sort.Direction.DESC, "time", "id");
         Page<Meta> page = metaRepository.findAll(pageable);
         for (Meta meta : page.getContent()) {
             Movie movie = meta.getMovie();
@@ -344,10 +349,11 @@ public class TvBoxService {
             boolean isMediaFile = isMediaFile(meta.getPath());
             String newPath = fixPath(meta.getPath() + (isMediaFile ? "" : PLAYLIST));
             MovieDetail movieDetail = new MovieDetail();
-            movieDetail.setVod_id("1$" + encodeUrl(newPath) + "$0");
+            movieDetail.setVod_id(Objects.toString(meta.getSiteId(), "1") + "$" + encodeUrl(newPath) + "$0");
             movieDetail.setVod_name(name);
             movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(meta.getPath());
+            movieDetail.setVod_remarks(getLabel(meta.getPath()));
             setMovieInfo(movieDetail, movie, meta.getTmdb(), "videolist".equals(ac));
             list.add(movieDetail);
         }
@@ -356,6 +362,7 @@ public class TvBoxService {
         result.setList(list);
         result.setTotal(result.getList().size());
         result.setLimit(result.getList().size());
+        log.debug("recommend {}", result);
         return result;
     }
 
@@ -366,6 +373,80 @@ public class TvBoxService {
             return getDetail("", result.getList().get(0).getVod_id());
         }
         return result;
+    }
+
+    private String getLabel(String path) {
+        for (var item : configFileService.getLabels()) {
+            if (item.getPath().startsWith("/") && path.startsWith(item.getPath())) {
+                return item.getName() + " ";
+            }
+            if (path.contains(item.getPath())) {
+                return item.getName() + " ";
+            }
+        }
+
+        if (path.startsWith("/电影")) {
+            return "\uD83C\uDF9E  ";
+        }
+        if (path.startsWith("/电视剧")) {
+            return "\uD83D\uDCFA  ";
+        }
+        if (path.startsWith("/动漫")) {
+            return "\uD83E\uDDF8  ";
+        }
+        if (path.startsWith("/综艺")) {
+            return "\uD83C\uDFA4  ";
+        }
+        if (path.startsWith("/纪录片")) {
+            return "\uD83D\uDD2C  ";
+        }
+        if (path.startsWith("/音乐")) {
+            return "\uD83C\uDFB6  ";
+        }
+        if (path.startsWith("/有声书")) {
+            return "\uD83D\uDCD6  ";
+        }
+        if (path.startsWith("/整理中")) {
+            return "\uD83E\uDDFA  ";
+        }
+        if (path.startsWith("/每日更新/PikPak")) {
+            return "\uD83C\uDD7F\uFE0F  ";
+        }
+        if (path.startsWith("/每日更新")) {
+            return "\uD83D\uDCC5  ";
+        }
+        if (path.startsWith("/教育")) {
+            return "\uD83C\uDF93  ";
+        }
+        if (path.startsWith("/曲艺")) {
+            return "\uD83C\uDFB8  ";
+        }
+        if (path.startsWith("/体育")) {
+            return "⚽\uFE0F  ";
+        }
+        if (path.startsWith("/\uD83C\uDE34我的阿里分享/Tacit0924")) {
+            return "\uD83D\uDCEE  ";
+        }
+        if (path.startsWith("/\uD83C\uDE34我的阿里分享")) {
+            return "\uD83C\uDE34  ";
+        }
+
+        if (path.contains("115")) {
+            return "5\uFE0F⃣  ";
+        }
+        if (path.contains("PikPak")) {
+            return "\uD83C\uDD7F\uFE0F  ";
+        }
+        if (path.contains("阿里云盘")) {
+            return "\uD83D\uDCC0  ";
+        }
+        if (path.contains("夸克网盘")) {
+            return "\uD83C\uDF1E  ";
+        }
+        if (path.contains("我的套娃")) {
+            return "\uD83C\uDF8E  ";
+        }
+        return "";
     }
 
     public MovieList search(Integer type, String keyword) {
@@ -389,10 +470,11 @@ public class TvBoxService {
                 boolean isMediaFile = isMediaFile(meta.getPath());
                 String newPath = fixPath(meta.getPath() + (isMediaFile ? "" : PLAYLIST));
                 MovieDetail movieDetail = new MovieDetail();
-                movieDetail.setVod_id("1$" + encodeUrl(newPath) + "$0");
+                movieDetail.setVod_id(Objects.toString(meta.getSiteId(), "1") + "$" + encodeUrl(newPath) + "$0");
                 movieDetail.setVod_name(name);
                 movieDetail.setVod_pic(Constants.ALIST_PIC);
                 movieDetail.setVod_content(meta.getPath());
+                movieDetail.setVod_remarks(getLabel(newPath));
                 setMovieInfo(movieDetail, movie, meta.getTmdb(), false);
                 list.add(movieDetail);
             }
@@ -492,6 +574,7 @@ public class TvBoxService {
             movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(path.replace(PLAYLIST, ""));
             movieDetail.setVod_tag(FILE);
+            movieDetail.setVod_remarks(getLabel(path));
             if (!isMediaFile) {
                 setMovieInfo(site, movieDetail, getParent(path), false);
             }
@@ -622,7 +705,7 @@ public class TvBoxService {
     private Site getSite(String tid) {
         int index = tid.indexOf('$');
         String id = tid.substring(0, index);
-        if ("0".equals(id)) {
+        if ("0".equals(id) || "null".equals(id)) {
             return getXiaoyaSite();
         }
         try {
@@ -672,7 +755,10 @@ public class TvBoxService {
         int total = fsResponse.getTotal();
 
         for (FsInfo fsInfo : fsResponse.getFiles()) {
+            String filepath = path + fsInfo.getName();
             if ((fsInfo.getType() == 1 && exclude(fsInfo.getName()))
+                    || filepath.equals("/元数据")
+                    || filepath.equals("/\uD83D\uDEE0\uFE0F安装，配置，修复 xiaoya docker 指南")
                     || (fsInfo.getType() != 1 && !isMediaFormat(fsInfo.getName()))) {
                 total--;
                 continue;
@@ -839,7 +925,11 @@ public class TvBoxService {
             Movie movie = meta.getMovie();
             String name;
             if (movie == null) {
-                name = getNameFromPath(meta.getPath());
+                if (meta.getTmdb() != null) {
+                    name = meta.getTmdb().getName();
+                } else {
+                    name = getNameFromPath(meta.getPath());
+                }
             } else {
                 name = movie.getName();
             }
@@ -879,6 +969,9 @@ public class TvBoxService {
             }
             movieDetail.setVod_name(name);
             movieDetail.setVod_pic(Constants.ALIST_PIC);
+            if (path.equals("/")) {
+                movieDetail.setVod_remarks(getLabel(meta.getPath()));
+            }
             setMovieInfo(movieDetail, movie, meta.getTmdb(), "videolist".equals(ac));
             files.add(movieDetail);
             log.debug("{}", movieDetail);
@@ -1024,6 +1117,7 @@ public class TvBoxService {
         }
 
         if (!getSub) {
+            log.debug("result: {}", result);
             return result;
         }
 
@@ -1409,7 +1503,7 @@ public class TvBoxService {
         }
         movieDetail.setVod_pic(movie.getCover());
         movieDetail.setVod_year(String.valueOf(movie.getYear()));
-        movieDetail.setVod_remarks(movie.getDbScore());
+        movieDetail.setVod_remarks(movieDetail.getVod_remarks() + Objects.toString(movie.getDbScore(), ""));
         if (!details) {
             return;
         }
@@ -1450,9 +1544,10 @@ public class TvBoxService {
         }
         movieDetail.setVod_pic(movie.getCover());
         movieDetail.setVod_year(String.valueOf(movie.getYear()));
-        if (!"0.0".equals(movie.getScore())) {
-            movieDetail.setVod_remarks(movie.getScore());
+        if ("0.0".equals(movie.getScore())) {
+            movie.setScore("");
         }
+        movieDetail.setVod_remarks(movieDetail.getVod_remarks() + Objects.toString(movie.getScore(), ""));
         if (!details) {
             return;
         }

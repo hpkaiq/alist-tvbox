@@ -6,12 +6,12 @@
       <el-button type="primary" @click="search" :disabled="!keyword">
         搜索
       </el-button>
-      <el-button @click="scrapeVisible=true" v-if="showScrape">刮削</el-button>
+      <el-button @click="showScrapeIndex">刮削</el-button>
       <!--      <el-button @click="fixMeta">去重</el-button>-->
       <el-button @click="syncMeta">同步</el-button>
       <el-button>|</el-button>
       <el-button @click="refresh">刷新</el-button>
-      <el-button type="primary" @click="addMeta" v-if="showScrape">添加</el-button>
+      <el-button type="primary" @click="addMeta">添加</el-button>
       <el-button type="danger" @click="handleDeleteBatch" v-if="multipleSelection.length">删除</el-button>
     </el-row>
     <div class="space"></div>
@@ -35,7 +35,7 @@
       </el-table-column>
       <el-table-column prop="path" label="路径">
         <template #default="scope">
-          <a :href="url + scope.row.path" target="_blank">
+          <a :href="getUrl(scope.row)" target="_blank">
             {{ scope.row.path }}
           </a>
         </template>
@@ -56,6 +56,11 @@
 
     <el-dialog v-model="formVisible" :title="'编辑 '+form.id" width="60%">
       <el-form label-width="140px">
+        <el-form-item label="站点" required>
+          <el-select v-model="form.siteId">
+            <el-option :label="site.name" :value="site.id" v-for="site of sites"/>
+          </el-select>
+        </el-form-item>
         <el-form-item label="类型" required>
           <el-radio-group v-model="form.type" class="ml-4">
             <el-radio label="movie" size="large">电影</el-radio>
@@ -66,10 +71,10 @@
           <el-input v-model="form.path" autocomplete="off" readonly/>
         </el-form-item>
         <el-form-item label="TMDB ID" required>
-          <el-input-number v-model="form.tmId" autocomplete="off"/>
+          <el-input-number v-model="form.tmId" min="0" autocomplete="off"/>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="updateMeta">更新</el-button>
+          <el-button type="primary" :disabled="!form.tmId" @click="updateMeta">更新</el-button>
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" autocomplete="off"/>
@@ -79,12 +84,12 @@
              target="_blank">{{ form.name }}</a>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="scrape">刮削</el-button>
+          <el-button type="primary" :disabled="!form.name" @click="scrape">刮削</el-button>
         </el-form-item>
       </el-form>
       <template #footer>
       <span class="dialog-footer">
-        <el-button type="danger" size="small" @click="dialogVisible=true">删除</el-button>
+        <el-button type="danger" @click="dialogVisible=true">删除</el-button>
         <el-button @click="formVisible=false">取消</el-button>
       </span>
       </template>
@@ -92,6 +97,11 @@
 
     <el-dialog v-model="addVisible" title="添加电影数据" width="60%">
       <el-form label-width="140px">
+        <el-form-item label="站点" required>
+          <el-select v-model="form.siteId">
+            <el-option :label="site.name" :value="site.id" v-for="site of sites"/>
+          </el-select>
+        </el-form-item>
         <el-form-item label="类型" required>
           <el-radio-group v-model="form.type" class="ml-4">
             <el-radio label="movie" size="large">电影</el-radio>
@@ -102,13 +112,13 @@
           <el-input v-model="form.path" autocomplete="off"/>
         </el-form-item>
         <el-form-item label="TMDB ID" required>
-          <el-input-number v-model="form.tmId" autocomplete="off"/>
+          <el-input-number v-model="form.tmId" min="0" autocomplete="off"/>
         </el-form-item>
       </el-form>
       <template #footer>
       <span class="dialog-footer">
         <el-button @click="addVisible=false">取消</el-button>
-        <el-button type="primary" @click="saveMeta">保存</el-button>
+        <el-button type="primary" :disabled="!form.path||!form.tmId" @click="saveMeta">保存</el-button>
       </span>
       </template>
     </el-dialog>
@@ -131,7 +141,7 @@
 
     <el-dialog v-model="scrapeVisible" title="刮削索引文件">
       <el-form-item label="站点">
-        <el-select v-model="siteId">
+        <el-select v-model="siteId" @change="loadIndexFiles">
           <el-option :label="site.name" :value="site.id" v-for="site of sites"/>
         </el-select>
       </el-form-item>
@@ -139,13 +149,15 @@
         <el-switch v-model="force"/>
       </el-form-item>
       <el-form-item label="索引名称">
-        <el-input v-model="indexName" type="text"/>
+        <el-select v-model="indexName">
+          <el-option v-for="item in index" :key="item.name" :label="item.name" :value="item.name"/>
+        </el-select>
       </el-form-item>
-      <p>索引文件：/data/index/{{ siteId }}/{{ indexName }}.txt</p>
+      <p v-if="indexName">索引文件：/data/index/{{ siteId }}/{{ indexName }}.txt</p>
       <template #footer>
       <span class="dialog-footer">
         <el-button @click="scrapeVisible = false">取消</el-button>
-        <el-button type="primary" @click="scrapeIndex">刮削</el-button>
+        <el-button type="primary" :disabled="!indexName" @click="scrapeIndex">刮削</el-button>
       </span>
       </template>
     </el-dialog>
@@ -168,6 +180,7 @@ interface Meta {
   year: number
   score: number
   tmId: number
+  siteId: number
 }
 
 const sizes = [20, 40, 60, 80, 100]
@@ -181,13 +194,12 @@ const size = ref(20)
 const total = ref(0)
 const files = ref([])
 const sites = ref([] as Site[])
+const index = ref<Meta[]>([])
 const multipleSelection = ref<Meta[]>([])
 const dialogVisible = ref(false)
 const formVisible = ref(false)
 const addVisible = ref(false)
 const scrapeVisible = ref(false)
-const showScrape = ref(true)
-const fullscreen = ref(false)
 const batch = ref(false)
 const form = ref({
   id: 0,
@@ -197,6 +209,7 @@ const form = ref({
   year: 0,
   score: 0,
   tmId: 0,
+  siteId: 1,
 })
 
 const handleSelectionChange = (val: Meta[]) => {
@@ -245,6 +258,18 @@ const fixMeta = () => {
   })
 }
 
+const getUrl = (meta: Meta) => {
+  const site = sites.value.find(e => e.id == meta.siteId)
+  if (site && !site.url.startsWith('http://localhost')) {
+    let surl = site.url
+    if (surl.endsWith('/')) {
+      surl = surl.substring(0, surl.length - 1)
+    }
+    return surl + meta.path
+  }
+  return url.value + meta.path
+}
+
 const syncMeta = () => {
   axios.post('/api/tmdb/meta-sync').then(() => {
     ElMessage.success('开始同步电影数据')
@@ -260,6 +285,7 @@ const addMeta = () => {
     year: 0,
     score: 0,
     tmId: 0,
+    siteId: 1,
   }
   addVisible.value = true
 }
@@ -278,7 +304,7 @@ const saveMeta = () => {
 }
 
 const editMeta = (data: any) => {
-  form.value = Object.assign({}, data)
+  form.value = Object.assign({siteId: 1}, data)
   formVisible.value = true
 }
 
@@ -304,6 +330,11 @@ const scrape = () => {
       ElMessage.warning('刮削失败')
     }
   })
+}
+
+const showScrapeIndex = () => {
+  scrapeVisible.value = true
+  loadIndexFiles()
 }
 
 const scrapeIndex = () => {
@@ -335,6 +366,16 @@ const loadSites = () => {
   })
 }
 
+const loadIndexFiles = () => {
+  indexName.value = ''
+  axios.get('/api/sites/' + siteId.value + '/index').then(({data}) => {
+    index.value = data
+    if (index.value && index.value.length > 0) {
+      indexName.value = index.value[0].name
+    }
+  })
+}
+
 const loadBaseUrl = () => {
   if (store.baseUrl) {
     url.value = store.baseUrl
@@ -343,20 +384,24 @@ const loadBaseUrl = () => {
 
   if (store.xiaoya) {
     axios.get('/api/sites/1').then(({data}) => {
+      url.value = data.url
       const re = /http:\/\/localhost:(\d+)/.exec(data.url)
       if (re) {
         url.value = 'http://' + window.location.hostname + ':' + re[1]
+        store.baseUrl = url.value
+        console.log('load AList ' + url.value)
       } else if (data.url == 'http://localhost') {
         axios.get('/api/alist/port').then(({data}) => {
           if (data) {
             url.value = 'http://' + window.location.hostname + ':' + data
+            store.baseUrl = url.value
+            console.log('load AList ' + url.value)
           }
         })
       } else {
-        url.value = data.url
+        store.baseUrl = url.value
+        console.log('load AList ' + url.value)
       }
-      store.baseUrl = url.value
-      console.log('load AList ' + url.value)
     })
   }
 }

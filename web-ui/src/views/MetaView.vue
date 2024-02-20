@@ -35,7 +35,7 @@
       </el-table-column>
       <el-table-column prop="path" label="路径">
         <template #default="scope">
-          <a :href="url + scope.row.path" target="_blank">
+          <a :href="getUrl(scope.row)" target="_blank">
             {{ scope.row.path }}
           </a>
         </template>
@@ -56,14 +56,19 @@
 
     <el-dialog v-model="formVisible" :title="'编辑 '+form.id" width="60%">
       <el-form label-width="140px">
+        <el-form-item label="站点" required>
+          <el-select v-model="form.siteId">
+            <el-option :label="site.name" :value="site.id" v-for="site of sites"/>
+          </el-select>
+        </el-form-item>
         <el-form-item label="路径" required>
           <el-input v-model="form.path" autocomplete="off" readonly/>
         </el-form-item>
         <el-form-item label="豆瓣ID" required>
-          <el-input-number v-model="form.movieId" autocomplete="off"/>
+          <el-input-number v-model="form.movieId" min="0" autocomplete="off"/>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="updateMeta">更新</el-button>
+          <el-button type="primary" :disabled="!form.movieId" @click="updateMeta">更新</el-button>
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" autocomplete="off"/>
@@ -78,7 +83,7 @@
       </el-form>
       <template #footer>
       <span class="dialog-footer">
-        <el-button type="danger" size="small" @click="dialogVisible=true">删除</el-button>
+        <el-button type="danger" @click="dialogVisible=true">删除</el-button>
         <el-button @click="formVisible=false">取消</el-button>
       </span>
       </template>
@@ -90,7 +95,7 @@
           <el-input v-model="form.path" autocomplete="off"/>
         </el-form-item>
         <el-form-item label="豆瓣ID" required>
-          <el-input-number v-model="form.movieId" autocomplete="off"/>
+          <el-input-number v-model="form.movieId" min="0" autocomplete="off"/>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -152,6 +157,7 @@ interface Meta {
   year: number
   score: number
   movieId: number
+  siteId: number
 }
 
 const sizes = [20, 40, 60, 80, 100]
@@ -179,6 +185,7 @@ const form = ref({
   year: 0,
   score: 0,
   movieId: 0,
+  siteId: 1,
 })
 
 const handleSelectionChange = (val: Meta[]) => {
@@ -227,6 +234,18 @@ const fixMeta = () => {
   })
 }
 
+const getUrl = (meta: Meta) => {
+  const site = sites.value.find(e => e.id == meta.siteId)
+  if (site && !site.url.startsWith('http://localhost')) {
+    let surl = site.url
+    if (surl.endsWith('/')) {
+      surl = surl.substring(0, surl.length - 1)
+    }
+    return surl + meta.path
+  }
+  return url.value + meta.path
+}
+
 const addMeta = () => {
   form.value = {
     id: 0,
@@ -235,6 +254,7 @@ const addMeta = () => {
     year: 0,
     score: 0,
     movieId: 0,
+    siteId: 1,
   }
   addVisible.value = true
 }
@@ -253,12 +273,12 @@ const saveMeta = () => {
 }
 
 const editMeta = (data: any) => {
-  form.value = Object.assign({}, data)
+  form.value = Object.assign({siteId: 1}, data)
   formVisible.value = true
 }
 
 const updateMeta = () => {
-  axios.post('/api/meta/' + form.value.id + '/movie?movieId=' + form.value.movieId).then(({data}) => {
+  axios.post('/api/meta/' + form.value.id, form.value).then(({data}) => {
     if (data) {
       ElMessage.success('更新成功')
       formVisible.value = false
@@ -311,7 +331,6 @@ const loadSites = () => {
 }
 
 const loadBaseUrl = () => {
-  showScrape.value = !store.xiaoya
   if (store.baseUrl) {
     url.value = store.baseUrl
     return
@@ -319,20 +338,24 @@ const loadBaseUrl = () => {
 
   if (store.xiaoya) {
     axios.get('/api/sites/1').then(({data}) => {
+      url.value = data.url
       const re = /http:\/\/localhost:(\d+)/.exec(data.url)
       if (re) {
         url.value = 'http://' + window.location.hostname + ':' + re[1]
+        store.baseUrl = url.value
+        console.log('load AList ' + url.value)
       } else if (data.url == 'http://localhost') {
         axios.get('/api/alist/port').then(({data}) => {
           if (data) {
             url.value = 'http://' + window.location.hostname + ':' + data
+            store.baseUrl = url.value
+            console.log('load AList ' + url.value)
           }
         })
       } else {
-        url.value = data.url
+        store.baseUrl = url.value
+        console.log('load AList ' + url.value)
       }
-      store.baseUrl = url.value
-      console.log('load AList ' + url.value)
     })
   }
 }
