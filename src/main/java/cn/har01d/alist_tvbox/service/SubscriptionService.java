@@ -446,10 +446,10 @@ public class SubscriptionService {
 //        }
 
         String json = loadConfigJson(configUrl);
-        if (json != null) {
-            String url = fixUrl(apiUrl) + "/";
-            json = json.replace("./", url);
-        }
+        //if (json != null) {
+        //    String url = fixUrl(apiUrl) + "/";
+        //   json = json.replace("./", url);
+        //}
 
         return convertResult(json, configKey);
     }
