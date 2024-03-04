@@ -99,6 +99,19 @@ sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_new.sh)"
 
 #### NAS
 对于群辉等NAS系统，请挂载Docker的/data目录到群辉文件系统，否则数据不会保留。
+#### 创建容器
+![创建容器](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker1.png)
+#### 目录映射
+![目录映射](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker2.png)
+#### 端口映射
+![端口映射](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker3.png)
+#### 环境变量
+![环境变量](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker4.png)
+
+### 防火墙
+需要开放管理端口4567和Nginx端口5344（host网络模式是5678）。
+
+如果修改了默认端口，自行替换。
 
 ### 海报展示
 #### 浏览目录
@@ -378,6 +391,13 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 🌞:夸克网盘
 🎎:我的套娃
 ```
+
+### 数据备份与恢复
+每天6点自动备份数据库，保存在/etc/xiaoya/backup/目录。
+
+如何恢复？
+1. 将保存的备份文件复制到/etc/xiaoya/database.zip
+2. 重启
 
 ### 其它
 不再生效的文件可以保留，以后删除数据库后可以恢复。
