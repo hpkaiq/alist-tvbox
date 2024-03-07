@@ -335,13 +335,15 @@ public class ShareService {
                     if (parts.length > 2) {
                         share.setFolderId(parts[2]);
                     }
+                    if (parts.length > 3) {
+                        share.setPassword(parts[3]);
+                    }
                     share.setPath(getMountPath(share));
                     if (shareRepository.existsByPath(share.getPath())) {
                         continue;
                     }
                     create(share);
                     count++;
-                    shareId++;
                 } catch (Exception e) {
                     log.warn("{}", e.getMessage());
                 }
@@ -363,7 +365,8 @@ public class ShareService {
         }
 
         for (Share share : list) {
-            sb.append(share.getPath()).append("  ").append(share.getShareId()).append("  ").append(share.getFolderId()).append("\n");
+            sb.append(getMountPath(share).replace(" ", "")).append("  ").append(share.getShareId())
+                    .append("  ").append(share.getFolderId()).append("  ").append(share.getPassword()).append("\n");
         }
 
         log.info("export {} shares to file: {}", list.size(), fileName);
@@ -603,6 +606,9 @@ public class ShareService {
         }
         if (share.getPath().equals("/")) {
             throw new BadRequestException("挂载路径不能为/");
+        }
+        if (share.getPath().contains(" ")) {
+            throw new BadRequestException("挂载路径不能包含空格");
         }
 
         if (share.getType() == 2) {

@@ -45,11 +45,11 @@ sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"
 ```
 使用其它配置目录：
 ```bash
-sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /home/user/atv
+wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && bash ./update_xiaoya.sh -s /home/user/atv
 ```
 挂载本地目录：
 ```bash
-sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -v /home/user/Videos:/video
+wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && bash ./update_xiaoya.sh -v /home/user/Videos:/video
 ```
 使用其它端口：
 
@@ -57,8 +57,8 @@ sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -v /home/user/
 - 第二个参数是管理界面端口，默认是4567。
 - 第三个参数是小雅AList端口，默认是5344。
 ```bash
-sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /home/alist 8080
-sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)" -s /home/alist 8080 5544
+wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && bash ./update_xiaoya.sh -s /home/alist 8080
+wget https://d.har01d.cn/update_xiaoya.sh -O update_xiaoya.sh && bash ./update_xiaoya.sh -s /home/alist 8080 5544
 ```
 OpenWrt去掉sudo，或者已经是root账号：
 ```bash
@@ -67,7 +67,7 @@ bash -c "$(curl -fsSL https://d.har01d.cn/update_xiaoya.sh)"
 
 如果没有安装curl:
 ```bash
-wget https://d.har01d.cn/update_xiaoya.sh; sh ./update_xiaoya.sh
+wget https://d.har01d.cn/update_xiaoya.sh; bash ./update_xiaoya.sh
 ```
 
 #### 内存优化版
@@ -107,6 +107,15 @@ sudo bash -c "$(curl -fsSL https://d.har01d.cn/update_new.sh)"
 ![端口映射](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker3.png)
 #### 环境变量
 ![环境变量](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_docker4.png)
+
+### 自动更新
+使用root用户创建corntab定时任务
+```bash
+wget https://d.har01d.cn/update_xiaoya.sh -O /opt/update_xiaoya.sh
+chmod a+x /opt/update_xiaoya.sh
+crontab -l | { cat; echo "0 2 * * * /opt/update_xiaoya.sh -u"; } | crontab -
+```
+每天凌晨2点检查更新并重启应用。
 
 ### 防火墙
 需要开放管理端口4567和Nginx端口5344（host网络模式是5678）。
@@ -397,7 +406,8 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 
 如何恢复？
 1. 将保存的备份文件复制到/etc/xiaoya/database.zip
-2. 重启
+2. 删除文件/etc/xiaoya/atv.mv.db和/etc/xiaoya/atv.trace.db
+3. 重启docker容器或者重新运行安装脚本
 
 ### 其它
 不再生效的文件可以保留，以后删除数据库后可以恢复。
