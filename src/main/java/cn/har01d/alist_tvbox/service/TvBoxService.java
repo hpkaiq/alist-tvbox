@@ -611,9 +611,9 @@ public class TvBoxService {
             if (StringUtils.isNotBlank(site.getFolder()) && !"/".equals(site.getFolder())) {
                 if (path.startsWith(site.getFolder())) {
                     path = path.substring(site.getFolder().length());
-                } else {
+                } /*else {
                     continue;
-                }
+                }*/
             }
             MovieDetail movieDetail = new MovieDetail();
             movieDetail.setVod_id(site.getId() + "$" + encodeUrl(path) + "$1");
