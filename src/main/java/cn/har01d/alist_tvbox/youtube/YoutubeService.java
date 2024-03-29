@@ -6,9 +6,11 @@ import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
+import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.github.kiulian.downloader.Config;
 import com.github.kiulian.downloader.YoutubeDownloader;
 import com.github.kiulian.downloader.downloader.request.RequestSearchContinuation;
 import com.github.kiulian.downloader.downloader.request.RequestSearchResult;
@@ -23,6 +25,7 @@ import com.github.kiulian.downloader.model.search.field.TypeField;
 import com.github.kiulian.downloader.model.videos.VideoInfo;
 import com.github.kiulian.downloader.model.videos.formats.Format;
 import com.github.kiulian.downloader.model.videos.formats.VideoWithAudioFormat;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -30,6 +33,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -51,7 +55,9 @@ public class YoutubeService {
             new FilterValue("播放量", "VIEW_COUNT")
     );
 
-    private final YoutubeDownloader downloader = new YoutubeDownloader();
+    private final Config config = new Config.Builder().header("User-Agent", Constants.USER_AGENT).build();
+    private final MyDownloader myDownloader = new MyDownloader(config);
+    private final YoutubeDownloader downloader = new YoutubeDownloader(config, myDownloader);
     private final LoadingCache<String, VideoInfo> cache = Caffeine.newBuilder()
             .maximumSize(10)
             .expireAfterWrite(Duration.ofSeconds(900))
@@ -80,6 +86,8 @@ public class YoutubeService {
                 category.setType_id(id);
                 category.setType_name(name);
                 category.setType_flag(0);
+                category.setLand(1);
+                category.setRatio(1.33);
                 result.getCategories().add(category);
                 result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", sorts)));
             }
@@ -90,6 +98,8 @@ public class YoutubeService {
                 category.setType_id(name);
                 category.setType_name(name);
                 category.setType_flag(0);
+                category.setLand(1);
+                category.setRatio(1.33);
                 result.getCategories().add(category);
                 result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", sorts)));
             }
@@ -201,16 +211,34 @@ public class YoutubeService {
         return result;
     }
 
-    public void proxy(String id, int tag, HttpServletResponse response) throws IOException {
+    public void proxy(String id, int tag, HttpServletRequest request, HttpServletResponse response) throws IOException {
         VideoInfo video = cache.get(id);
         Format format = video.findFormatByItag(tag);
         if (format == null) {
             format = video.bestVideoWithAudioFormat();
         }
 
-        log.debug("format {} {}", format.itag().id(), format.extension().value());
-        var request = new RequestVideoStreamDownload(format, response.getOutputStream());
-        downloader.downloadVideoStream(request);
+        String range = request.getHeader("range");
+        log.debug("format {} {} {}", format.itag().id(), format.extension().value(), range);
+        var download = new RequestVideoStreamDownload(format, response.getOutputStream());
+        if (range != null) {
+            download.header("range", range);
+        }
+
+        try {
+            Path path = Path.of("/data/proxy.txt");
+            if (Files.exists(path)) {
+                String line = Files.readString(path).trim();
+                URI uri = URI.create(line);
+                log.debug("use http proxy: {} {}", uri.getHost(), uri.getPort());
+                download.proxy(uri.getHost(), uri.getPort());
+            }
+        } catch (Exception e) {
+            log.warn("set http proxy failed", e);
+        }
+
+        myDownloader.setHttpServletResponse(response);
+        downloader.downloadVideoStream(download);
     }
 
     private String buildProxyUrl(String id, int tag) {
