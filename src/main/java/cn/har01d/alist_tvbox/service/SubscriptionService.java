@@ -278,6 +278,14 @@ public class SubscriptionService {
     private void addCatSites(Map<String, Object> config) {
         List<Map<String, Object>> sites = getSites(config, "video");
         Map<String, Object> site = new HashMap<>();
+//        site.put("key", "youtube");
+//        site.put("name", "🟢 YouTube");
+//        site.put("type", 3);
+//        site.put("api", "/cat/youtube.js");
+//        site.put("ext", "YOUTUBE_EXT");
+//        sites.add(0, site);
+
+        site = new HashMap<>();
         site.put("key", "bilibili");
         site.put("name", "🟢 BiliBili");
         site.put("type", 3);
@@ -326,6 +334,7 @@ public class SubscriptionService {
         json = json.replace("VOD_EXT", readHostAddress("/vod" + secret));
         json = json.replace("VOD1_EXT", readHostAddress("/vod1" + secret));
         json = json.replace("BILIBILI_EXT", readHostAddress("/bilibili" + secret));
+        json = json.replace("YOUTUBE_EXT", readHostAddress("/youtube" + secret));
         json = json.replace("ALIST_URL", readAListAddress());
         String ali = accountRepository.getFirstByMasterTrue().map(Account::getRefreshToken).orElse("");
         json = json.replace("ALI_TOKEN", ali);
@@ -823,13 +832,13 @@ public class SubscriptionService {
             log.warn("", e);
         }
 
-        try {
-            Map<String, Object> site = buildSite(token, "csp_Youtube", "Youtube");
-            sites.add(id++, site);
-            log.debug("add Youtube site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
+//        try {
+//            Map<String, Object> site = buildSite(token, "csp_Youtube", "YouTube");
+//            sites.add(id++, site);
+//            log.debug("add Youtube site: {}", site);
+//        } catch (Exception e) {
+//            log.warn("", e);
+//        }
     }
 
     private Map<String, Object> buildSite(String token, String key, String name) throws IOException {
@@ -855,6 +864,9 @@ public class SubscriptionService {
         style.put("type", "rect");
         if ("csp_BiliBili".equals(key) || "csp_Youtube".equals(key)) {
             style.put("ratio", 1.597);
+        }
+        if ("csp_Youtube".equals(key)) {
+            site.put("playerType", 2);
         }
         site.put("style", style);
         return site;
