@@ -1860,7 +1860,7 @@ public class TvBoxService {
                 path = fixPath(site.getFolder() + "/" + path);
             }
             return UriComponentsBuilder.fromHttpUrl(site.getUrl())
-                    .replacePath("/d" + (StringUtils.isNotBlank(site.getFolder()) ? site.getFolder() : "") + path)
+                    .replacePath("/d" + path)
                     .replaceQuery("sign=" + sign)
                     .build()
                     .toUri()
