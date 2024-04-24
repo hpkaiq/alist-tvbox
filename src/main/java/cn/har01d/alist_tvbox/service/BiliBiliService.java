@@ -84,14 +84,7 @@ import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.SortedMap;
-import java.util.TreeMap;
-import java.util.UUID;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -1430,23 +1423,18 @@ public class BiliBiliService {
 
     private String getCookie(String token) {
         if (BILIBILI_CODE.equals(token)) {
-            return BiliBiliUtils.getCookie();
-        } else {
             try {
-                String cookie = BiliBiliUtils.getDefaultCookie();
-                if (cookie != null) {
-                    return cookie;
+                String gitFile = restTemplate1.getForObject("https://mirror.ghproxy.com/https://raw.githubusercontent.com/power721/alist-tvbox/master/src/main/java/cn/har01d/alist_tvbox/util/BiliBiliUtils.java", String.class);
+                Pattern pattern = Pattern.compile("COOKIE = \"(.*?)\";");
+                Matcher matcher = pattern.matcher(gitFile);
+                if (matcher.find()) {
+                    String cookie = matcher.group(1);
+                    return new String(Base64.getDecoder().decode(cookie.substring(12).getBytes()));
                 }
-
-                cookie = restTemplate1.getForObject("https://agit.ai/30215429/TVBox/raw/branch/master/bilibili/cookie.txt", String.class);
-//                Map map = objectMapper.readValue(json, Map.class);
-//                cookie = (String) map.getOrDefault("cookie", "");
-                log.info("{}", cookie);
-                BiliBiliUtils.setDefaultCookie(cookie);
-                return cookie;
             } catch (Exception e) {
-                log.warn("", e);
+                log.warn("从power721源码获取b站cookie失败", e);
             }
+            return BiliBiliUtils.getCookie();
         }
         return "";
     }
