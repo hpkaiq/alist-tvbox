@@ -3,6 +3,7 @@ package cn.har01d.alist_tvbox.youtube;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.model.Filter;
 import cn.har01d.alist_tvbox.model.FilterValue;
+import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
@@ -84,9 +85,11 @@ public class YoutubeService {
             .build(this::getVideoInfo);
 
     private final AppProperties appProperties;
+    private final SubscriptionService subscriptionService;
 
-    public YoutubeService(AppProperties appProperties) {
+    public YoutubeService(AppProperties appProperties, SubscriptionService subscriptionService) {
         this.appProperties = appProperties;
+        this.subscriptionService = subscriptionService;
         Config config = new Config.Builder().header("User-Agent", Constants.USER_AGENT).build();
 
         try {
@@ -388,20 +391,20 @@ public class YoutubeService {
         Map<String, Object> result = new HashMap<>();
         result.put("parse", "0");
         if ("com.fongmi.android.tv".equals(client)) {
-            List<Format> videos = new ArrayList<>();
-            info.videoFormats()
-                    .stream()
-                    .filter(Format::isAdaptive)
-                    .filter(e -> e.extension() == Extension.MPEG4)
-                    .filter(e -> e.videoQuality().ordinal() > 5)
-                    .sorted(Comparator.comparing(VideoFormat::videoQuality).reversed())
-                    .forEach(videos::add);
-            String mpd = getMpd(info, videos, audios);
-            log.debug("{}", mpd);
-            String encoded = Base64.getMimeEncoder().encodeToString(mpd.getBytes());
-            String url = "data:application/dash+xml;base64," + encoded.replaceAll("\\r\\n", "\n") + "\n";
-            urls.add("Dash");
-            urls.add(url);
+//            List<Format> videos = new ArrayList<>();
+//            info.videoFormats()
+//                    .stream()
+//                    .filter(Format::isAdaptive)
+//                    .filter(e -> e.extension() == Extension.MPEG4)
+//                    .filter(e -> e.videoQuality().ordinal() > 5)
+//                    .sorted(Comparator.comparing(VideoFormat::videoQuality).reversed())
+//                    .forEach(videos::add);
+//            String mpd = getMpd(info, videos, audios);
+//            log.debug("{}", mpd);
+//            String encoded = Base64.getMimeEncoder().encodeToString(mpd.getBytes());
+//            String url = "data:application/dash+xml;base64," + encoded.replaceAll("\\r\\n", "\n") + "\n";
+//            urls.add("Dash");
+//            urls.add(url);
             result.put("url", urls);
         } else if ("node".equals(client)) {
             result.put("url", urls);
@@ -441,8 +444,12 @@ public class YoutubeService {
     }
 
     private String buildProxyUrl(String id, int tag) {
+        String path = "/youtube-proxy";
+        if (StringUtils.isNotBlank(subscriptionService.getToken())) {
+            path = path + "/" + subscriptionService.getToken();
+        }
         return ServletUriComponentsBuilder.fromCurrentRequest()
-                .replacePath("/youtube-proxy")
+                .replacePath(path)
                 .replaceQuery("id=" + id + "&q=" + tag)
                 .build()
                 .toUriString();

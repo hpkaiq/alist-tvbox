@@ -3,7 +3,47 @@ package cn.har01d.alist_tvbox.service;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.FilterDto;
 import cn.har01d.alist_tvbox.dto.NavigationDto;
-import cn.har01d.alist_tvbox.dto.bili.*;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelItem;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliChannelResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFavItemsResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFavListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliFeedResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHistoryResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHistoryResult;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHotResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliLoginResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlay;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlayResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliQrCodeResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchPgcResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchPgcResult;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSearchResult;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeasonInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeasonResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliTokenResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2InfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfo;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.ChannelArchive;
+import cn.har01d.alist_tvbox.dto.bili.ChannelArchives;
+import cn.har01d.alist_tvbox.dto.bili.ChannelList;
+import cn.har01d.alist_tvbox.dto.bili.CookieData;
+import cn.har01d.alist_tvbox.dto.bili.FavItem;
+import cn.har01d.alist_tvbox.dto.bili.QrCode;
+import cn.har01d.alist_tvbox.dto.bili.QrCodeResult;
+import cn.har01d.alist_tvbox.dto.bili.Resp;
+import cn.har01d.alist_tvbox.dto.bili.Sub;
+import cn.har01d.alist_tvbox.dto.bili.SubtitleData;
+import cn.har01d.alist_tvbox.dto.bili.SubtitleDataResponse;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.model.Filter;
@@ -28,7 +68,11 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
@@ -40,12 +84,23 @@ import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static cn.har01d.alist_tvbox.util.Constants.*;
+import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_CODE;
+import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE;
+import static cn.har01d.alist_tvbox.util.Constants.BILI_BILI;
+import static cn.har01d.alist_tvbox.util.Constants.FILE;
+import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
 
 @Slf4j
 @Service
@@ -64,10 +119,9 @@ public class BiliBiliService {
     private static final String SEASON_RANK_API = "https://api.bilibili.com/pgc/season/rank/web/list?day=3&season_type=%d";
     private static final String SEASON_API = "https://api.bilibili.com/pgc/season/index/result?st=1&style_id=%s&season_version=-1&spoken_language_type=-1&area=-1&is_finish=%s&copyright=-1&season_status=-1&season_month=-1&year=%s&order=0&sort=0&page=%d&season_type=%s&pagesize=30&type=1";
     private static final String HISTORY_API = "https://api.bilibili.com/x/web-interface/history/cursor?ps=30&type=archive&business=archive&max=%s&view_at=%s";
+    private static final String PLAY_API1 = "https://api.bilibili.com/pgc/player/web/playurl?avid=%s&cid=%s&ep_id=%s&qn=127&type=&otype=json&fourk=1&fnver=0&fnval=%d"; //dash
     private static final String PLAY_API = "https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=127&type=&otype=json&fourk=1&fnver=0&fnval=%d"; //dash
     private static final String PLAY_API_NOT_DASH = "https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=127&type=&otype=json&fourk=1&fnver=0"; //not dash
-    private static final String PLAY_API1 = "https://api.bilibili.com/pgc/player/web/playurl?avid=%s&cid=%s&qn=127&type=&otype=json&fourk=1&fnver=0&fnval=%d"; //dash
-    private static final String PLAY_API1_NOT_DASH = "https://api.bilibili.com/pgc/player/web/playurl?avid=%s&cid=%s&qn=127&type=&otype=json&fourk=1&fnver=0"; //not dash
     private static final String PLAY_API2 = "https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=127&platform=html5&high_quality=1"; // mp4
     private static final String TOKEN_API = "https://api.bilibili.com/x/player/playurl/token?%said=%d&cid=%d";
     private static final String POPULAR_API = "https://api.bilibili.com/x/web-interface/popular?ps=30&pn=";
@@ -1211,7 +1265,7 @@ public class BiliBiliService {
             headers.set(entry.getKey(), entry.getValue());
         }
         String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
-        if (StringUtils.isBlank(cookie) || "666".equals(cookie)) {
+        if (StringUtils.isBlank(cookie) || BILIBILI_CODE.equals(cookie)) {
             cookie = getCookie(cookie);
         }
         headers.set(HttpHeaders.COOKIE, cookie.trim());
@@ -1279,9 +1333,6 @@ public class BiliBiliService {
             ResponseEntity<Resp> response = restTemplate.exchange(url, HttpMethod.GET, entity, Resp.class);
             log.debug("url: {}  response: {}", url, response.getBody());
             if (response.getBody().getCode() != 0) {
-                response = restTemplate.exchange(url.replace("x/player", "pgc/player/web"), HttpMethod.GET, entity, Resp.class);
-            }
-            if (response.getBody().getCode() != 0) {
                 log.warn("获取失败: {} {}", response.getBody().getCode(), response.getBody().getMessage());
             }
 
@@ -1290,10 +1341,6 @@ public class BiliBiliService {
             ResponseEntity<BiliBiliPlayResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliPlayResponse.class);
             BiliBiliPlayResponse res = response.getBody();
             log.debug("getPlayUrl url: {}  response: {}", url, res);
-            if (res.getCode() != 0) {
-                response = restTemplate.exchange(url.replace("x/player", "pgc/player/web"), HttpMethod.GET, entity, BiliBiliPlayResponse.class);
-                res = response.getBody();
-            }
             if (res.getCode() != 0) {
                 log.warn("获取失败: {} {}", res.getCode(), res.getMessage());
             }
@@ -1382,18 +1429,7 @@ public class BiliBiliService {
     }
 
     private String getCookie(String token) {
-        if ("666".equals(token)) {
-            try {
-                String gitFile = restTemplate1.getForObject("https://mirror.ghproxy.com/https://raw.githubusercontent.com/power721/alist-tvbox/master/src/main/java/cn/har01d/alist_tvbox/util/BiliBiliUtils.java", String.class);
-                Pattern pattern = Pattern.compile("COOKIE = \"(.*?)\";");
-                Matcher matcher = pattern.matcher(gitFile);
-                if (matcher.find()) {
-                    String cookie = matcher.group(1);
-                    return new String(Base64.getDecoder().decode(cookie.substring(12).getBytes()));
-                }
-            } catch (Exception e) {
-                log.warn("从power721源码获取b站cookie失败", e);
-            }
+        if (BILIBILI_CODE.equals(token)) {
             return BiliBiliUtils.getCookie();
         } else {
             try {
@@ -1419,7 +1455,7 @@ public class BiliBiliService {
         try {
             String csrf = "";
             String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
-            if (StringUtils.isBlank(cookie) || "666".equals(cookie)) {
+            if (StringUtils.isBlank(cookie) || BILIBILI_CODE.equals(cookie)) {
                 cookie = getCookie(cookie);
             }
             String[] parts = cookie.split(";");
@@ -1966,7 +2002,7 @@ public class BiliBiliService {
     @Scheduled(cron = "0 30 9 * * *")
     public void checkin() {
         String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse(null);
-        if (cookie == null || cookie.equals("666") || cookie.contains(String.valueOf(BiliBiliUtils.getMid())) || cookie.contains("3493271303096985")) {
+        if (cookie == null || cookie.equals(BILIBILI_CODE) || cookie.contains(String.valueOf(BiliBiliUtils.getMid())) || cookie.contains("3493271303096985")) {
             return;
         }
 
