@@ -650,9 +650,9 @@ public class IndexService {
                         if (context.getMaxDepth() == depth + 1 && !context.isIncludeFiles()) {
                             files.add(fsInfo.getName());
                         } else {
-                            if (context.getIndexRequest().getSleep() > 0) {
-                                log.debug("sleep {}", context.getIndexRequest().getSleep());
-                                Thread.sleep(context.getIndexRequest().getSleep());
+                            if (isSeason(fsInfo.getName())) {
+                                hasFile = true;
+                                continue;
                             }
 
                             if (isCancelled(context)) {
@@ -668,7 +668,7 @@ public class IndexService {
                         }
                     } else if (isMediaFormat(fsInfo.getName())) { // file
                         hasFile = true;
-                        if (context.isIncludeFiles() || path.contains("电影")) {
+                        if (context.isIncludeFiles() || isMovie(path)) {
                             String newPath = fixPath(path + "/" + fsInfo.getName());
                             if (exclude(context.getExcludes(), newPath)) {
                                 log.warn("exclude file {}", newPath);
@@ -702,6 +702,15 @@ public class IndexService {
         }
 
         taskService.updateTaskSummary(context.getTaskId(), context.stats.toString());
+    }
+
+    private boolean isMovie(String path) {
+        if (SEASON1.matcher(path).find()
+                || SEASON2.matcher(path).find()
+                || SEASON4.matcher(path).find()) {
+            return false;
+        }
+        return path.replace("【动漫.动画电影】", "").contains("电影") || path.contains("剧场版");
     }
 
     private void index(IndexContext context, String path, int depth) throws IOException {
@@ -744,9 +753,6 @@ public class IndexService {
                     if (fsInfo.getName().equals("字幕")) {
                         continue;
                     }
-                    if (isSeason(fsInfo.getName())) {
-                        hasFile = true;
-                    }
                     String newPath = fixPath(path + "/" + fsInfo.getName());
                     log.debug("new path: {}", newPath);
                     if (exclude(context.getExcludes(), newPath)) {
@@ -759,6 +765,11 @@ public class IndexService {
                     if (context.getMaxDepth() == depth + 1 && !context.isIncludeFiles()) {
                         files.add(fsInfo.getName());
                     } else {
+                        if (isSeason(fsInfo.getName())) {
+                            hasFile = true;
+                            continue;
+                        }
+
                         if (context.getIndexRequest().getSleep() > 0) {
                             log.debug("sleep {}", context.getIndexRequest().getSleep());
                             Thread.sleep(context.getIndexRequest().getSleep());
