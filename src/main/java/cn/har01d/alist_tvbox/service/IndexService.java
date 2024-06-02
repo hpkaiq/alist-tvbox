@@ -935,7 +935,7 @@ public class IndexService {
         int index = name.lastIndexOf('.');
         if (index > 0) {
             String suffix = name.substring(index + 1);
-            return appProperties.getFormats().contains(suffix);
+            return appProperties.getFormats().contains(suffix.toLowerCase());
         }
         return false;
     }

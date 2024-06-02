@@ -1788,7 +1788,7 @@ public class TvBoxService {
         int index = name.lastIndexOf('.');
         if (index > 0) {
             String suffix = name.substring(index + 1);
-            return appProperties.getFormats().contains(suffix);
+            return appProperties.getFormats().contains(suffix.toLowerCase());
         }
         return false;
     }
@@ -1797,7 +1797,7 @@ public class TvBoxService {
         int index = name.lastIndexOf('.');
         if (index > 0) {
             String suffix = name.substring(index + 1);
-            return appProperties.getSubtitles().contains(suffix);
+            return appProperties.getSubtitles().contains(suffix.toLowerCase());
         }
         return false;
     }
