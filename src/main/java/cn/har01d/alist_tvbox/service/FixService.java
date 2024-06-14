@@ -23,7 +23,7 @@ public class FixService {
             }
         } catch (Exception ignored) {
         }
-        urlParamMap.put("sourceUrl", urlParamMap.getOrDefault("sourceUrl", url));
+        urlParamMap.put("sourceUrl", urlParamMap.getOrDefault("sourceUrl", url.substring(0, url.lastIndexOf("/") > 7 ? url.lastIndexOf("/") : url.length())));
         return urlParamMap;
     }
 
