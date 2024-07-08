@@ -1052,6 +1052,7 @@ public class SubscriptionService {
             json = Pattern.compile("^\\s*//.*\r?\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
             json = Pattern.compile("(?m)^\\s*/\\*.*?\\*/", Pattern.DOTALL).matcher(json).replaceAll("");
             json = json.replace("\r", " ").replace("\n", " ");
+            json = json.replace("{Cloud-drive", "{\"Cloud-drive");
 
             return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
