@@ -1,12 +1,16 @@
 package cn.har01d.alist_tvbox.web;
 
+import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.TokenDto;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
+import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import org.springframework.web.util.UriComponents;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -20,9 +24,12 @@ public class TvBoxController {
     private final TvBoxService tvBoxService;
     private final SubscriptionService subscriptionService;
 
-    public TvBoxController(TvBoxService tvBoxService, SubscriptionService subscriptionService) {
+    private final AppProperties appProperties;
+
+    public TvBoxController(TvBoxService tvBoxService, SubscriptionService subscriptionService, AppProperties appProperties) {
         this.tvBoxService = tvBoxService;
         this.subscriptionService = subscriptionService;
+        this.appProperties = appProperties;
     }
 
     @GetMapping("/vod1")
@@ -149,9 +156,9 @@ public class TvBoxController {
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
             String sid = s.getSid();
-            String name =  (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
+            String name = (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
             HashMap<String, String> map = new HashMap<>();
-            map.put("url", subscriptionService.readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
+            map.put("url", readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
             map.put("name", name);
             return map;
         }).collect(Collectors.toList());
@@ -162,5 +169,14 @@ public class TvBoxController {
     @GetMapping("/allsubs")
     public Map<String, Object> allSubscription(HttpServletRequest request) {
         return allSubscription("", request);
+    }
+
+    public String readHostAddress(String path) {
+        UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
+                .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
+                .replacePath(path)
+                .replaceQuery(null)
+                .build();
+        return uriComponents.toUriString();
     }
 }

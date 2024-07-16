@@ -977,7 +977,7 @@ public class SubscriptionService {
         return readHostAddress("");
     }
 
-    public String readHostAddress(String path) {
+    private String readHostAddress(String path) {
         UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
                 .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath(path)
