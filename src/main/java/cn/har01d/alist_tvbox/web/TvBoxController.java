@@ -159,7 +159,7 @@ public class TvBoxController {
         return res;
     }
 
-    @GetMapping("/allsubs}")
+    @GetMapping("/allsubs")
     public Map<String, Object> allSubscription(HttpServletRequest request) {
         return allSubscription("", request);
     }
