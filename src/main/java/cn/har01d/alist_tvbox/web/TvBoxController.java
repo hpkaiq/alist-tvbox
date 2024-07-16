@@ -158,7 +158,7 @@ public class TvBoxController {
             String sid = s.getSid();
             String name = (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
             HashMap<String, String> map = new HashMap<>();
-            map.put("url", readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
+            map.put("url", readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid, null));
             map.put("name", name);
             return map;
         }).collect(Collectors.toList());
@@ -171,11 +171,11 @@ public class TvBoxController {
         return allSubscription("", request);
     }
 
-    public String readHostAddress(String path) {
+    public String readHostAddress(String path, String query) {
         UriComponents uriComponents = ServletUriComponentsBuilder.fromCurrentRequest()
                 .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath(path)
-                .replaceQuery(null)
+                .replaceQuery(query)
                 .build();
         return uriComponents.toUriString();
     }
