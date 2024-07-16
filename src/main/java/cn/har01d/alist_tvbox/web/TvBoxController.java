@@ -149,7 +149,7 @@ public class TvBoxController {
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
             String sid = s.getSid();
-            String name = s.getName() + (StringUtils.isNotBlank(env) ? env : "");
+            String name =  (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
             HashMap<String, String> map = new HashMap<>();
             map.put("url", subscriptionService.readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
             map.put("name", name);
