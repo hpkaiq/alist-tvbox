@@ -6,13 +6,7 @@ import cn.har01d.alist_tvbox.service.TvBoxService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -150,11 +144,12 @@ public class TvBoxController {
 
     @GetMapping("/{token}/allsubs")
     public Map<String, Object> allSubscription(@PathVariable String token, HttpServletRequest request) {
+        String env = request.getParameter("env");
         subscriptionService.checkToken(token);
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
             String sid = s.getSid();
-            String name = s.getName();
+            String name = s.getName() + (StringUtils.isNotBlank(env) ? env : "");
             HashMap<String, String> map = new HashMap<>();
             map.put("url", subscriptionService.readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid));
             map.put("name", name);
@@ -164,7 +159,7 @@ public class TvBoxController {
         return res;
     }
 
-    @GetMapping("/allsubs")
+    @GetMapping("/allsubs}")
     public Map<String, Object> allSubscription(HttpServletRequest request) {
         return allSubscription("", request);
     }
