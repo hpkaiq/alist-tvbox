@@ -304,6 +304,7 @@ const options = [
     label: '阿里',
     options: [
       {label: 'openapi.alipan.com', value: 'https://openapi.alipan.com/oauth/access_token'},
+      {label: '云盘TV', value: 'https://alitv.sakurapy.de/token'},
     ]
   }
 ]
