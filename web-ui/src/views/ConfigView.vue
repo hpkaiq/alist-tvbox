@@ -292,6 +292,7 @@ const options = [
     options: [
       {label: 'api.xhofe.top', value: 'https://api.xhofe.top/alist/ali_open/token'},
       {label: 'api.nn.ci ✈', value: 'https://api.nn.ci/alist/ali_open/token'},
+      {label: '云盘TV', value: 'https://alitv.sakurapy.de/token'},
     ]
   },
   {
@@ -304,7 +305,6 @@ const options = [
     label: '阿里',
     options: [
       {label: 'openapi.alipan.com', value: 'https://openapi.alipan.com/oauth/access_token'},
-      {label: '云盘TV', value: 'https://alitv.sakurapy.de/token'},
     ]
   }
 ]
