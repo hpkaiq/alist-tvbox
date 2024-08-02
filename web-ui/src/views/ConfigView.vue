@@ -294,6 +294,7 @@ const options = [
       {label: 'api.nn.ci ✈', value: 'https://api.nn.ci/alist/ali_open/token'},
       {label: '云盘TV-sakurapy', value: 'https://alitv.sakurapy.de/token'},
       {label: '云盘TV-voicehub', value: 'https://www.voicehub.top/api/v1/oauth/alipan/token'},
+      {label: '云盘TV-xu777888', value: 'https://alitv.xu777888.xyz/token'},
     ]
   },
   {
