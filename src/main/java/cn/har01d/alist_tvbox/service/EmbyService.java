@@ -139,8 +139,8 @@ public class EmbyService {
             throw new BadRequestException("用户名不能为空");
         }
 
-        if (StringUtils.isBlank(dto.getPassword())) {
-            throw new BadRequestException("密码不能为空");
+        if (dto.getPassword() == null) {
+            dto.setPassword("");
         }
 
         try {
@@ -205,6 +205,7 @@ public class EmbyService {
         if (item.getImageTags() != null && item.getImageTags().getPrimary() != null) {
             movie.setVod_pic(emby.getUrl() + "/emby/Items/" + item.getId() + "/Images/Primary?maxWidth=400&tag=" + item.getImageTags().getPrimary() + "&quality=90");
         }
+        movie.setVod_director(emby.getName());
         movie.setVod_remarks(Objects.toString(item.getRating(), null));
         movie.setVod_year(Objects.toString(item.getYear(), null));
         return movie;
@@ -226,7 +227,7 @@ public class EmbyService {
 
         MovieList result = new MovieList();
         MovieDetail movie = getMovieDetail(item, emby);
-        movie.setVod_content(emby.getName() + ": " + item.getOverview());
+        movie.setVod_content(item.getOverview());
         movie.setVod_play_from(emby.getName());
         movie.setVod_play_url(movie.getVod_id());
         if ("Episode".equals(item.getType()) || "Series".equals(item.getType())) {
@@ -408,8 +409,13 @@ public class EmbyService {
         String url = emby.getUrl() + "/emby/Items/" + parts[1] + "/PlaybackInfo?IsPlayback=false&AutoOpenLiveStream=false&StartTimeTicks=0&MaxStreamingBitrate=2147483647&UserId=" + info.getUser().getId();
         var media = restTemplate.exchange(url, HttpMethod.POST, entity, EmbyMediaSources.class).getBody();
 
+        List<String> urls = new ArrayList<>();
+        for (var source : media.getItems()) {
+            urls.add(source.getName());
+            urls.add(emby.getUrl() + source.getUrl());
+        }
         Map<String, Object> result = new HashMap<>();
-        result.put("url", emby.getUrl() + media.getItems().get(0).getUrl());
+        result.put("url", urls);
         result.put("subs", getSubtitles(emby, media.getItems().get(0)));
         result.put("header", "{\"User-Agent\": \"" + Constants.USER_AGENT + "\"}");
         result.put("parse", 0);
@@ -456,7 +462,7 @@ public class EmbyService {
             entity = new HttpEntity<>(null, headers);
             String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Views";
             var response = restTemplate.exchange(url, HttpMethod.GET, entity, EmbyItems.class).getBody();
-            info.setViews(response.getItems());
+            info.setViews(new ArrayList<>(new LinkedHashSet<>(response.getItems())));
 
             return info;
         } catch (Exception e) {
