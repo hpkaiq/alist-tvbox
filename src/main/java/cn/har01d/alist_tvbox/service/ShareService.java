@@ -1,20 +1,10 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.dto.OpenApiDto;
 import cn.har01d.alist_tvbox.dto.SharesDto;
-import cn.har01d.alist_tvbox.entity.AListAlias;
-import cn.har01d.alist_tvbox.entity.AListAliasRepository;
-import cn.har01d.alist_tvbox.entity.Account;
-import cn.har01d.alist_tvbox.entity.AccountRepository;
-import cn.har01d.alist_tvbox.entity.PikPakAccount;
-import cn.har01d.alist_tvbox.entity.PikPakAccountRepository;
-import cn.har01d.alist_tvbox.entity.Setting;
-import cn.har01d.alist_tvbox.entity.SettingRepository;
-import cn.har01d.alist_tvbox.entity.Share;
-import cn.har01d.alist_tvbox.entity.ShareRepository;
-import cn.har01d.alist_tvbox.entity.Site;
-import cn.har01d.alist_tvbox.entity.SiteRepository;
+import cn.har01d.alist_tvbox.entity.*;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.model.LoginRequest;
 import cn.har01d.alist_tvbox.model.LoginResponse;
@@ -68,6 +58,7 @@ public class ShareService {
     private final SiteRepository siteRepository;
     private final AccountRepository accountRepository;
     private final PikPakAccountRepository pikPakAccountRepository;
+    private final PanAccountRepository panAccountRepository;
     private final AccountService accountService;
     private final AListLocalService aListLocalService;
     private final ConfigFileService configFileService;
@@ -86,6 +77,7 @@ public class ShareService {
                         SiteRepository siteRepository,
                         AccountRepository accountRepository,
                         PikPakAccountRepository pikPakAccountRepository,
+                        PanAccountRepository panAccountRepository,
                         PanAccountService panAccountService,
                         AppProperties appProperties,
                         AccountService accountService,
@@ -101,6 +93,7 @@ public class ShareService {
         this.siteRepository = siteRepository;
         this.accountRepository = accountRepository;
         this.pikPakAccountRepository = pikPakAccountRepository;
+        this.panAccountRepository = panAccountRepository;
         this.panAccountService = panAccountService;
         this.accountService = accountService;
         this.aListLocalService = aListLocalService;
@@ -540,7 +533,7 @@ public class ShareService {
     public String getQuarkCookie(String id) {
         String aliSecret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElse("");
         if (aliSecret.equals(id)) {
-            return shareRepository.findByType(2).stream().findFirst().map(Share::getCookie).orElse("").trim();
+            return panAccountRepository.findByTypeAndMasterTrue(DriverType.QUARK).map(PanAccount::getCookie).orElse("").trim();
         }
         return "";
     }
@@ -548,7 +541,7 @@ public class ShareService {
     public String getUcCookie(String id) {
         String aliSecret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElse("");
         if (aliSecret.equals(id)) {
-            return shareRepository.findByType(6).stream().findFirst().map(Share::getCookie).orElse("").trim();
+            return panAccountRepository.findByTypeAndMasterTrue(DriverType.UC).map(PanAccount::getCookie).orElse("").trim();
         }
         return "";
     }
@@ -556,7 +549,7 @@ public class ShareService {
     public String get115Cookie(String id) {
         String aliSecret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElse("");
         if (aliSecret.equals(id)) {
-            return shareRepository.findByType(3).stream().findFirst().map(Share::getCookie).orElse("").trim();
+            return panAccountRepository.findByTypeAndMasterTrue(DriverType.PAN115).map(PanAccount::getCookie).orElse("").trim();
         }
         return "";
     }
@@ -846,30 +839,4 @@ public class ShareService {
         return shares;
     }
 
-    @Scheduled(initialDelay = 1800_000, fixedDelay = 1800_000)
-    public void syncCookies() {
-        if (aListLocalService.getAListStatus() != 2) {
-            return;
-        }
-        var cookie = aListLocalService.getSetting("quark_cookie");
-        log.debug("quark_cookie={}", cookie);
-        saveCookie(2, cookie);
-        cookie = aListLocalService.getSetting("uc_cookie");
-        log.debug("uc_cookie={}", cookie);
-        saveCookie(6, cookie);
-        cookie = aListLocalService.getSetting("115_cookie");
-        log.debug("115_cookie={}", cookie);
-        saveCookie(3, cookie);
-    }
-
-    private void saveCookie(int type, SettingResponse response) {
-        if (response.getCode() == 200) {
-            List<Share> shares = shareRepository.findByType(type);
-            if (!shares.isEmpty()) {
-                Share share = shares.get(shares.size() - 1);
-                share.setCookie(response.getData().getValue());
-                shareRepository.save(share);
-            }
-        }
-    }
 }

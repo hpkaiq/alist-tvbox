@@ -4,10 +4,12 @@ import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.entity.*;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
+import cn.har01d.alist_tvbox.model.SettingResponse;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -81,11 +83,11 @@ public class PanAccountService {
     public void loadStorages() {
         List<PanAccount> accounts = panAccountRepository.findAll();
         for (PanAccount account : accounts) {
-            updateAList(account);
+            insertAList(account);
         }
     }
 
-    private void updateAList(PanAccount account) {
+    private void insertAList(PanAccount account) {
         int id = account.getId() + IDX;
         if (account.getType() == DriverType.QUARK) {
             String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',0,'name','ASC','',0,'native_proxy','');";
@@ -105,7 +107,30 @@ public class PanAccountService {
         }
     }
 
+    private void updateAList(PanAccount account) {
+        int id = account.getId() + IDX;
+        if (account.getType() == DriverType.QUARK) {
+            String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'Quark',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'native_proxy','',0);";
+            int count = Utils.executeUpdate(String.format(sql, id, getMountPath(account), account.getCookie(), account.getFolder()));
+            log.info("insert Quark account {} : {}, result: {}", id, getMountPath(account), count);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('quark_cookie','" + account.getCookie() + "','','text','',1,0);");
+        } else if (account.getType() == DriverType.UC) {
+            String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'UC',30,'work','{\"cookie\":\"%s\",\"root_folder_id\":\"%s\",\"order_by\":\"name\",\"order_direction\":\"ASC\"}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'native_proxy','',0);";
+            int count = Utils.executeUpdate(String.format(sql, id, getMountPath(account), account.getCookie(), account.getFolder()));
+            log.info("insert UC account {} : {}, result: {}", id, getMountPath(account), count);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('uc_cookie','" + account.getCookie() + "','','text','',1,0);");
+        } else if (account.getType() == DriverType.PAN115) {
+            String sql = "INSERT INTO x_storages VALUES(%d,'%s',0,'115 Cloud',30,'work','{\"cookie\":\"%s\",\"qrcode_token\":\"%s\",\"root_folder_id\":\"%s\",\"page_size\":56}','','2023-06-15 12:00:00+00:00',1,'name','ASC','',0,'302_redirect','',0);";
+            int count = Utils.executeUpdate(String.format(sql, id, getMountPath(account), account.getCookie(), account.getToken(), account.getFolder()));
+            log.info("insert 115 account {}: {}, result: {}", id, getMountPath(account), count);
+            Utils.executeUpdate("INSERT INTO x_setting_items VALUES('115_cookie','" + account.getCookie() + "','','text','',1,0);");
+        }
+    }
+
     private Object getMountPath(PanAccount account) {
+        if (account.getName().startsWith("/")) {
+            return account.getName();
+        }
         if (account.getType() == DriverType.QUARK) {
             return "/\uD83C\uDF1E我的夸克网盘/" + account.getName();
         } else if (account.getType() == DriverType.UC) {
@@ -165,6 +190,10 @@ public class PanAccountService {
         account.setToken(dto.getToken());
         account.setFolder(dto.getFolder());
 
+        if (panAccountRepository.countByType(account.getType()) == 0) {
+            account.setMaster(true);
+        }
+
         if (changed && account.isMaster()) {
             updateMaster(account);
         }
@@ -192,6 +221,9 @@ public class PanAccountService {
         if (StringUtils.isBlank(dto.getName())) {
             throw new BadRequestException("名称不能为空");
         }
+//        if (dto.getName().contains("/")) {
+//            throw new BadRequestException("名称不能包含/");
+//        }
         if (dto.getType() == null) {
             throw new BadRequestException("类型不能为空");
         }
@@ -214,6 +246,12 @@ public class PanAccountService {
                 a.setMaster(false);
             }
             account.setMaster(true);
+            String key = switch (account.getType()) {
+                case QUARK -> "quark_cookie";
+                case PAN115 -> "115_cookie";
+                case UC -> "uc_cookie";
+            };
+            aListLocalService.updateSetting(key, account.getCookie(), "string");
             panAccountRepository.saveAll(list);
         }
     }
@@ -232,6 +270,31 @@ public class PanAccountService {
             }
         } catch (Exception e) {
             throw new BadRequestException(e);
+        }
+    }
+
+    @Scheduled(initialDelay = 1800_000, fixedDelay = 1800_000)
+    public void syncCookies() {
+        if (aListLocalService.getAListStatus() != 2) {
+            return;
+        }
+        var cookie = aListLocalService.getSetting("quark_cookie");
+        log.debug("quark_cookie={}", cookie);
+        saveCookie(DriverType.QUARK, cookie);
+        cookie = aListLocalService.getSetting("uc_cookie");
+        log.debug("uc_cookie={}", cookie);
+        saveCookie(DriverType.UC, cookie);
+        cookie = aListLocalService.getSetting("115_cookie");
+        log.debug("115_cookie={}", cookie);
+        saveCookie(DriverType.PAN115, cookie);
+    }
+
+    private void saveCookie(DriverType type, SettingResponse response) {
+        if (response.getCode() == 200) {
+            panAccountRepository.findByTypeAndMasterTrue(type).ifPresent(account -> {
+                account.setCookie(response.getData().getValue());
+                panAccountRepository.save(account);
+            });
         }
     }
 }
