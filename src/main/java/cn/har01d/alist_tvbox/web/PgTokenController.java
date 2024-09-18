@@ -7,6 +7,7 @@ import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpResponse;
@@ -131,7 +132,10 @@ public class PgTokenController {
             String json = Files.readString(path);
             Map<String, Object> override = objectMapper.readValue(json, Map.class);
             for (Map.Entry<String, Object> entry : override.entrySet()) {
-                map.put(entry.getKey(), entry.getValue());
+                Object value = entry.getValue();
+                if (value != null && StringUtils.isNotBlank(value.toString()) && !"\"\"".equals(value.toString())){
+                    map.put(entry.getKey(), value);
+                }
             }
         }
 
