@@ -324,9 +324,6 @@ const options = [
     options: [
       {label: 'api.xhofe.top', value: 'https://api.xhofe.top/alist/ali_open/token'},
       {label: 'api.nn.ci ✈', value: 'https://api.nn.ci/alist/ali_open/token'},
-      {label: '云盘TV-sakurapy', value: 'https://alitv.sakurapy.de/token'},
-      {label: '云盘TV-voicehub', value: 'https://www.voicehub.top/api/v1/oauth/alipan/token'},
-      {label: '云盘TV-xu777888', value: 'https://alitv.xu777888.xyz/token'},
     ]
   },
   {
@@ -364,8 +361,7 @@ const indexRemoteVersion = ref('')
 const movieVersion = ref(0)
 const movieRemoteVersion = ref(0)
 const cachedMovieVersion = ref(0)
-const fileExpireHour = ref(6)
-const deleteDelayTime = ref(0)
+const deleteDelayTime = ref(900)
 const aListStartTime = ref('')
 const openTokenUrl = ref('')
 const dockerAddress = ref('')
@@ -526,8 +522,7 @@ onMounted(() => {
     form.value.enabledToken = !!data.token
     scheduleTime.value = data.schedule_time || new Date(2023, 6, 20, 9, 0)
     aListStartTime.value = data.alist_start_time
-    fileExpireHour.value = +data.file_expire_hour || 6
-    deleteDelayTime.value = +data.delete_delay_time || 0
+    deleteDelayTime.value = +data.delete_delay_time
     movieVersion.value = data.movie_version
     indexVersion.value = data.index_version
     dockerVersion.value = data.docker_version

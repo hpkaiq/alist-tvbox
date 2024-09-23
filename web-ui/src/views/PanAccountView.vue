@@ -10,7 +10,7 @@
     <el-table :data="accounts" border style="width: 100%">
       <el-table-column prop="id" label="ID" sortable width="70">
         <template #default="scope">
-          {{ scope.row.id + 9000 }}
+          {{ scope.row.id + 4000 }}
         </template>
       </el-table-column>
       <el-table-column prop="type" label="类型" sortable width="150">
@@ -59,11 +59,19 @@
         <el-form-item label="Cookie" label-width="140" required>
           <el-input v-model="form.cookie" type="textarea" :rows="5"/>
         </el-form-item>
-<!--        <el-form-item label="Token" label-width="140">-->
-<!--          <el-input v-model="form.token"/>-->
-<!--        </el-form-item>-->
+        <el-form-item label="Token" label-width="140" v-if="form.type=='PAN115'">
+          <el-input v-model="form.token"/>
+        </el-form-item>
         <el-form-item label="文件夹ID" label-width="140">
           <el-input v-model="form.folder"/>
+        </el-form-item>
+        <el-form-item v-if="form.type=='PAN115'" label="本地代理" label-width="140">
+          <el-switch
+            v-model="form.useProxy"
+            inline-prompt
+            active-text="开启"
+            inactive-text="关闭"
+          />
         </el-form-item>
         <el-form-item label="主账号" label-width="140">
           <el-switch
@@ -85,7 +93,7 @@
     </el-dialog>
 
     <el-dialog v-model="dialogVisible" title="删除网盘账号" width="30%">
-      <p>是否删除网盘账号 - {{ form.id + 9000 }}</p>
+      <p>是否删除网盘账号 - {{ form.id + 4000 }}</p>
       <p> {{ getTypeName(form.type) }} ： {{ form.name }}</p>
       <template #footer>
       <span class="dialog-footer">
@@ -117,6 +125,7 @@ const form = ref({
   cookie: '',
   token: '',
   folder: '',
+  useProxy: false,
   master: false,
 })
 
@@ -130,6 +139,7 @@ const handleAdd = () => {
     cookie: '',
     token: '',
     folder: '',
+    useProxy: false,
     master: false,
   }
   formVisible.value = true

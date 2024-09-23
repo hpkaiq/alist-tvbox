@@ -69,6 +69,7 @@ public class TvBoxService {
     private final TmdbService tmdbService;
     private final SubscriptionService subscriptionService;
     private final ConfigFileService configFileService;
+    private final ProxyService proxyService;
     private final ObjectMapper objectMapper;
     private final Environment environment;
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
@@ -105,6 +106,7 @@ public class TvBoxService {
             new FilterValue("无分", "no"),
             new FilterValue("低分", "low")
     );
+    private final PikPakAccountRepository pikPakAccountRepository;
     private List<Site> sites = new ArrayList<>();
 
     public TvBoxService(AccountRepository accountRepository,
@@ -119,9 +121,11 @@ public class TvBoxService {
                         TmdbService tmdbService,
                         SubscriptionService subscriptionService,
                         ConfigFileService configFileService,
+                        ProxyService proxyService,
                         ObjectMapper objectMapper,
                         Environment environment,
-                        PanAccountRepository panAccountRepository) {
+                        PanAccountRepository panAccountRepository,
+                        PikPakAccountRepository pikPakAccountRepository) {
         this.accountRepository = accountRepository;
         this.aliasRepository = aliasRepository;
         this.shareRepository = shareRepository;
@@ -134,9 +138,11 @@ public class TvBoxService {
         this.tmdbService = tmdbService;
         this.subscriptionService = subscriptionService;
         this.configFileService = configFileService;
+        this.proxyService = proxyService;
         this.objectMapper = objectMapper;
         this.environment = environment;
         this.panAccountRepository = panAccountRepository;
+        this.pikPakAccountRepository = pikPakAccountRepository;
     }
 
     private Site getXiaoyaSite() {
@@ -316,8 +322,7 @@ public class TvBoxService {
             result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
 
-        int pp = shareRepository.countByType(1);
-        if (shareRepository.count() > pp) {
+        if (shareRepository.countByType(0) > 0) {
             Category category = new Category();
             category.setType_id("1$/\uD83C\uDE34我的阿里分享$1");
             category.setType_name("阿里分享");
@@ -373,10 +378,18 @@ public class TvBoxService {
             result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
 
-        if (pp > 0) {
+        if (pikPakAccountRepository.count() > 0) {
+            Category category = new Category();
+            category.setType_id("1$/\uD83C\uDD7F️我的PikPak$1");
+            category.setType_name("PikPak");
+            result.getCategories().add(category);
+            result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
+        }
+
+        if (shareRepository.countByType(1) > 0) {
             Category category = new Category();
             category.setType_id("1$/\uD83D\uDD78️我的PikPak分享$1");
-            category.setType_name("PikPak");
+            category.setType_name("PikPak分享");
             result.getCategories().add(category);
             result.getFilters().put(category.getType_id(), List.of(new Filter("sort", "排序", filters)));
         }
@@ -1167,14 +1180,12 @@ public class TvBoxService {
 //            }
 //        }
 
-        boolean aliShare = false;
         if (url == null) {
             FsDetail fsDetail = aListService.getFile(site, path);
             if (fsDetail == null) {
                 throw new BadRequestException("找不到文件 " + path);
             }
 
-            aliShare = "AliyundriveShare2Open".equals(fsDetail.getProvider());
             if ("com.fongmi.android.tv".equals(client)) {
                 url = fixHttp(fsDetail.getRawUrl());
             } else if ((fsDetail.getProvider().contains("Aliyundrive") && !fsDetail.getRawUrl().contains("115.com"))
@@ -1191,9 +1202,15 @@ public class TvBoxService {
         if (url.contains("xunlei.com")) {
             result.put("header", "{\"User-Agent\":\"Dalvik/2.1.0 (Linux; U; Android 12; M2004J7AC Build/SP1A.210812.016)\"}");
         } else if (url.contains("115.com")) {
-            String ua = aliShare ? "Mozilla/5.0 115Browser/27.0.3.7" : USER_AGENT;
-            // 115会把UA生成签名校验
-            result.put("header", "{\"User-Agent\":\"" + ua + "\",\"Referer\":\"https://115.com/\"}");
+            var account = panAccountRepository.findByTypeAndMasterTrue(DriverType.PAN115).orElseThrow();
+            if (account.isUseProxy()) {
+                url = proxyService.generateProxyUrl(url);
+                result.put("url", url);
+            } else {
+                String cookie = account.getCookie();
+                // 115会把UA生成签名校验
+                result.put("header", "{\"Cookie\":\"" + cookie + "\",\"User-Agent\":\"" + USER_AGENT + "\",\"Referer\":\"https://115.com/\"}");
+            }
         } else if (url.contains("ali")) {
             result.put("format", "application/octet-stream");
             result.put("header", "{\"User-Agent\":\"" + USER_AGENT + "\",\"Referer\":\"https://www.aliyundrive.com/\"}");
