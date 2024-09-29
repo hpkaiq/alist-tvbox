@@ -6,6 +6,7 @@ import cn.har01d.alist_tvbox.service.SubscriptionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.util.FileCopyUtils;
@@ -86,8 +87,13 @@ public class PgTokenController {
         Path path = Path.of("/data/tokenm.json");
         if (Files.exists(path)) {
             json = Files.readString(path);
-            ObjectNode override = (ObjectNode) objectMapper.readTree(json);
-            objectNode.setAll(override);
+            Map<String, Object> override = objectMapper.readValue(json, Map.class);
+            for (Map.Entry<String, Object> entry : override.entrySet()) {
+                Object value = entry.getValue();
+                if (value != null && StringUtils.isNotBlank(value.toString()) && !"\"\"".equals(value.toString())){
+                    objectNode.put(entry.getKey(), value.toString());
+                }
+            }
         }
 
         return objectNode;
