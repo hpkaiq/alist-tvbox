@@ -18,12 +18,16 @@ if [ "$LOCAL" = "${REMOTE}" ]; then
   exit 2
 fi
 
-echo "download ${REMOTE}" && \
-wget https://gitlab.com/power0721/pg/-/raw/main/heart.zip -O /data/zx.zip && \
-echo "unzip file" && \
-rm -rf /www/zx/* && unzip -q -o /data/zx.zip -d /www/zx && \
-echo "save version" && \
-echo -n ${REMOTE} > /data/zx_version.txt && \
-echo "sync files" && \
-[ -d /data/zx ] && \
-cp -r /data/zx/* /www/zx/
+LOCAL_NUM=$(echo $LOCAL | tr -d '-')
+REMOTE_NUM=$(echo $REMOTE | tr -d '-')
+if (( REMOTE_NUM > LOCAL_NUM )); then
+  echo "download ${REMOTE}" && \
+  wget https://gitlab.com/power0721/pg/-/raw/main/heart.zip -O /data/zx.zip && \
+  echo "unzip file" && \
+  rm -rf /www/zx/* && unzip -q -o /data/zx.zip -d /www/zx && \
+  echo "save version" && \
+  echo -n ${REMOTE} > /data/zx_version.txt && \
+  echo "sync files" && \
+  [ -d /data/zx ] && \
+  cp -r /data/zx/* /www/zx/
+fi

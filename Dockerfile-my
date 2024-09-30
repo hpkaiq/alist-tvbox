@@ -5,6 +5,7 @@ WORKDIR /opt/atv/
 
 COPY target/application/ ./
 COPY scripts/downloadPg.sh /
+COPY scripts/downloadZx.sh /
 
 EXPOSE 4567 80
 
