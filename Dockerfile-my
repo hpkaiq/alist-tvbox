@@ -4,6 +4,7 @@ VOLUME /opt/atv/data/
 WORKDIR /opt/atv/
 
 COPY target/application/ ./
+COPY scripts/downloadPg.sh /
 
 EXPOSE 4567 80
 
