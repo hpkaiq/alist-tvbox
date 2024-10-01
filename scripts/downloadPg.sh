@@ -2,7 +2,7 @@ if ps aux | grep -v grep | grep -q wget ; then
   exit 1
 fi
 
-LOCAL="0.0"
+LOCAL="0"
 if [ -f /data/pg_version.txt ]; then
   LOCAL=$(head -n 1 </data/pg_version.txt)
 else
@@ -18,6 +18,10 @@ if [ "$LOCAL" = "${REMOTE}" ]; then
   exit 2
 fi
 
+LOCAL_NUM=$(echo "$LOCAL" | tr -d '-')
+REMOTE_NUM=$(echo "$REMOTE" | tr -d '-')
+if (( REMOTE_NUM > LOCAL_NUM )); then
+
 echo "download ${REMOTE}" && \
 wget http://104.160.46.225/pg.zip -O /data/pg.zip && \
 echo "unzip file" && \
@@ -27,3 +31,5 @@ echo -n ${REMOTE} > /data/pg_version.txt && \
 echo "sync files" && \
 [ -d /data/pg ] && \
 cp -r /data/pg/* /www/pg/
+
+fi
