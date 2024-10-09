@@ -9,7 +9,7 @@ else
   cp /pg.zip /data/
 fi
 
-REMOTE=$(curl -s http://104.160.46.225/pg.version)
+REMOTE=$(curl -s http://har01d.org/pg.version)
 
 echo "local PG: ${LOCAL}, remote PG: ${REMOTE}"
 if [ "$LOCAL" = "${REMOTE}" ]; then
@@ -23,7 +23,7 @@ REMOTE_NUM=$(echo "$REMOTE" | tr -d '-')
 if (( REMOTE_NUM > LOCAL_NUM )); then
 
 echo "download ${REMOTE}" && \
-wget http://104.160.46.225/pg.zip -O /data/pg.zip && \
+wget http://har01d.org/pg.zip -O /data/pg.zip && \
 echo "unzip file" && \
 rm -rf /www/pg/* && unzip -q -o /data/pg.zip -d /www/pg && \
 echo "save version" && \
