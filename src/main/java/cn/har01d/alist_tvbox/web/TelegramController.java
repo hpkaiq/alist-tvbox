@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -70,14 +71,14 @@ public class TelegramController {
         return telegramService.searchPg(request.getKeyword(), request.getChannelUsername(), request.getEncode());
     }
 
-    @GetMapping("/tg/s/1")
-    public String searchWeb(String keyword, String channelUsername, String encode, HttpServletResponse response) {
+    @GetMapping(value = "/tg/s/{id}", produces = "text/plain;charset=UTF-8")
+    public String searchWeb(@PathVariable String id, String keyword, String encode, HttpServletResponse response) {
         response.setHeader("server", "hypercorn-h11");
-        return telegramService.searchWeb(keyword, channelUsername, encode);
+        return telegramService.searchWeb(keyword, id, encode);
     }
 
-    @PostMapping("/tg/s/1")
-    public String searchWebPost(@RequestBody String body, HttpServletResponse response) throws JsonProcessingException {
+    @PostMapping(value = "/tg/s/{id}", produces = "text/plain;charset=UTF-8")
+    public String searchWebPost(@PathVariable String id, @RequestBody String body, HttpServletResponse response) throws JsonProcessingException {
         String json = new String(Base64.getDecoder().decode(body));
         SearchRequest request = objectMapper.readValue(json, SearchRequest.class);
         response.setHeader("server", "hypercorn-h11");
