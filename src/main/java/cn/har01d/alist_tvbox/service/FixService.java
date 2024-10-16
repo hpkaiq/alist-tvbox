@@ -30,8 +30,9 @@ public class FixService {
     public static Map<String, Object> updateOverride(String url, Map<String, Object> override) {
         Map<String, String> urlParam = getUrlParam(url);
         Object spiderObj = override.get("spider");
+        String spider = null;
         if (spiderObj != null && StringUtils.isNotBlank(spiderObj.toString())) {
-            String spider = spiderObj.toString();
+            spider = spiderObj.toString();
             if (spider.startsWith("./")) {
                 spider = urlParam.get("sourceUrl") + spider.substring(1);
             } else if (spider.startsWith("/")) {
@@ -45,12 +46,16 @@ public class FixService {
 
         for (Map.Entry<String, Object> entry : override.entrySet()) {
             Object value = entry.getValue();
+            String key = entry.getKey();
             if (value instanceof Collection) {
                 List<Object> valueObjs = (List<Object>) value;
                 if (valueObjs.size() > 0 && valueObjs.get(0) instanceof Map) {
                     for (Object valueObj : valueObjs) {
                         Map<String, Object> valueObjArr = (Map<String, Object>) valueObj;
                         fixSite(valueObjArr, urlParam.get("sourceUrl"));
+                        if ("sites".equalsIgnoreCase(key) && !valueObjArr.containsKey("jar") && StringUtils.isNotBlank(spider)) {
+                            valueObjArr.put("jar", spider);
+                        }
                     }
                 }
             }
