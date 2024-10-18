@@ -13,8 +13,8 @@ REMOTE=$(curl -s http://har01d.org/pg.version)
 
 echo "local PG: ${LOCAL}, remote PG: ${REMOTE}"
 if [ "$LOCAL" = "${REMOTE}" ]; then
-  echo "sync files"
-  rm -rf /www/pg/* && unzip -q -o /data/pg.zip -d /www/pg && [ -d /data/pg ] && cp -r /data/pg/* /www/pg/
+  #echo "sync files"
+  #rm -rf /www/pg/* && unzip -q -o /data/pg.zip -d /www/pg && [ -d /data/pg ] && cp -r /data/pg/* /www/pg/
   exit 2
 fi
 

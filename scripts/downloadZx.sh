@@ -13,8 +13,8 @@ REMOTE=$(curl -s http://har01d.org/zx.version)
 
 echo "local zx: ${LOCAL}, remote zx: ${REMOTE}"
 if [ "$LOCAL" = "${REMOTE}" ]; then
-  echo "sync files"
-  rm -rf /www/zx/* && unzip -q -o /data/zx.zip -d /www/zx && [ -d /data/zx ] && cp -r /data/zx/* /www/zx/
+  #echo "sync files"
+  #rm -rf /www/zx/* && unzip -q -o /data/zx.zip -d /www/zx && [ -d /data/zx ] && cp -r /data/zx/* /www/zx/
   exit 2
 fi
 
