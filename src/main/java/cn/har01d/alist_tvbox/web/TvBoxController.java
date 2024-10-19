@@ -5,6 +5,7 @@ import cn.har01d.alist_tvbox.dto.TokenDto;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.alibaba.fastjson.JSONObject;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -154,14 +155,24 @@ public class TvBoxController {
         String env = request.getParameter("env");
         subscriptionService.checkToken(token);
         Map<String, Object> res = new HashMap<>();
-        List<Map<String, String>> collect = subscriptionService.findAll().stream().map(s -> {
-            String sid = s.getSid();
-            String name = (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
-            HashMap<String, String> map = new HashMap<>();
-            map.put("url", readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid, null));
-            map.put("name", name);
-            return map;
-        }).collect(Collectors.toList());
+        List<Map<String, String>> collect = subscriptionService.findAll().stream()
+                .filter(s -> {
+                            String override = s.getOverride();
+                            if (StringUtils.isNotBlank(override)) {
+                                JSONObject overrideObject = JSONObject.parseObject(override);
+                                return !overrideObject.containsKey("hh");
+                            }
+                            return true;
+                        }
+                )
+                .map(s -> {
+                    String sid = s.getSid();
+                    String name = (StringUtils.isNotBlank(env) ? env + "-" : "") + s.getName();
+                    HashMap<String, String> map = new HashMap<>();
+                    map.put("url", readHostAddress("/sub" + (StringUtils.isNotBlank(token) ? "/" + token : "") + "/" + sid, null));
+                    map.put("name", name);
+                    return map;
+                }).collect(Collectors.toList());
         res.put("urls", collect);
         return res;
     }
