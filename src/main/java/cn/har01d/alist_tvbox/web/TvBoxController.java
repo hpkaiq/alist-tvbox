@@ -156,8 +156,8 @@ public class TvBoxController {
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream()
                 .filter(s -> {
-                            String name = s.getName();
-                            return !name.endsWith("-hh");
+                            String sid = s.getSid();
+                            return !sid.endsWith("-hh");
                         }
                 )
                 .map(s -> {
