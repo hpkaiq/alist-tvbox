@@ -5,7 +5,6 @@ import cn.har01d.alist_tvbox.dto.TokenDto;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
 import cn.har01d.alist_tvbox.util.Utils;
-import com.alibaba.fastjson.JSONObject;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -157,12 +156,8 @@ public class TvBoxController {
         Map<String, Object> res = new HashMap<>();
         List<Map<String, String>> collect = subscriptionService.findAll().stream()
                 .filter(s -> {
-                            String override = s.getOverride();
-                            if (StringUtils.isNotBlank(override)) {
-                                JSONObject overrideObject = JSONObject.parseObject(override);
-                                return !overrideObject.containsKey("hh");
-                            }
-                            return true;
+                            String name = s.getName();
+                            return !name.endsWith("-hh");
                         }
                 )
                 .map(s -> {
