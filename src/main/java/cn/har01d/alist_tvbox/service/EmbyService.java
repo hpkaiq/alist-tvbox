@@ -183,7 +183,7 @@ public class EmbyService {
             dto.setClientVersion("3.4.66");
         }
         if (StringUtils.isBlank(dto.getDeviceId())) {
-            dto.setDeviceId("b098f2002a65f589");
+            dto.setDeviceId("c681fa80-19ad-40b5-a2e9-eb318c73bd4a");
         }
         if (StringUtils.isBlank(dto.getDeviceName())) {
             dto.setDeviceName("AList TvBox");
