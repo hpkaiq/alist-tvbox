@@ -483,8 +483,13 @@ public class EmbyService {
         if (last != null) {
             url = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
             entity = new HttpEntity<>(last, headers);
-            var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-            log.debug("stop playing: {} {}", last, response.getStatusCode());
+            try {
+                var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
+                log.debug("stop playing: {} {}", last, response.getStatusCode());
+            }catch (Exception e) {
+                log.error("stop playing error: {} {}", last, e.getMessage());
+            }
+
         }
 
         url = emby.getUrl() + "/emby/Sessions/Playing";
@@ -495,14 +500,19 @@ public class EmbyService {
         data.put("PlayMethod", "DirectStream");
         data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
         entity = new HttpEntity<>(data, headers);
-        var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-        log.debug("start playing: {} {}", data, response.getStatusCode());
+        try {
+            var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
+            log.debug("start playing: {} {}", data, response.getStatusCode());
+        }catch (Exception e) {
+            log.error("start playing error: {} {}", data, e.getMessage());
+        }
         last = data;
+        String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
 
         List<String> urls = new ArrayList<>();
         for (var source : media.getItems()) {
             urls.add(source.getName());
-            urls.add(emby.getUrl() + source.getUrl());
+            urls.add(emby.getUrl() + playPre + source.getUrl());
         }
         String ua = Constants.EMBY_USER_AGENT;
         if (StringUtils.isNotBlank(emby.getUserAgent())) {
@@ -548,7 +558,7 @@ public class EmbyService {
             log.debug("get Emby info: {} {} {} {}", emby.getId(), emby.getName(), emby.getUrl(), emby.getUsername());
             HttpHeaders headers = setHeaders(emby, null);
             HttpEntity<Object> entity = new HttpEntity<>(body, headers);
-            EmbyInfo info = restTemplate.exchange(emby.getUrl() + "/emby/Users/AuthenticateByName", HttpMethod.POST, entity, EmbyInfo.class).getBody();
+            EmbyInfo info = restTemplate.exchange(emby.getUrl() + "/emby/Users/AuthenticateByName?X-Emby-Client=Yamby&X-Emby-Device-Name=Yamby&X-Emby-Device-Id=" + emby.getDeviceId() + "&X-Emby-Client-Version=1.0.2" + "&Username=" + emby.getUsername() + "&Pw=" + emby.getPassword(), HttpMethod.POST, entity, EmbyInfo.class).getBody();
             cache.put(emby.getId(), info);
 
             headers = setHeaders(emby, info);
