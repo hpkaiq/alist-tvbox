@@ -4,9 +4,6 @@ VOLUME /opt/atv/data/
 WORKDIR /opt/atv/
 
 COPY target/application/ ./
-COPY scripts/downloadPg.sh /
-COPY scripts/downloadZx.sh /
-COPY scripts/index.sh /
 
 EXPOSE 4567 80
 
