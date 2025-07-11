@@ -515,12 +515,16 @@ public class EmbyService {
             log.error("start playing error: {} {}", data, e.getMessage());
         }
         last = data;
-        String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
 
+        String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
         List<String> urls = new ArrayList<>();
         for (var source : media.getItems()) {
             urls.add(source.getName());
-            urls.add(emby.getUrl() + playPre + source.getUrl());
+            String playUrl = source.getPath();
+            if (StringUtils.isNotBlank(source.getUrl())){
+                playUrl = emby.getUrl() + playPre + source.getUrl();
+            }
+            urls.add(playUrl);
         }
         String ua = Constants.EMBY_USER_AGENT;
         if (StringUtils.isNotBlank(emby.getUserAgent())) {

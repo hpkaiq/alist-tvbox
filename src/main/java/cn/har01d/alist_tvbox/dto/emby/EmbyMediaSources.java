@@ -30,6 +30,9 @@ public class EmbyMediaSources {
         @JsonProperty("DirectStreamUrl")
         private String url;
 
+        @JsonProperty("Path")
+        private String path;
+
         @JsonProperty("MediaStreams")
         private List<MediaStreams> mediaStreams;
     }
