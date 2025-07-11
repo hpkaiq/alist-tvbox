@@ -480,8 +480,7 @@ public class EmbyService {
         HttpEntity<Object> entity = new HttpEntity<>(objectMapper.readTree(body), headers);
         String url = emby.getUrl() + "/emby/Items/" + parts[1] + "/PlaybackInfo?IsPlayback=false&AutoOpenLiveStream=false&StartTimeTicks=0&MaxStreamingBitrate=2147483647&UserId=" + info.getUser().getId();
 
-        boolean debugEnabled = log.isDebugEnabled();
-        if (debugEnabled) {
+        if (log.isDebugEnabled()) {
             String exchange = restTemplate.exchange(url, HttpMethod.POST, entity, String.class).getBody();
             log.debug("get play url response: {}", exchange);
             log.debug("get play url : {}", url);
