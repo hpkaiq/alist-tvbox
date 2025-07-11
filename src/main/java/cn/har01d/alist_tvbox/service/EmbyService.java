@@ -31,6 +31,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -251,7 +252,7 @@ public class EmbyService {
         return movie;
     }
 
-    public MovieList detail(String tid) throws JsonProcessingException {
+    public MovieList detail(String tid) {
         String[] parts = tid.split("-");
         Emby emby = embyRepository.findById(Integer.parseInt(parts[0])).orElseThrow(() -> new NotFoundException("站点不存在"));
         var info = getEmbyInfo(emby);
@@ -514,7 +515,7 @@ public class EmbyService {
         for (var source : media.getItems()) {
             urls.add(source.getName());
             String playUrl = source.getPath();
-            if (StringUtils.isNotBlank(source.getUrl())){
+            if (StringUtils.isNotBlank(source.getUrl())) {
                 playUrl = emby.getUrl() + playPre + source.getUrl();
             }
             urls.add(playUrl);
@@ -596,5 +597,57 @@ public class EmbyService {
         headers.set("X-Emby-Device-Id", emby.getDeviceId());
         headers.set("X-Emby-Language", "zh-cn");
         return headers;
+    }
+
+    @Scheduled(cron = "0 30 4 * * ?")
+    public void fakePlay() throws JsonProcessingException {
+        for (Emby emby : findAll()) {
+            String vodId = null;
+            MovieList home = new MovieList();
+            var info = getEmbyInfo(emby);
+            if (info == null) {
+                continue;
+            }
+            List<MovieDetail> list = new ArrayList<>();
+            HttpHeaders headers = setHeaders(emby, info);
+            HttpEntity<Object> entity = new HttpEntity<>(null, headers);
+            String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&EnableTotalRecordCount=false&MediaTypes=Video";
+            var response = restTemplate.exchange(url, HttpMethod.GET, entity, EmbyItems.class).getBody();
+
+            int resumeSize = 0;
+            for (var item : response.getItems()) {
+                var movie = getMovieDetail(item, emby);
+                list.add(movie);
+                resumeSize ++;
+            }
+
+            for (var parent : info.getViews()) {
+                url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Latest?Limit=12&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&ParentId=" + parent.getId();
+                var items = restTemplate.exchange(url, HttpMethod.GET, entity, new ParameterizedTypeReference<List<EmbyItem>>() {
+                }).getBody();
+                for (var item : items) {
+                    var movie = getMovieDetail(item, emby);
+                    list.add(movie);
+                }
+            }
+
+            home.setList(list);
+            home.setTotal(list.size());
+            home.setLimit(list.size());
+
+            List<MovieDetail> homeList = home.getList();
+            MovieDetail movie = homeList.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : homeList.size())));
+            MovieList details = detail(emby.getId() + "-" + movie.getVod_id());
+            MovieDetail detail = details.getList().get(0);
+            String vodPlayUrl = detail.getVod_play_url();
+            vodId = vodPlayUrl;
+            if (vodPlayUrl.contains("$")) {
+                vodId = vodPlayUrl.split("\\$\\$\\$")[0].split("#")[0].split("\\$")[1];
+            }
+            log.debug("fakePlay debug movie {}", movie);
+            log.debug("fakePlay debug detail {}", detail);
+            play(emby.getId() + "-" + vodId);
+            log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
+        }
     }
 }
