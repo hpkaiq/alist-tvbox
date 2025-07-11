@@ -479,7 +479,7 @@ public class EmbyService {
         HttpEntity<Object> entity = new HttpEntity<>(objectMapper.readTree(body), headers);
         String url = emby.getUrl() + "/emby/Items/" + parts[1] + "/PlaybackInfo?IsPlayback=false&AutoOpenLiveStream=false&StartTimeTicks=0&MaxStreamingBitrate=2147483647&UserId=" + info.getUser().getId();
         var media = restTemplate.exchange(url, HttpMethod.POST, entity, EmbyMediaSources.class).getBody();
-
+        log.debug("get play url response: {}", media);
         if (last != null) {
             url = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
             entity = new HttpEntity<>(last, headers);
@@ -583,6 +583,7 @@ public class EmbyService {
             headers.set("X-Emby-Token", info.getAccessToken());
             String header = String.format("Emby UserId=\"%s\",Client=\"%s\",Version=\"%s\",Device=\"%s\",DeviceId=\"%s\",Token=\"%s\"", info.getUser().getId(), emby.getClientName(), emby.getClientVersion(), emby.getDeviceName(), emby.getDeviceId(), info.getAccessToken());
             headers.set(HttpHeaders.AUTHORIZATION, header);
+            headers.set("X-Emby-Authorization", header);
         }
         headers.set("X-Emby-Client", emby.getClientName());
         headers.set("X-Emby-Client-Version", emby.getClientVersion());
