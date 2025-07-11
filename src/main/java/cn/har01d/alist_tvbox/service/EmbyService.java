@@ -38,6 +38,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URL;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -57,7 +58,7 @@ public class EmbyService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final SettingRepository settingRepository;
-    private final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().build();
+    private final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().expireAfterWrite(Duration.ofDays(3)).build();
 
     private final List<FilterValue> filters = Arrays.asList(
             new FilterValue("评分⬆️", "CommunityRating,SortName:Ascending"),
