@@ -149,6 +149,10 @@ public class ShareService {
             list = loadSharesFromFile();
         }
 
+        List<Share> shares = list.stream().filter(e -> e.getId() >= offset).collect(Collectors.toList());
+        log.debug("delete {} shares", shares.size());
+        shareRepository.deleteAll(shares);
+
         list = list.stream().filter(e -> e.getId() < offset).collect(Collectors.toList());
         var add = loadLatestShare();
         list.addAll(add);
