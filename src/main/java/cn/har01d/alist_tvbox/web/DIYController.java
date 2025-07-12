@@ -1,9 +1,11 @@
 package cn.har01d.alist_tvbox.web;
 
 import cn.har01d.alist_tvbox.entity.DeviceRepository;
+import cn.har01d.alist_tvbox.service.EmbyService;
 import cn.har01d.alist_tvbox.service.HistoryService;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.service.TvBoxService;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -20,18 +22,18 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestController
 public class DIYController {
-    private final TvBoxService tvBoxService;
+    private final EmbyService embyService;
     private final SubscriptionService subscriptionService;
     private final HistoryService historyService;
     private final DeviceRepository deviceRepository;
     private final ObjectMapper objectMapper;
 
-    public DIYController(TvBoxService tvBoxService,
+    public DIYController(EmbyService embyService,
                          SubscriptionService subscriptionService,
                          HistoryService historyService,
                          DeviceRepository deviceRepository,
                          ObjectMapper objectMapper) {
-        this.tvBoxService = tvBoxService;
+        this.embyService = embyService;
         this.subscriptionService = subscriptionService;
         this.historyService = historyService;
         this.deviceRepository = deviceRepository;
@@ -64,6 +66,17 @@ public class DIYController {
     @GetMapping("/allsubs")
     public Map<String, Object> allSubscription(HttpServletRequest request) {
         return allSubscription("", request);
+    }
+
+    @GetMapping("/{token}/embyFakePlay")
+    public void embyFakePlay(@PathVariable String token,HttpServletRequest request) throws JsonProcessingException {
+        subscriptionService.checkToken(token);
+        embyService.fakePlay();
+    }
+
+    @GetMapping("/embyFakePlay")
+    public void embyFakePlay(HttpServletRequest request) throws JsonProcessingException {
+        embyFakePlay("", request);
     }
 
 }
