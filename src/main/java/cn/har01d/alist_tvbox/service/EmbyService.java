@@ -649,7 +649,7 @@ public class EmbyService {
 
                 List<MovieDetail> homeList = home.getList();
                 MovieDetail movie = homeList.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : homeList.size())));
-                MovieList details = detail(emby.getId() + "-" + movie.getVod_id());
+                MovieList details = detail(movie.getVod_id());
                 MovieDetail detail = details.getList().get(0);
                 String vodPlayUrl = detail.getVod_play_url();
                 vodId = vodPlayUrl;
@@ -658,7 +658,7 @@ public class EmbyService {
                 }
                 log.debug("fakePlay debug movie {}", movie);
                 log.debug("fakePlay debug detail {}", detail);
-                play(emby.getId() + "-" + vodId);
+                play(vodId);
                 log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
             }catch (Exception e) {
                 log.error("Emby fakePlay failed.", e);
