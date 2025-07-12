@@ -267,14 +267,19 @@ public class EmbyService {
         movie.setVod_content(item.getOverview());
         movie.setVod_play_from(emby.getName());
         movie.setVod_play_url(movie.getVod_id());
-        if ("Episode".equals(item.getType()) || "Series".equals(item.getType())) {
+        if ("Episode".equals(item.getType()) || "Series".equals(item.getType()) || "BoxSet".equals(item.getType())) {
             List<EmbyItem> list = getAll(emby, info, item.getSeriesId() == null ? item.getId() : item.getSeriesId());
             List<String> names = new ArrayList<>();
             List<String> playUrl = new ArrayList<>();
             List<String> urls = new ArrayList<>();
             String name = "";
+            int i = 1;
             for (EmbyItem video : list) {
-                String sname = video.getSeasonName().replace("未知季", "剧集");
+                String sname = item.getName();
+                String seasonName = video.getSeasonName();
+                if (seasonName != null) {
+                    sname = seasonName.replace("未知季", "剧集");
+                }
                 if (!name.equals(sname)) {
                     if (!urls.isEmpty()) {
                         names.add(name);
@@ -283,11 +288,15 @@ public class EmbyService {
                     name = sname;
                     urls = new ArrayList<>();
                 }
-                if (video.getName().equals("第 " + video.getIndexNumber() + " 集")) {
+
+                if (video.getIndexNumber() != null && video.getName().equals("第 " + video.getIndexNumber() + " 集")) {
                     urls.add(video.getName() + "$" + emby.getId() + "-" + video.getId());
-                } else {
+                } else if (video.getIndexNumber() != null) {
                     urls.add(video.getIndexNumber() + "." + video.getName() + "$" + emby.getId() + "-" + video.getId());
+                } else {
+                    urls.add(i + "." + video.getName() + "$" + emby.getId() + "-" + video.getId());
                 }
+                i = i + 1;
             }
             if (!urls.isEmpty()) {
                 names.add(name);
