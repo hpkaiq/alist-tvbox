@@ -37,6 +37,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -47,7 +48,7 @@ import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 @Service
 public class EmbyService {
     private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(2,
-            120,
+            20,
             10,
             TimeUnit.SECONDS,
             new LinkedBlockingDeque<>(10),
@@ -516,31 +517,42 @@ public class EmbyService {
             data.put("PlayMethod", "DirectStream");
             data.put("PositionTicks", 0);
 
+            String postBody;
+            try {
+                postBody = objectMapper.writeValueAsString(data);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
             String playingUrl = emby.getUrl() + "/emby/Sessions/Playing?";
-            headers.set("Content-Length", String.valueOf(data.size()));
-            HttpEntity<Object> playingEntity = new HttpEntity<>(data, headers);
+            headers.set("Content-Length", String.valueOf(postBody.getBytes(StandardCharsets.UTF_8).length));
+            HttpEntity<Object> playingEntity = new HttpEntity<>(postBody, headers);
             try {
                 var response = restTemplate.exchange(playingUrl, HttpMethod.POST, playingEntity, String.class);
                 log.debug("start playing: {} {}", data, response.getStatusCode());
-                log.info("fake playing: {}", response.getStatusCode());
+                log.info("fake playing success: {}", response.getStatusCode());
             } catch (Exception e) {
                 log.error("start playing error: {} {}", data, e.getMessage());
             }
 
             try {
-                Thread.sleep(500);
+                Thread.sleep(5000);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
 
             String stoppedUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
             data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
-            headers.set("Content-Length", String.valueOf(data.size()));
-            HttpEntity<Object> stoppedEntity = new HttpEntity<>(data, headers);
+            try {
+                postBody = objectMapper.writeValueAsString(data);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+            headers.set("Content-Length", String.valueOf(postBody.getBytes(StandardCharsets.UTF_8).length));
+            HttpEntity<Object> stoppedEntity = new HttpEntity<>(postBody, headers);
             try {
                 var response = restTemplate.exchange(stoppedUrl, HttpMethod.POST, stoppedEntity, String.class);
                 log.debug("stop playing: {} {}", data, response.getStatusCode());
-                log.info("fake stop: {}", response.getStatusCode());
+                log.info("fake stop success: {}", response.getStatusCode());
             } catch (Exception e) {
                 log.error("stop playing error: {} {}", data, e.getMessage());
             }
