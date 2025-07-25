@@ -39,12 +39,21 @@ import org.springframework.web.client.RestTemplate;
 import java.net.URL;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.*;
 
 import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 
 @Slf4j
 @Service
 public class EmbyService {
+    private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(2,
+            120,
+            10,
+            TimeUnit.SECONDS,
+            new LinkedBlockingDeque<>(10),
+            Executors.defaultThreadFactory(),
+            new ThreadPoolExecutor.CallerRunsPolicy());
+
     private final EmbyRepository embyRepository;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
@@ -485,46 +494,57 @@ public class EmbyService {
 
         var media = restTemplate.exchange(url, HttpMethod.POST, entity, EmbyMediaSources.class).getBody();
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("VolumeLevel", 100);
-        data.put("NowPlayingQueue", new ArrayList<>());
-        data.put("IsMuted", false);
-        data.put("IsPaused", false);
-        data.put("MaxStreamingBitrate", 2147483647);
-        data.put("RepeatMode", "RepeatNone");
-        data.put("PlaybackStartTimeTicks", System.currentTimeMillis() * 10000);
-        data.put("SubtitleOffset", 0);
-        data.put("PlaybackRate", 1);
-        data.put("SubtitleStreamIndex", 0);
-        data.put("AudioStreamIndex", 0);
-        data.put("PlaylistIndex", 0);
-        data.put("PlaylistLength", 1);
-        data.put("CanSeek", true);
-        data.put("ItemId", parts[1]);
-        data.put("PlaySessionId", media.getSessionId());
-        data.put("MediaSourceId", media.getItems().get(0).getId());
-        data.put("PlayMethod", "DirectStream");
-        data.put("PositionTicks", 0);
+        CompletableFuture.runAsync(() -> {
+            Map<String, Object> data = new HashMap<>();
+            data.put("VolumeLevel", 100);
+            data.put("NowPlayingQueue", new ArrayList<>());
+            data.put("IsMuted", false);
+            data.put("IsPaused", false);
+            data.put("MaxStreamingBitrate", 2147483647);
+            data.put("RepeatMode", "RepeatNone");
+            data.put("PlaybackStartTimeTicks", System.currentTimeMillis() * 10000);
+            data.put("SubtitleOffset", 0);
+            data.put("PlaybackRate", 1);
+            data.put("SubtitleStreamIndex", 0);
+            data.put("AudioStreamIndex", 0);
+            data.put("PlaylistIndex", 0);
+            data.put("PlaylistLength", 1);
+            data.put("CanSeek", true);
+            data.put("ItemId", parts[1]);
+            data.put("PlaySessionId", media.getSessionId());
+            data.put("MediaSourceId", media.getItems().get(0).getId());
+            data.put("PlayMethod", "DirectStream");
+            data.put("PositionTicks", 0);
 
-        url = emby.getUrl() + "/emby/Sessions/Playing?";
-        entity = new HttpEntity<>(data, headers);
-        try {
-            var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-            log.debug("start playing: {} {}", data, response.getStatusCode());
-        } catch (Exception e) {
-            log.error("start playing error: {} {}", data, e.getMessage());
-        }
+            String playingUrl = emby.getUrl() + "/emby/Sessions/Playing?";
+            headers.set("Content-Length", String.valueOf(data.size()));
+            HttpEntity<Object> playingEntity = new HttpEntity<>(data, headers);
+            try {
+                var response = restTemplate.exchange(playingUrl, HttpMethod.POST, playingEntity, String.class);
+                log.debug("start playing: {} {}", data, response.getStatusCode());
+                log.info("fake playing: {}", response.getStatusCode());
+            } catch (Exception e) {
+                log.error("start playing error: {} {}", data, e.getMessage());
+            }
 
-        url = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
-        data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
-        entity = new HttpEntity<>(data, headers);
-        try {
-            var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-            log.debug("stop playing: {} {}", data, response.getStatusCode());
-        } catch (Exception e) {
-            log.error("stop playing error: {} {}", data, e.getMessage());
-        }
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
 
+            String stoppedUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
+            data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
+            headers.set("Content-Length", String.valueOf(data.size()));
+            HttpEntity<Object> stoppedEntity = new HttpEntity<>(data, headers);
+            try {
+                var response = restTemplate.exchange(stoppedUrl, HttpMethod.POST, stoppedEntity, String.class);
+                log.debug("stop playing: {} {}", data, response.getStatusCode());
+                log.info("fake stop: {}", response.getStatusCode());
+            } catch (Exception e) {
+                log.error("stop playing error: {} {}", data, e.getMessage());
+            }
+        }, executor);
 
 
         String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
