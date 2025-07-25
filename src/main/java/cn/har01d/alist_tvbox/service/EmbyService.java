@@ -30,7 +30,6 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
@@ -39,15 +38,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.net.URL;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 
 import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 
@@ -72,7 +63,7 @@ public class EmbyService {
             new FilterValue("时长⬆️", "Runtime,SortName:Ascending"),
             new FilterValue("时长⬇️", "Runtime,SortName:Descending")
     );
-    private Map<String, Object> last;
+    //private Map<String, Object> last;
 
     public EmbyService(EmbyRepository embyRepository, RestTemplateBuilder builder, ObjectMapper objectMapper, SettingRepository settingRepository) {
         this.embyRepository = embyRepository;
@@ -493,25 +484,29 @@ public class EmbyService {
         String url = emby.getUrl() + "/emby/Items/" + parts[1] + "/PlaybackInfo?IsPlayback=false&AutoOpenLiveStream=false&StartTimeTicks=0&MaxStreamingBitrate=2147483647&UserId=" + info.getUser().getId();
 
         var media = restTemplate.exchange(url, HttpMethod.POST, entity, EmbyMediaSources.class).getBody();
-        if (last != null) {
-            url = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
-            entity = new HttpEntity<>(last, headers);
-            try {
-                var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-                log.debug("stop playing: {} {}", last, response.getStatusCode());
-            } catch (Exception e) {
-                log.error("stop playing error: {} {}", last, e.getMessage());
-            }
 
-        }
-
-        url = emby.getUrl() + "/emby/Sessions/Playing?X-Emby-Client=" + emby.getClientName() + "&X-Emby-Device-Name=" + emby.getDeviceName() + "&X-Emby-Device-Id=" + emby.getDeviceId() + "&X-Emby-Client-Version=" + emby.getClientVersion() + "&Username=" + emby.getUsername() + "&Pw=" + emby.getPassword();
         Map<String, Object> data = new HashMap<>();
+        data.put("VolumeLevel", 100);
+        data.put("NowPlayingQueue", new ArrayList<>());
+        data.put("IsMuted", false);
+        data.put("IsPaused", false);
+        data.put("MaxStreamingBitrate", 2147483647);
+        data.put("RepeatMode", "RepeatNone");
+        data.put("PlaybackStartTimeTicks", System.currentTimeMillis() * 10000);
+        data.put("SubtitleOffset", 0);
+        data.put("PlaybackRate", 1);
+        data.put("SubtitleStreamIndex", 0);
+        data.put("AudioStreamIndex", 0);
+        data.put("PlaylistIndex", 0);
+        data.put("PlaylistLength", 1);
+        data.put("CanSeek", true);
         data.put("ItemId", parts[1]);
         data.put("PlaySessionId", media.getSessionId());
         data.put("MediaSourceId", media.getItems().get(0).getId());
         data.put("PlayMethod", "DirectStream");
-        data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
+        data.put("PositionTicks", 0);
+
+        url = emby.getUrl() + "/emby/Sessions/Playing?";
         entity = new HttpEntity<>(data, headers);
         try {
             var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
@@ -519,7 +514,18 @@ public class EmbyService {
         } catch (Exception e) {
             log.error("start playing error: {} {}", data, e.getMessage());
         }
-        last = data;
+
+        url = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
+        data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
+        entity = new HttpEntity<>(data, headers);
+        try {
+            var response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
+            log.debug("stop playing: {} {}", data, response.getStatusCode());
+        } catch (Exception e) {
+            log.error("stop playing error: {} {}", data, e.getMessage());
+        }
+
+
 
         String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
         List<String> urls = new ArrayList<>();
@@ -630,7 +636,7 @@ public class EmbyService {
                 for (var item : response.getItems()) {
                     var movie = getMovieDetail(item, emby);
                     list.add(movie);
-                    resumeSize ++;
+                    resumeSize++;
                 }
 
                 for (var parent : info.getViews()) {
@@ -660,7 +666,7 @@ public class EmbyService {
                 log.debug("fakePlay debug detail {}", detail);
                 play(vodId);
                 log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
-            }catch (Exception e) {
+            } catch (Exception e) {
                 log.error("Emby fakePlay failed.", e);
             }
 
