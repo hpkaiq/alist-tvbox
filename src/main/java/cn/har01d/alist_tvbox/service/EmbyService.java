@@ -505,7 +505,7 @@ public class EmbyService {
 
         }
 
-        url = emby.getUrl() + "/emby/Sessions/Playing";
+        url = emby.getUrl() + "/emby/Sessions/Playing?X-Emby-Client=" + emby.getClientName() + "&X-Emby-Device-Name=" + emby.getDeviceName() + "&X-Emby-Device-Id=" + emby.getDeviceId() + "&X-Emby-Client-Version=" + emby.getClientVersion() + "&Username=" + emby.getUsername() + "&Pw=" + emby.getPassword();
         Map<String, Object> data = new HashMap<>();
         data.put("ItemId", parts[1]);
         data.put("PlaySessionId", media.getSessionId());
