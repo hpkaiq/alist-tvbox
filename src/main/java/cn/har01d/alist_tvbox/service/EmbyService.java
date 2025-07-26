@@ -658,7 +658,7 @@ public class EmbyService {
     public void fakePlay() throws JsonProcessingException {
         for (Emby emby : findAll()) {
             try {
-                if(!emby.isFakePlay() || emby.isDisabled()){
+                if(!emby.isFakePlay()){
                     continue;
                 }
                 String vodId = null;
