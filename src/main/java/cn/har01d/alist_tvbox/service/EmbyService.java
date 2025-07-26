@@ -448,6 +448,9 @@ public class EmbyService {
         List<Emby> sites = findAll();
         if (sites.size() > 1) {
             for (Emby emby : sites) {
+                if (emby.isDisabled()){
+                    continue;
+                }
                 var category = new Category();
                 category.setType_id(String.valueOf(emby.getId()));
                 category.setType_name(emby.getName());
@@ -458,6 +461,9 @@ public class EmbyService {
             }
         } else {
             for (Emby emby : sites) {
+                if (emby.isDisabled()){
+                    continue;
+                }
                 var info = getEmbyInfo(emby);
                 if (info == null) {
                     continue;
@@ -529,7 +535,7 @@ public class EmbyService {
             try {
                 var response = restTemplate.exchange(playingUrl, HttpMethod.POST, playingEntity, String.class);
                 log.debug("start playing: {} {}", data, response.getStatusCode());
-                log.info("fake playing success: {}", response.getStatusCode());
+                log.info("fake playing {} {} success: {}", emby.getName(), media.getItems().get(0).getName(), response.getStatusCode());
             } catch (Exception e) {
                 log.error("start playing error: {} {}", data, e.getMessage());
             }
@@ -552,7 +558,7 @@ public class EmbyService {
             try {
                 var response = restTemplate.exchange(stoppedUrl, HttpMethod.POST, stoppedEntity, String.class);
                 log.debug("stop playing: {} {}", data, response.getStatusCode());
-                log.info("fake stop success: {}", response.getStatusCode());
+                log.info("fake stop {} {} success: {}", emby.getName(), media.getItems().get(0).getName(), response.getStatusCode());
             } catch (Exception e) {
                 log.error("stop playing error: {} {}", data, e.getMessage());
             }
@@ -652,6 +658,9 @@ public class EmbyService {
     public void fakePlay() throws JsonProcessingException {
         for (Emby emby : findAll()) {
             try {
+                if(!emby.isFakePlay() || emby.isDisabled()){
+                    continue;
+                }
                 String vodId = null;
                 MovieList home = new MovieList();
                 var info = getEmbyInfo(emby);

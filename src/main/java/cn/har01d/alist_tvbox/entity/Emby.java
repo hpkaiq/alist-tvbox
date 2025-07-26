@@ -28,4 +28,8 @@ public class Emby {
     private String clientVersion;
     private String deviceId;
     private String deviceName;
+    @Column(columnDefinition = "boolean default false")
+    private boolean fakePlay = false;
+    @Column(columnDefinition = "boolean default false")
+    private boolean disabled = false;
 }

@@ -17,6 +17,29 @@
           <a :href="scope.row.url" target="_blank">{{ scope.row.url }}</a>
         </template>
       </el-table-column>
+
+      <el-table-column prop="fakePlay" label="定时模拟播放" width="80">
+        <template #default="scope">
+          <el-icon v-if="scope.row.fakePlay">
+            <Check/>
+          </el-icon>
+          <el-icon v-else>
+            <Close/>
+          </el-icon>
+        </template>
+      </el-table-column>
+
+      <el-table-column prop="disabled" label="禁用" width="80">
+        <template #default="scope">
+          <el-icon v-if="scope.row.disabled">
+            <Check/>
+          </el-icon>
+          <el-icon v-else>
+            <Close/>
+          </el-icon>
+        </template>
+      </el-table-column>
+
       <el-table-column fixed="right" label="操作" width="200">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
@@ -56,6 +79,12 @@
         </el-form-item>
         <el-form-item label="顺序">
           <el-input-number v-model="form.order" :min="0"/>
+        </el-form-item>
+        <el-form-item label="定时模拟播放保活">
+          <el-switch v-model="form.fakePlay"/>
+        </el-form-item>
+        <el-form-item label="禁用">
+          <el-switch v-model="form.disabled"/>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -101,6 +130,8 @@ const form = ref({
   deviceId: '',
   deviceName: '',
   order: 0,
+  fakePlay: false,
+  disabled: false,
 })
 
 const handleAdd = () => {
@@ -118,6 +149,8 @@ const handleAdd = () => {
     deviceId: '',
     deviceName: '',
     order: 0,
+    fakePlay: false,
+    disabled: false,
   }
   formVisible.value = true
 }
