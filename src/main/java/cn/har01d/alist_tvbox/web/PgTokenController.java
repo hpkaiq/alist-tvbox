@@ -83,7 +83,7 @@ public class PgTokenController {
             try {
                 objectNode.put("pan115_delete_code", objectMapper.readTree(share.getAddition()).get("delete_code").asText());
             } catch (Exception e) {
-                log.warn("", e);
+                //log.warn("", e);
             }
         });
         driverAccountRepository.findByTypeAndMasterTrue(DriverType.UC).stream().findFirst().ifPresent(share -> objectNode.put("uc_cookie", share.getCookie()));
