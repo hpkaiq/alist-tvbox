@@ -448,7 +448,7 @@ public class EmbyService {
         List<Emby> sites = findAll();
         if (sites.size() > 1) {
             for (Emby emby : sites) {
-                if (emby.isDisabled()){
+                if (emby.isDisabled()) {
                     continue;
                 }
                 var category = new Category();
@@ -461,7 +461,7 @@ public class EmbyService {
             }
         } else {
             for (Emby emby : sites) {
-                if (emby.isDisabled()){
+                if (emby.isDisabled()) {
                     continue;
                 }
                 var info = getEmbyInfo(emby);
@@ -547,7 +547,7 @@ public class EmbyService {
             }
 
             String stoppedUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
-            data.put("PositionTicks", media.getItems().get(0).getRunTimeTicks() * 2 / 3);
+            data.put("PositionTicks", (long) (media.getItems().get(0).getRunTimeTicks() * (50 * (Math.random() + 1)) / 100));
             try {
                 postBody = objectMapper.writeValueAsString(data);
             } catch (JsonProcessingException e) {
@@ -658,7 +658,7 @@ public class EmbyService {
     public void fakePlay() throws JsonProcessingException {
         for (Emby emby : findAll()) {
             try {
-                if(!emby.isFakePlay()){
+                if (!emby.isFakePlay()) {
                     continue;
                 }
                 String vodId = null;
