@@ -675,7 +675,7 @@ public class EmbyService {
             Call call = okHttpClient.newCall(request);
             Response response = call.execute();
             String html = response.body().string();
-            log.debug("postJson url:{} code:{} response:{}", url, response.code(), html);
+            log.debug("postJson url:{} json:{} code:{} response:{}", url, json, response.code(), html);
             response.close();
             return html;
         } catch (Exception e) {
