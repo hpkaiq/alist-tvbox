@@ -2,14 +2,14 @@
   <div class="search">
     <h2>API地址</h2>
     <div class="description">
-      <a :href="currentUrl+getPath(type)+token+'?wd=' + keyword"
-         target="_blank">{{ currentUrl }}{{ getPath(type) }}{{ token }}?wd={{ keyword }}</a>
+      <a :href="currentUrl+getPath(type)+'/'+store.token+'?wd=' + keyword"
+         target="_blank">{{ currentUrl }}{{ getPath(type) }}/{{ store.token }}?wd={{ keyword }}</a>
     </div>
 
     <div>
       <el-input v-model="keyword" @change="search"/>
       <el-button type="primary" @click="search" :disabled="!keyword">搜索</el-button>
-      <el-button type="primary" @click="showDialog">设置</el-button>
+      <el-button type="primary" @click="showDialog" v-if="store.admin">设置</el-button>
     </div>
 
     <el-form-item label="类型" label-width="140">
@@ -19,6 +19,7 @@
         <el-radio label="2" size="large">BiliBili</el-radio>
         <el-radio label="4" size="large">Emby</el-radio>
         <el-radio label="5" size="large">Jellyfin</el-radio>
+        <el-radio label="6" size="large">鱼佬盘搜</el-radio>
       </el-radio-group>
     </el-form-item>
 
@@ -45,8 +46,26 @@
       <el-table-column prop="vod_remarks" label="评分" width="100"/>
     </el-table>
 
-    <h2>API返回数据</h2>
-    <div class="data">
+    <el-table v-if="(type=='6')&&config" :data="config.list" border style="width: 100%">
+      <el-table-column prop="vod_name" label="名称">
+        <template #default="scope">
+          <a :href="'/#/vod?link='+scope.row.vod_id" target="_blank">
+            {{ scope.row.vod_name }}
+          </a>
+        </template>
+      </el-table-column>
+      <el-table-column prop="vod_id" label="链接" width="350">
+        <template #default="scope">
+          <a :href="decodeURIComponent(scope.row.vod_id)" target="_blank">
+            {{ decodeURIComponent(scope.row.vod_id) }}
+          </a>
+        </template>
+      </el-table-column>
+      <el-table-column prop="vod_remarks" label="类型" width="100"/>
+    </el-table>
+
+    <h2 v-if="type!='6'">API返回数据</h2>
+    <div class="data" v-if="type!='6'">
       <json-viewer :value="config" expanded copyable show-double-quotes :show-array-index="false" :expand-depth=3>
       </json-viewer>
     </div>
@@ -76,11 +95,11 @@
 </template>
 
 <script setup lang="ts">
-import {onMounted, ref} from 'vue'
+import {ref} from 'vue'
 import axios from "axios"
 import {ElMessage} from "element-plus";
+import {store} from "@/services/store";
 
-const token = ref('')
 const type = ref('1')
 const keyword = ref('')
 const config = ref<any>('')
@@ -103,6 +122,8 @@ const getPath = (type: string) => {
     return '/emby'
   } else if (type == '5') {
     return '/jellyfin'
+  } else if (type == '6') {
+    return '/pansou'
   } else {
     return '/vod'
   }
@@ -113,7 +134,7 @@ const search = function () {
     return
   }
   config.value = ''
-  axios.get(getPath(type.value) + token.value + '?ac=web&wd=' + keyword.value.trim()).then(({data}) => {
+  axios.get(getPath(type.value) + '/' + store.token + '?ac=web&wd=' + keyword.value.trim()).then(({data}) => {
     config.value = data
   })
 }
@@ -133,12 +154,6 @@ const update = () => {
     ElMessage.success('更新成功')
   })
 }
-
-onMounted(() => {
-  axios.get('/api/token').then(({data}) => {
-    token.value = data.enabledToken ? "/" + data.token.split(",")[0] : ""
-  })
-})
 </script>
 
 <style scoped>

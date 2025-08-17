@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import {onMounted, ref, watch} from "vue";
+import {onMounted, ref} from "vue";
 import axios from "axios";
 import mpegts from "mpegts.js";
 import {onUnmounted} from "@vue/runtime-core";
-import {Search, Refresh} from "@element-plus/icons-vue";
+import {Search, Refresh, CircleCloseFilled} from "@element-plus/icons-vue";
 import {ElMessage, type TabsPaneContext} from "element-plus";
 import {useRoute, useRouter} from "vue-router";
+import {store} from "@/services/store";
 
 const route = useRoute()
 const router = useRouter()
@@ -14,8 +15,6 @@ const total = ref(0);
 const loading = ref(false);
 const dialogVisible = ref(false);
 const enableLive = ref(false);
-const id = ref("");
-const token = ref("");
 const playUrl = ref("");
 const playFrom = ref<string[]>([]);
 const playUrls = ref<string[]>([]);
@@ -205,7 +204,7 @@ const load = (movie: Movie) => {
 
 const loadRoom = (id: string) => {
   loading.value = true;
-  axios.get("/live" + token.value + "?platform=web&ids=" + id).then(({data}) => {
+  axios.get("/live/" + store.token + "?platform=web&ids=" + id).then(({data}) => {
     loading.value = false;
     room.value = data.list[0];
     playFrom.value = room.value.vod_play_from.split("$$$");
@@ -224,7 +223,7 @@ const loadCategories = (id: string) => {
   filteredRooms.value = [];
   room.value.vod_id = "";
   typeKeyword.value = "";
-  axios.get("/live" + token.value + '?platform=web').then(({data}) => {
+  axios.get("/live/" + store.token + '?platform=web').then(({data}) => {
     categories.value = data.class;
     if (id) {
       category.value = categories.value.find(e => e.type_id == id) || categories.value[0];
@@ -265,7 +264,7 @@ const loadTypes = () => {
   filteredRooms.value = [];
   room.value.vod_id = "";
   roomKeyword.value = "";
-  axios.get("/live" + token.value + "?platform=web&t=" + id).then(({data}) => {
+  axios.get("/live/" + store.token + "?platform=web&t=" + id).then(({data}) => {
     types.value = data.list;
     filteredTypes.value = types.value;
   });
@@ -292,7 +291,7 @@ const refresh = () => {
 
 const reloadRooms = (value: number) => {
   page.value = value;
-  axios.get("/live" + token.value + "?platform=web&t=" + type.value.vod_id + "&pg=" + value).then(({data}) => {
+  axios.get("/live/" + store.token + "?platform=web&t=" + type.value.vod_id + "&pg=" + value).then(({data}) => {
     rooms.value = data.list;
     filteredRooms.value = data.list;
     total.value = data.pagecount;
@@ -306,9 +305,11 @@ const updateLive = () => {
 }
 
 onMounted(async () => {
-  token.value = await axios.get("/api/token").then(({data}) => {
-    return data.enabledToken ? "/" + data.token.split(",")[0] : ""
-  });
+  if (!store.token) {
+    store.token = await axios.get("/api/token").then(({data}) => {
+      return data.token ? data.token.split(",")[0] : "-"
+    });
+  }
   loadCategories(route.params.id as string);
 });
 
@@ -403,7 +404,20 @@ onUnmounted(() => {
 <!--      </el-tab-pane>-->
     </el-tabs>
 
-    <el-dialog v-model="dialogVisible" :fullscreen="true" @open="start" @close="destory">
+    <el-dialog v-model="dialogVisible" :fullscreen="true" :show-close="false" @open="start" @close="destory">
+      <template #header="{ close }">
+        <div class="my-header">
+          <div></div>
+          <div class="buttons">
+            <el-button @click="close">
+              <el-icon class="el-icon--left">
+                <CircleCloseFilled/>
+              </el-icon>
+              关闭
+            </el-button>
+          </div>
+        </div>
+      </template>
       <el-row>
         <el-col :span="16">
           <div class="video-container">
@@ -436,11 +450,11 @@ onUnmounted(() => {
           </el-descriptions>
         </el-col>
       </el-row>
-      <template #footer>
-      <span class="dialog-footer">
-        <el-button type="primary" @click="dialogVisible=false">关闭</el-button>
-      </span>
-      </template>
+<!--      <template #footer>-->
+<!--      <span class="dialog-footer">-->
+<!--        <el-button type="primary" @click="dialogVisible=false">关闭</el-button>-->
+<!--      </span>-->
+<!--      </template>-->
     </el-dialog>
 
   </div>
@@ -470,6 +484,13 @@ onUnmounted(() => {
 .video-container video {
   width: 100%;
   height: 100%;
+}
+
+.my-header {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .controls {

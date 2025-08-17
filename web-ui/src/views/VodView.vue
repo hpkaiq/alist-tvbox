@@ -26,7 +26,7 @@
       <el-col :span="2">
         <el-button :icon="HomeFilled" circle @click="goBack" v-if="isHistory"/>
         <el-button :icon="Film" circle @click="goHistory" v-else/>
-        <el-button :icon="Setting" circle @click="settingVisible=true"/>
+        <el-button :icon="Setting" circle @click="settingVisible=true" v-if="store.admin"/>
         <el-button :icon="Plus" circle @click="handleAdd"/>
       </el-col>
     </el-row>
@@ -61,7 +61,7 @@
         <el-row justify="end">
           <el-button type="danger" @click="handleDeleteBatch" v-if="isHistory&&selected.length">删除</el-button>
           <el-button type="danger" @click="handleCleanAll" v-if="isHistory">清空</el-button>
-          <el-button @click="showScan">同步影视</el-button>
+          <el-button @click="showScan" v-if="store.admin">同步影视</el-button>
           <el-button type="primary" :disabled="loading" @click="refresh">刷新</el-button>
         </el-row>
         <el-table v-loading="loading" :data="files" @selection-change="handleSelectionChange" style="width: 100%"
@@ -525,13 +525,13 @@
 
 <script setup lang="ts">
 // @ts-nocheck
-import {onMounted, ref, watch, onUnmounted} from 'vue'
+import {onMounted, onUnmounted, reactive, ref, watch} from 'vue'
 import axios from "axios"
 import {ElMessage, type ScrollbarInstance} from "element-plus";
 import type {VodItem} from "@/model/VodItem";
 import {useRoute, useRouter} from "vue-router";
 import clipBorad from "vue-clipboard3";
-import { debounce } from 'lodash-es'
+import {debounce} from 'lodash-es'
 import {
   CircleCloseFilled,
   Connection,
@@ -548,6 +548,7 @@ import {
 } from "@element-plus/icons-vue";
 import type {Device} from "@/model/Device";
 import PlayConfig from "@/components/PlayConfig.vue";
+import {store} from "@/services/store";
 
 let {toClipboard} = clipBorad();
 
@@ -561,7 +562,6 @@ const route = useRoute()
 const router = useRouter()
 const videoPlayer = ref(null)
 const scrollbarRef = ref<ScrollbarInstance>()
-const token = ref('')
 const filePath = ref('/')
 const keyword = ref('')
 const shareType = ref('ALL')
@@ -619,6 +619,7 @@ const device = ref<Device>({
   id: 0,
   ip: ''
 })
+const pageInfo = reactive({})
 const history = ref({
   id: 0,
   vod_name: ''
@@ -691,7 +692,7 @@ const loadDevices = () => {
 }
 
 const syncHistory = (id: number, mode: number) => {
-  axios.post(`/devices/${token.value}/${id}/sync?mode=${mode}`).then(() => {
+  axios.post(`/devices/${store.token}/${id}/sync?mode=${mode}`).then(() => {
     ElMessage.success('同步成功')
     if (isHistory.value) {
       loadHistory()
@@ -869,6 +870,17 @@ const loadResult = (row: any) => {
   })
 }
 
+const loadShare = (link: string) => {
+  form.value = {
+    link: link,
+    path: '',
+    code: '',
+  }
+  axios.post('/api/share-link', form.value).then(({data}) => {
+    loadFolder(data)
+  })
+}
+
 const load = (row: any) => {
   if (row.type == 1) {
     loadFolder(row.path)
@@ -904,10 +916,14 @@ const imageUrl = (url: string) => {
 
 const handlePageChange = (value: number) => {
   page.value = value
+  if (!pageInfo[filePath.value]) pageInfo[filePath.value] = {page: value, pageSize: size.value}
+  pageInfo[filePath.value].page = value
 }
 
 const handleSizeChange = (value: number) => {
   size.value = value
+  if (!pageInfo[filePath.value]) pageInfo[filePath.value] = {page: page.value, pageSize: value}
+  pageInfo[filePath.value].size = value
 }
 
 const reload = (value: number) => {
@@ -929,7 +945,7 @@ const loadFolder = (path: string) => {
   if (path == '/~history') {
     return
   }
-  router.push('/vod' + getPath(path).replace('\t', '%09'))
+  router.push('/vod' + getPath(path).replace('\t', '%09') + '?page=1&size=' + size.value)
   filePath.value = path
 }
 
@@ -948,7 +964,7 @@ const loadFiles = (path: string) => {
   isHistory.value = false
   loading.value = true
   files.value = []
-  axios.get('/vod/' + token.value + '?ac=web&pg=' + page.value + '&size=' + size.value + '&t=' + id).then(({data}) => {
+  axios.get('/vod/' + store.token + '?ac=web&pg=' + page.value + '&size=' + size.value + '&t=' + id).then(({data}) => {
     files.value = data.list
     images.value = data.list.filter(e => e.type == 5)
     total.value = data.total
@@ -990,7 +1006,7 @@ const extractPaths = (id: string) => {
 
 const loadDetail = (id: string) => {
   loading.value = true
-  axios.get('/vod/' + token.value + '?ac=web&ids=' + id).then(({data}) => {
+  axios.get('/vod/' + store.token + '?ac=web&ids=' + id).then(({data}) => {
     if (isHistory.value) {
       goParent(data.list[0].path)
     }
@@ -1417,7 +1433,7 @@ const buildM3u8Url = (start: number) => {
   const id = movie.vod_id
   let url = playUrl.value
   if (movie.type === 9) {
-    url = window.location.origin + '/m3u8/' + token.value + '?id=' + id + '$' + start
+    url = window.location.origin + '/m3u8/' + store.token + '?id=' + id + '$' + start
   }
   return url
 }
@@ -1484,7 +1500,7 @@ const getHistory = (id: string) => {
   minute2.value = 0
   second2.value = 0
 
-  return axios.get('/history/' + token.value + "?key=" + id).then(({data}) => {
+  return axios.get('/history/' + store.token + "?key=" + id).then(({data}) => {
     if (data) {
       if (data.episode > -1) {
         currentVideoIndex.value = data.episode
@@ -1561,7 +1577,7 @@ const deleteHistory = () => {
 }
 
 const clearHistory = () => {
-  axios.delete('/history/' + token.value).then(() => {
+  axios.delete('/history/' + store.token).then(() => {
     deleteVisible.value = false
     loadHistory()
   })
@@ -1673,13 +1689,24 @@ const showPrevImage = () => {
 }
 
 onMounted(async () => {
-  axios.get('/api/token').then(({data}) => {
-    token.value = data.enabledToken ? data.token.split(",")[0] : "-"
+  if (!store.token) {
+    store.token = await axios.get("/api/token").then(({data}) => {
+      return data.token ? data.token.split(",")[0] : "-"
+    });
+  }
+
+  const link = route.query.link
+  if (link) {
+    loadShare(link)
+  } else {
     const newPath = route.params.path
     filePath.value = newPath ? '/' + newPath.join('/') : '/'
     fetchData()
-  })
-  loadDevices()
+  }
+
+  if (store.admin) {
+    loadDevices()
+  }
   currentVolume.value = parseInt(localStorage.getItem('volume') || '100')
   timer = setInterval(save, 5000)
   window.addEventListener('keydown', handleKeyDown);
@@ -1702,12 +1729,12 @@ watch(
     if (newPage !== oldPage || newSize !== oldSize) {
       if (newPage) page.value = parseInt(newPage) || 1
       if (newSize) size.value = parseInt(newSize) || 50
-      if (token.value) {
+      if (store.token) {
         debouncedFetch()
       }
     }
   },
-  { immediate: true }
+  {immediate: true}
 )
 
 watch(
@@ -1718,9 +1745,9 @@ watch(
     if (newFilePath === oldFilePath) {
       return
     }
-    if (token.value) {
+    if (store.token) {
       filePath.value = newFilePath
-      page.value = 1
+      page.value = pageInfo[filePath.value]?.page || 1
       debouncedFetch()
     }
   }
