@@ -569,10 +569,10 @@ public class EmbyService {
             String progressUrl;
             if (last != null) {
                 try {
-                    progressUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
-                    var progressBuilder = UriComponentsBuilder.fromUriString(progressUrl).queryParams(query);
+                    progressUrl = last.getEmby().getUrl() + "/emby/Sessions/Playing/Stopped";
+                    var progressBuilder = UriComponentsBuilder.fromUriString(progressUrl).queryParams(getQueryParams(last.getEmby(), last.getInfo()));
                     String buildUrl = progressBuilder.build().encode().toUriString();
-                    postJson(buildUrl, last.getStopped(), headers);
+                    postJson(buildUrl, last.getStopped(), getHeaders(last.getEmby(), last.getInfo()));
                 } catch (Exception e) {
                     log.warn("stop playing", e);
                 }
