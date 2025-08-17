@@ -25,13 +25,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.Call;
-import okhttp3.Headers;
-import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
+import okhttp3.*;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.ParameterizedTypeReference;
@@ -46,27 +40,27 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.UUID;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
 
 import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 
 @Slf4j
 @Service
 public class EmbyService {
+    private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(1,
+            1,
+            10,
+            TimeUnit.SECONDS,
+            new LinkedBlockingDeque<>(10),
+            Executors.defaultThreadFactory(),
+            new ThreadPoolExecutor.CallerRunsPolicy());
     private final EmbyRepository embyRepository;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final SettingRepository settingRepository;
-    private final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().build();
+    private final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().expireAfterWrite(Duration.ofDays(3)).build();
     private final OkHttpClient okHttpClient = new OkHttpClient();
 
     private final List<FilterValue> filters = Arrays.asList(
@@ -137,7 +131,7 @@ public class EmbyService {
         log.info("Fix Emby device id.");
         List<Emby> list = embyRepository.findAll();
         for (Emby emby : list) {
-            if(StringUtils.isEmpty(emby.getDeviceId())) {
+            if (StringUtils.isEmpty(emby.getDeviceId())) {
                 emby.setDeviceId(deviceId);
             }
         }
@@ -569,35 +563,38 @@ public class EmbyService {
         String json = postJson(url, body, headers);
         var media = objectMapper.readValue(json, EmbyMediaSources.class);
         log.debug("{}", media);
-        var embyPlayInfo = new EmbyPlayInfo(emby, info, parts[1], media.getSessionId(), media.getItems().get(0).getId(), media.getItems().get(0).getRunTimeTicks());
 
-        if (last != null) {
-            try {
-                baseUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
-                builder = UriComponentsBuilder.fromUriString(baseUrl).queryParams(query);
-                url = builder.build().encode().toUriString();
-                postJson(url, last.getStopped(), headers);
-            } catch (Exception e) {
-                log.warn("stop playing", e);
+        CompletableFuture.runAsync(() -> {
+            var embyPlayInfo = new EmbyPlayInfo(emby, info, parts[1], media.getSessionId(), media.getItems().get(0).getId(), media.getItems().get(0).getRunTimeTicks());
+            String progressUrl;
+            if (last != null) {
+                try {
+                    progressUrl = emby.getUrl() + "/emby/Sessions/Playing/Stopped";
+                    var progressBuilder = UriComponentsBuilder.fromUriString(progressUrl).queryParams(query);
+                    String buildUrl = progressBuilder.build().encode().toUriString();
+                    postJson(buildUrl, last.getStopped(), headers);
+                } catch (Exception e) {
+                    log.warn("stop playing", e);
+                }
             }
-        }
-        last = embyPlayInfo;
+            last = embyPlayInfo;
+            try {
+                progressUrl = emby.getUrl() + "/emby/Sessions/Playing";
+                var progressBuilder = UriComponentsBuilder.fromUriString(progressUrl).queryParams(query);
+                String buildUrl = progressBuilder.build().encode().toUriString();
+                var progressJson = embyPlayInfo.getPlaying();
+                postJson(buildUrl, progressJson, headers);
 
-        try {
-            baseUrl = emby.getUrl() + "/emby/Sessions/Playing";
-            builder = UriComponentsBuilder.fromUriString(baseUrl).queryParams(query);
-            url = builder.build().encode().toUriString();
-            json = embyPlayInfo.getPlaying();
-            postJson(url, json, headers);
+                progressUrl = emby.getUrl() + "/emby/Sessions/Playing/Progress";
+                progressBuilder = UriComponentsBuilder.fromUriString(progressUrl).queryParams(query);
+                buildUrl = progressBuilder.build().encode().toUriString();
+                progressJson = embyPlayInfo.getProgress();
+                postJson(buildUrl, progressJson, headers);
+            } catch (Exception e) {
+                log.warn("start playing", e);
+            }
+        }, executor);
 
-            baseUrl = emby.getUrl() + "/emby/Sessions/Playing/Progress";
-            builder = UriComponentsBuilder.fromUriString(baseUrl).queryParams(query);
-            url = builder.build().encode().toUriString();
-            json = embyPlayInfo.getProgress();
-            postJson(url, json, headers);
-        } catch (Exception e) {
-            log.warn("start playing", e);
-        }
 
         String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
         List<String> urls = new ArrayList<>();
