@@ -89,4 +89,9 @@ public class EmbyPlayInfo {
         currentTime = value * 10000;
         return progress.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
     }
+
+    public String getProgress() {
+        currentTime = (long) (totalTime * (50 * (Math.random() + 1)) / 100);
+        return progress.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
+    }
 }
