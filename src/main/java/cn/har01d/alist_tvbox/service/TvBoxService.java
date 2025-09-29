@@ -165,6 +165,7 @@ public class TvBoxService {
     );
     private final PikPakAccountRepository pikPakAccountRepository;
     private List<Site> sites = new ArrayList<>();
+    private final OkHttpClient okHttpClient = new OkHttpClient();
 
     public TvBoxService(AccountRepository accountRepository,
                         AListAliasRepository aliasRepository,
@@ -2415,9 +2416,8 @@ public class TvBoxService {
 
         if (url.endsWith(".strm")){
             try {
-                OkHttpClient client = new OkHttpClient();
                 Request request = new Request.Builder().url(url).get().build();
-                try (Response response = client.newCall(request).execute(); ResponseBody body = response.body()){
+                try (Response response = okHttpClient.newCall(request).execute(); ResponseBody body = response.body()){
                     url = body != null ? body.string() : url;
                 }
             }catch (Exception ignored){
