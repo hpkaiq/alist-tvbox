@@ -350,7 +350,7 @@ public class EmbyService {
 
         for (Emby emby : findAll()) {
             var info = getEmbyInfo(emby);
-            if (info == null) {
+            if (info == null || emby.isDisabled()) {
                 continue;
             }
             list.addAll(search(emby, info, wd, "Movie"));
