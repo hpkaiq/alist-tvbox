@@ -32,4 +32,7 @@ public class Emby {
     private boolean fakePlay = false;
     @Column(columnDefinition = "boolean default false")
     private boolean disabled = false;
+
+    @Column(columnDefinition = "BOOLEAN DEFAULT false")
+    private boolean enableImageProxy;
 }
