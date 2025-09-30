@@ -67,7 +67,11 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.*;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -605,7 +609,7 @@ public class TvBoxService {
                 movieDetail.setVod_remarks(getLabel(meta.getPath()));
             }
             movieDetail.setVod_name(name);
-            movieDetail.setVod_pic(ALIST_PIC);
+            movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(meta.getPath());
             setMovieInfo(movieDetail, meta, "videolist".equals(ac));
             list.add(movieDetail);
@@ -737,7 +741,7 @@ public class TvBoxService {
                 MovieDetail movieDetail = new MovieDetail();
                 movieDetail.setVod_id(String.valueOf(meta.getId()));
                 movieDetail.setVod_name(name);
-                movieDetail.setVod_pic(ALIST_PIC);
+                movieDetail.setVod_pic(Constants.ALIST_PIC);
                 movieDetail.setVod_content(meta.getPath());
                 movieDetail.setVod_remarks(getLabel(newPath));
                 setMovieInfo(movieDetail, meta, false);
@@ -859,7 +863,7 @@ public class TvBoxService {
             movieDetail.setPath(path);
             movieDetail.setVod_id(site.getId() + "$" + pid + "$1");
             movieDetail.setVod_name(getNameFromPath(line));
-            movieDetail.setVod_pic(ALIST_PIC);
+            movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(path.replace(PLAYLIST, ""));
             movieDetail.setVod_tag(FILE);
             movieDetail.setVod_remarks(getLabel(path));
@@ -906,7 +910,7 @@ public class TvBoxService {
                         movieDetail.setPath(path);
                         movieDetail.setVod_id(site.getId() + "$" + pid + "$1");
                         movieDetail.setVod_name(e.getName());
-                        movieDetail.setVod_pic(ALIST_PIC);
+                        movieDetail.setVod_pic(Constants.ALIST_PIC);
                         movieDetail.setVod_tag(FILE);
                         if (!isMediaFile) {
                             setMovieInfo(site, movieDetail, e.getName(), getParent(path), false);
@@ -959,7 +963,7 @@ public class TvBoxService {
             movieDetail.setPath(path);
             movieDetail.setVod_id(site.getId() + "$" + pid + "$1");
             movieDetail.setVod_name(getNameFromPath(name));
-            movieDetail.setVod_pic(ALIST_PIC);
+            movieDetail.setVod_pic(Constants.ALIST_PIC);
             movieDetail.setVod_content(path.replace(PLAYLIST, ""));
             movieDetail.setVod_tag(FILE);
             if (!isMediaFile) {
@@ -1127,7 +1131,7 @@ public class TvBoxService {
         if ("gui".equals(ac)) {
             return fsInfo.getType() == 1 || fsInfo.getType() == 2;
         }
-        if (fsInfo.getType() == 1 || fsInfo.getType() == 2 || fsInfo.getType() == 3 || (fsInfo.getType() == 0 && fsInfo.getName().endsWith(".strm"))) {
+        if (fsInfo.getType() == 1 || fsInfo.getType() == 2 || fsInfo.getType() == 3|| (fsInfo.getType() == 0 && fsInfo.getName().endsWith(".strm"))) {
             return true;
         }
         if ("web".equals(ac)) {
@@ -1274,7 +1278,7 @@ public class TvBoxService {
                 }
             }
             movieDetail.setVod_name(name);
-            movieDetail.setVod_pic(ALIST_PIC);
+            movieDetail.setVod_pic(Constants.ALIST_PIC);
             setMovieInfo(movieDetail, meta, "videolist".equals(ac));
             files.add(movieDetail);
             log.debug("{}", movieDetail);
