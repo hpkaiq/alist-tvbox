@@ -2414,7 +2414,7 @@ public class TvBoxService {
         }
 
         try {
-            if (new URL(url).getPath().endsWith("strm")){
+            if (new URL(url).getPath().endsWith(".strm")){
                 Request request = new Request.Builder().url(url).get().build();
                 try (Response response = okHttpClient.newCall(request).execute(); ResponseBody body = response.body()){
                     url = body != null ? body.string() : url;
