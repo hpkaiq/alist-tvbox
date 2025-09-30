@@ -773,13 +773,13 @@ public class EmbyService {
     }
 
     @Scheduled(cron = "0 30 4 * * ?")
-    public void fakePlay() throws JsonProcessingException {
+    public void fakePlay() {
         for (Emby emby : findAll()) {
             try {
                 if (!emby.isFakePlay()) {
                     continue;
                 }
-                String vodId = null;
+                String vodId;
                 MovieList home = new MovieList();
                 var info = getEmbyInfo(emby);
                 if (info == null) {
@@ -826,7 +826,7 @@ public class EmbyService {
                 play(vodId);
                 log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
             } catch (Exception e) {
-                log.error("Emby fakePlay failed.", e);
+                log.error("Emby {} fakePlay failed.", emby.getName(), e);
             }
 
         }
