@@ -2376,6 +2376,8 @@ public class TvBoxService {
         int index = path.lastIndexOf('/');
         if (index > 0) {
             return path.substring(0, index);
+        } else if (index == 0) {
+            return "/";
         }
         return path;
     }
