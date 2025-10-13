@@ -80,6 +80,14 @@
         <el-form-item label="顺序">
           <el-input-number v-model="form.order" :min="0"/>
         </el-form-item>
+        <el-form-item label="开启图片代理">
+          <el-switch
+            v-model="form.enableImageProxy"
+            inline-prompt
+            active-text="开启"
+            inactive-text="关闭"
+          />
+        </el-form-item>
         <el-form-item label="定时模拟播放保活">
           <el-switch v-model="form.fakePlay"/>
         </el-form-item>
@@ -132,6 +140,7 @@ const form = ref({
   order: 0,
   fakePlay: false,
   disabled: false,
+  enableImageProxy: false,
 })
 
 const handleAdd = () => {
@@ -151,6 +160,7 @@ const handleAdd = () => {
     order: 0,
     fakePlay: false,
     disabled: false,
+    enableImageProxy: false,
   }
   formVisible.value = true
 }
