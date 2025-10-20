@@ -231,6 +231,9 @@ public class EmbyService {
     public MovieList home() {
         MovieList result = new MovieList();
         for (Emby emby : findAll()) {
+            if (emby.isDisabled()) {
+                continue;
+            }
             var info = getEmbyInfo(emby);
             if (info == null) {
                 continue;
