@@ -453,7 +453,9 @@ public class EmbyService {
             if (parts.length == 2) {
                 var view = info.getViews().get(Integer.parseInt(parts[1]));
                 parentId = view.getId();
-                if (view.getCollectionType().equals("movies")) {
+                if (view.getCollectionType() == null){
+                    type = "";
+                } else if (view.getCollectionType().equals("movies")) {
                     type = "Movie";
                 } else if (view.getCollectionType().equals("tvshows")) {
                     type = "Series";
