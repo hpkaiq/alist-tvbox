@@ -296,7 +296,7 @@ public class EmbyService {
     }
 
     public MovieList detail(String tid) {
-        String[] parts = tid.split("-");
+        String[] parts = tid.split("-", 2);
         Emby emby = embyRepository.findById(Integer.parseInt(parts[0])).orElseThrow(() -> new NotFoundException("站点不存在"));
         var info = getEmbyInfo(emby);
         HttpHeaders headers = setHeaders(emby, info);
@@ -343,9 +343,10 @@ public class EmbyService {
             if (!urls.isEmpty()) {
                 names.add(name);
                 playUrl.add(String.join("#", urls));
+
+                movie.setVod_play_from(String.join("$$$", names));
+                movie.setVod_play_url(String.join("$$$", playUrl));
             }
-            movie.setVod_play_from(String.join("$$$", names));
-            movie.setVod_play_url(String.join("$$$", playUrl));
         }
         result.getList().add(movie);
 
@@ -440,7 +441,7 @@ public class EmbyService {
         List<MovieDetail> list = new ArrayList<>();
 
         if (id.contains("-")) {
-            String[] parts = id.split("-");
+            String[] parts = id.split("-", 2);
             if (sort == null) {
                 sort = "DateCreated,SortName:Descending";
             }
@@ -453,7 +454,7 @@ public class EmbyService {
             if (parts.length == 2) {
                 var view = info.getViews().get(Integer.parseInt(parts[1]));
                 parentId = view.getId();
-                if (view.getCollectionType() == null){
+                if (view.getCollectionType() == null) {
                     type = "";
                 } else if (view.getCollectionType().equals("movies")) {
                     type = "Movie";
@@ -588,7 +589,7 @@ public class EmbyService {
     }
 
     public Object play(String id) throws JsonProcessingException {
-        String[] parts = id.split("-");
+        String[] parts = id.split("-", 2);
         Emby emby = embyRepository.findById(Integer.parseInt(parts[0])).orElseThrow(() -> new NotFoundException("站点不存在"));
         var info = getEmbyInfo(emby);
         String ua = Constants.EMBY_USER_AGENT;
