@@ -373,10 +373,7 @@ public class EmbyService {
     private List<EmbyItem> getAll(Emby emby, EmbyInfo info, String sid) {
         HttpHeaders headers = setHeaders(emby, info);
         HttpEntity<Object> entity = new HttpEntity<>(null, headers);
-        String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items?ParentId=" + sid + "&Filters=IsNotFolder&Recursive=true&Limit=2000&Fields=Chapters,ProductionYear,PremiereDate&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false";
-        if (emby.getDeviceName().contains("emya")){
-            url = emby.getUrl() + "/emby/shows/" + sid + "/Episodes";
-        }
+        String url = emby.getUrl() + "/emby/shows/" + sid + "/Episodes";
         var items = restTemplate.exchange(url, HttpMethod.GET, entity, EmbyItems.class).getBody();
         return items.getItems();
     }
