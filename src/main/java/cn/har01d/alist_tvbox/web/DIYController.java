@@ -79,4 +79,9 @@ public class DIYController {
         embyFakePlay("", request);
     }
 
+    @GetMapping("/embyRemoveCache")
+    public void embyRemoveCache(HttpServletRequest request,Integer id) throws JsonProcessingException {
+        embyService.cache.invalidate(id);
+    }
+
 }

@@ -65,7 +65,7 @@ public class EmbyService {
     private final SettingRepository settingRepository;
     private final AppProperties appProperties;
     private final ProxyService proxyService;
-    private final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().expireAfterWrite(Duration.ofDays(3)).build();
+    public final Cache<Integer, EmbyInfo> cache = Caffeine.newBuilder().expireAfterWrite(Duration.ofDays(3)).build();
     private final OkHttpClient okHttpClient = new OkHttpClient();
 
     private final List<FilterValue> filters = Arrays.asList(
