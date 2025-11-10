@@ -82,6 +82,7 @@ public class DIYController {
     @GetMapping("/embyRemoveCache")
     public void embyRemoveCache(HttpServletRequest request,Integer id) throws JsonProcessingException {
         embyService.cache.invalidate(id);
+        log.info("embyRemoveCache id:{} success", id);
     }
 
 }
