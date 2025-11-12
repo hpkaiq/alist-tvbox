@@ -786,7 +786,6 @@ public class EmbyService {
                     continue;
                 }
                 String vodId;
-                MovieList home = new MovieList();
                 var info = getEmbyInfo(emby);
                 if (info == null) {
                     continue;
@@ -794,37 +793,39 @@ public class EmbyService {
                 List<MovieDetail> list = new ArrayList<>();
                 HttpHeaders headers = setHeaders(emby, info);
                 HttpEntity<Object> entity = new HttpEntity<>(null, headers);
-                String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&EnableTotalRecordCount=false&MediaTypes=Video";
-                var response = restTemplate.exchange(url, HttpMethod.GET, entity, EmbyItems.class).getBody();
                 int resumeSize = 0;
-                if (response != null && response.getItems() != null && !response.getItems().isEmpty()) {
-                    for (var item : response.getItems()) {
-                        var movie = getMovieDetail(item, emby);
-                        list.add(movie);
-                        resumeSize++;
+                try {
+                    String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&EnableTotalRecordCount=false&MediaTypes=Video";
+                    var response = restTemplate.exchange(url, HttpMethod.GET, entity, EmbyItems.class).getBody();
+                    if (response != null && response.getItems() != null && !response.getItems().isEmpty()) {
+                        for (var item : response.getItems()) {
+                            var movie = getMovieDetail(item, emby);
+                            list.add(movie);
+                            resumeSize++;
+                        }
                     }
+                }catch (Exception e) {
+                    log.error("Emby {} fakePlay 获取用户历史播放记录失败.", emby.getName(), e);
                 }
 
-                for (var parent : info.getViews()) {
-                    url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Latest?Limit=12&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&ParentId=" + parent.getId();
-                    var items = restTemplate.exchange(url, HttpMethod.GET, entity, new ParameterizedTypeReference<List<EmbyItem>>() {
-                    }).getBody();
-                    if (items != null && !items.isEmpty()) {
-                        for (var item : items) {
-                            if (item != null) {
-                                var movie = getMovieDetail(item, emby);
-                                list.add(movie);
+                try {
+                    for (var parent : info.getViews()) {
+                        String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/Latest?Limit=12&Fields=PrimaryImageAspectRatio,BasicSyncInfo,ProductionYear,CommunityRating&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&ParentId=" + parent.getId();
+                        var items = restTemplate.exchange(url, HttpMethod.GET, entity, new ParameterizedTypeReference<List<EmbyItem>>() {
+                        }).getBody();
+                        if (items != null && !items.isEmpty()) {
+                            for (var item : items) {
+                                if (item != null) {
+                                    var movie = getMovieDetail(item, emby);
+                                    list.add(movie);
+                                }
                             }
                         }
                     }
+                }catch (Exception e) {
+                    log.error("Emby {} fakePlay 获取分类视频失败.", emby.getName(), e);
                 }
-
-                home.setList(list);
-                home.setTotal(list.size());
-                home.setLimit(list.size());
-
-                List<MovieDetail> homeList = home.getList();
-                MovieDetail movie = homeList.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : homeList.size())));
+                MovieDetail movie = list.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : list.size())));
                 MovieList details = detail(movie.getVod_id());
                 MovieDetail detail = details.getList().get(0);
                 String vodPlayUrl = detail.getVod_play_url();
