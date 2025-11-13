@@ -825,6 +825,10 @@ public class EmbyService {
                 }catch (Exception e) {
                     log.error("Emby {} fakePlay 获取分类视频失败.", emby.getName(), e);
                 }
+                if (list.isEmpty()){
+                    log.error("Emby {} fakePlay failed.", emby.getName());
+                    continue;
+                }
                 MovieDetail movie = list.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : list.size())));
                 MovieList details = detail(movie.getVod_id());
                 MovieDetail detail = details.getList().get(0);
