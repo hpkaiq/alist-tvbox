@@ -778,7 +778,7 @@ public class EmbyService {
         return params;
     }
 
-    @Scheduled(cron = "0 30 4 * * ?")
+    @Scheduled(cron = "0 30 0 * * ?")
     public void fakePlay() {
         for (Emby emby : findAll()) {
             try {
