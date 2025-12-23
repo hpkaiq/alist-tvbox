@@ -612,7 +612,8 @@ public class EmbyService {
         var media = objectMapper.readValue(json, EmbyMediaSources.class);
         log.debug("{}", media);
 
-        CompletableFuture.runAsync(() -> {
+        CompletableFuture.supplyAsync(() -> {
+            String errMsg = "";
             var embyPlayInfo = new EmbyPlayInfo(emby, info, parts[1], media.getSessionId(), media.getItems().get(0).getId(), media.getItems().get(0).getRunTimeTicks());
             String progressUrl;
             if (last != null) {
@@ -622,7 +623,7 @@ public class EmbyService {
                     String buildUrl = progressBuilder.build().encode().toUriString();
                     postJson(buildUrl, last.getStopped(), getHeaders(last.getEmby(), last.getInfo()));
                 } catch (Exception e) {
-                    log.warn("stop playing", e);
+                    errMsg += "post Playing Stopped error: " + e.getMessage() + "\n";
                 }
             }
             last = embyPlayInfo;
@@ -639,9 +640,15 @@ public class EmbyService {
                 progressJson = embyPlayInfo.getProgress();
                 postJson(buildUrl, progressJson, headers);
             } catch (Exception e) {
-                log.warn("start playing", e);
+                errMsg += "post Playing Progress error: " + e.getMessage();
             }
-        }, executor);
+            return errMsg;
+        }, executor).handle((result, ex) -> {
+            if (StringUtils.isNotEmpty(result)) {
+                log.error("post Playing error: {}", result);
+            }
+            return result;
+        });
 
 
         String playPre = emby.getDeviceName().contains("emby") ? "/emby" : "";
@@ -804,7 +811,7 @@ public class EmbyService {
                             resumeSize++;
                         }
                     }
-                }catch (Exception e) {
+                } catch (Exception e) {
                     log.error("Emby {} fakePlay 获取用户历史播放记录失败.", emby.getName(), e);
                 }
 
@@ -822,10 +829,10 @@ public class EmbyService {
                             }
                         }
                     }
-                }catch (Exception e) {
+                } catch (Exception e) {
                     log.error("Emby {} fakePlay 获取分类视频失败.", emby.getName(), e);
                 }
-                if (list.isEmpty()){
+                if (list.isEmpty()) {
                     log.error("Emby {} fakePlay failed.", emby.getName());
                     continue;
                 }
