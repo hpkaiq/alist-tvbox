@@ -594,10 +594,22 @@ public class SubscriptionService {
             log.warn("", e);
         }
 
+        if (config.containsKey("headers")) {
+            List<Map<String, Object>> headers = new ArrayList<>((List<Map<String, Object>>) config.get("headers"));
+            headers.add(buildHeader("img\\d+.doubanio.com"));
+            config.put("headers", headers);
+        } else {
+            config.put("headers", List.of(buildHeader("img\\d+.doubanio.com")));
+        }
+
 //        addRules(config);
 
         log.debug("{} {}", apiUrl, config);
         return config;
+    }
+
+    private Map<String, Object> buildHeader(String host) {
+        return Map.of("host", host, "header", Map.of("Referer", "https://movie.douban.com"));
     }
 
     private void replaceAliToken(Map<String, Object> config) {
