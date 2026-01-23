@@ -96,16 +96,16 @@
         </el-form-item>
         <el-form-item label="Cookie" required v-if="supportCookie(form.type)">
           <el-input v-model="form.cookie" @change="getInfo" type="textarea" :rows="5"/>
-          <span v-if="form.type=='QUARK'">
+          <span v-if="form.type=='QUARK'||form.type=='QUARK_TV'">
             <a href="https://pan.quark.cn/" target="_blank">夸克网盘</a>
             <span class="hint"></span>
-            <el-button type="primary" @click="showQrCode">扫码获取</el-button>
+            <el-button type="primary" @click="showQrCodeForCookie">扫码获取</el-button>
           </span>
 
-          <span v-if="form.type=='UC'">
+          <span v-if="form.type=='UC'||form.type=='UC_TV'">
             <a href="https://drive.uc.cn/" target="_blank">UC网盘</a>
             <span class="hint"></span>
-            <el-button type="primary" @click="showQrCode">扫码获取</el-button>
+            <el-button type="primary" @click="showQrCodeForCookie">扫码获取</el-button>
           </span>
 
           <span v-if="form.type=='PAN115'">
@@ -338,6 +338,7 @@ const qr = ref({
   qr_data: '',
   query_token: '',
 })
+const qrType = ref('')
 
 const app = ref('alipaymini')
 const uid = ref('')
@@ -406,7 +407,9 @@ const tvLinkMethod = [
 const supportCookie = (type: string) => {
   return type == 'PAN115'
     || type == 'QUARK'
+    || type == 'QUARK_TV'
     || type == 'UC'
+    || type == 'UC_TV'
     || type == 'BAIDU'
     || type == 'CLOUD189'
 }
@@ -560,7 +563,23 @@ const handleConfirm = () => {
 }
 
 const showQrCode = () => {
+  qrType.value = form.value.type
   axios.post('/api/pan/accounts/-/qr?type=' + form.value.type).then(({data}) => {
+    qr.value = data
+    qrModel.value = true
+  })
+}
+
+const showQrCodeForCookie = () => {
+  // For QUARK_TV and UC_TV, use QUARK and UC type to get cookie
+  let type = form.value.type
+  if (type === 'QUARK_TV') {
+    type = 'QUARK'
+  } else if (type === 'UC_TV') {
+    type = 'UC'
+  }
+  qrType.value = type
+  axios.post('/api/pan/accounts/-/qr?type=' + type).then(({data}) => {
     qr.value = data
     qrModel.value = true
   })
@@ -606,8 +625,8 @@ const fixBaiduToken = () => {
 }
 
 const getRefreshToken = () => {
-  axios.post('/api/pan/accounts/-/token?type=' + form.value.type + '&queryToken=' + qr.value.query_token).then(({data}) => {
-    if (form.value.type == 'QUARK' || form.value.type == 'UC') {
+  axios.post('/api/pan/accounts/-/token?type=' + qrType.value + '&queryToken=' + qr.value.query_token).then(({data}) => {
+    if (qrType.value == 'QUARK' || qrType.value == 'UC') {
       form.value.cookie = data.cookie
     } else {
       form.value.token = data.token

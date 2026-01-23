@@ -28,6 +28,7 @@
         <el-button :icon="Film" circle @click="goHistory" v-else/>
         <el-button :icon="Setting" circle @click="settingVisible=true" v-if="store.admin"/>
         <el-button :icon="Plus" circle @click="handleAdd"/>
+        <el-button type="warning" @click="openDoubanMode">豆瓣</el-button>
       </el-col>
     </el-row>
 
@@ -180,7 +181,7 @@
       </template>
       <div class="video-container">
         <el-row>
-          <el-col :span="18">
+          <el-col :class="{wide:isWideMode}" :span="isWideMode ? 24 : 18">
             <video
               ref="videoPlayer"
               :src="playItem.url"
@@ -193,7 +194,7 @@
               controls>
             </video>
           </el-col>
-          <el-col :span="5">
+          <el-col :span="5" v-show="!isWideMode">
             <div v-if="playlist.length>1">
               <div style="margin-left: 30px; margin-bottom: 10px;">
                 <el-link @click="openListInVLC(currentVideoIndex)">第{{
@@ -251,7 +252,7 @@
         </el-row>
 
         <el-row>
-          <el-col :span="18">
+          <el-col :class="{wide:isWideMode}" :span="isWideMode ? 24 : 18">
             <div>
               <el-button-group>
                 <el-button @click="play" v-if="!playing">播放</el-button>
@@ -259,11 +260,48 @@
                 <el-button @click="replay">重播</el-button>
                 <el-button @click="close">退出</el-button>
                 <el-button @click="toggleMute">{{ isMuted ? '取消静音' : '静音' }}</el-button>
+                <el-button @click="toggleWideMode">宽屏</el-button>
                 <el-button @click="toggleFullscreen">全屏</el-button>
                 <el-button @click="backward">后退</el-button>
                 <el-button @click="forward">前进</el-button>
                 <el-button @click="playPrevVideo" v-if="playlist.length>1">上集</el-button>
                 <el-button @click="playNextVideo" v-if="playlist.length>1">下集</el-button>
+                <el-popover placement="top" :width="400" trigger="click" v-if="playlist.length>1">
+                  <template #reference>
+                    <el-button>选集 {{ currentVideoIndex + 1 }}/{{ playlist.length }}</el-button>
+                  </template>
+                  <template #default>
+                    <div style="max-height: 400px; overflow-y: auto;">
+                      <div style="margin-bottom: 10px;">
+                        <span style="margin-right: 10px;">排序:</span>
+                        <el-select v-model="order" @change="sort" placeholder="排序" style="width: 130px;">
+                          <el-option
+                            v-for="item in sortOrders"
+                            :key="item.value"
+                            :label="item.label"
+                            :value="item.value"
+                          />
+                        </el-select>
+                      </div>
+                      <el-scrollbar height="300px">
+                        <div style="max-height: 300px; overflow-y: auto;">
+                          <div
+                            v-for="(video, index) in playlist"
+                            :key="index"
+                            @click="playVideo(index)"
+                            style="padding: 8px; cursor: pointer; border-radius: 4px;"
+                            :style="{
+                              backgroundColor: currentVideoIndex === index ? '#409eff' : 'transparent',
+                              color: currentVideoIndex === index ? '#fff' : 'inherit'
+                            }"
+                          >
+                            {{ video.title }}
+                          </div>
+                        </div>
+                      </el-scrollbar>
+                    </div>
+                  </template>
+                </el-popover>
                 <el-popover placement="bottom" width="400px" v-if="playlist.length>1">
                   <template #reference>
                     <el-button>片头<span v-if="skipStart">★</span></el-button>
@@ -412,7 +450,7 @@
         <div class="divider"></div>
 
         <el-row>
-          <el-col :span="18">
+          <el-col :class="{wide:isWideMode}" :span="18">
             <el-descriptions class="movie">
               <el-descriptions-item label="名称">{{ movies[0].vod_name }}</el-descriptions-item>
               <el-descriptions-item label="类型">{{ movies[0].type_name || '未知' }}</el-descriptions-item>
@@ -603,6 +641,44 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="doubanVisible" title="豆瓣电影" fullscreen>
+      <el-container>
+        <el-aside width="200px" v-loading="loadingCategories">
+          <el-menu :default-active="selectedCategory" @select="handleCategorySelect">
+            <el-menu-item v-for="cat in categories" :key="cat.type_id" :index="cat.type_id">
+              {{ cat.type_name }}
+            </el-menu-item>
+          </el-menu>
+        </el-aside>
+        <el-main v-loading="loadingPosters">
+          <el-row :gutter="30">
+            <el-col :span="3" v-for="item in doubanItems" :key="item.vod_id" style="margin-bottom: 20px;">
+              <el-card :body-style="{ padding: '0px', cursor: 'pointer' }" shadow="hover" @click="searchDoubanItem(item)">
+                <el-image :src="item.vod_pic" fit="cover" style="width: 100%; height: 400px;" />
+                <div style="padding: 10px;">
+                  <div style="font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    {{ item.vod_name }}
+                  </div>
+                  <div style="font-size: 12px; color: #999; margin-top: 5px;">
+                    {{ item.vod_remarks }}
+                  </div>
+                </div>
+              </el-card>
+            </el-col>
+          </el-row>
+          <el-pagination
+            v-if="doubanTotal > 0"
+            layout="total, prev, pager, next"
+            :current-page="doubanPage"
+            :page-size="35"
+            :total="doubanTotal"
+            @current-change="handleDoubanPageChange"
+            style="margin-top: 20px; text-align: center;"
+          />
+        </el-main>
+      </el-container>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -672,6 +748,7 @@ const loading = ref(false)
 const playing = ref(false)
 const isMuted = ref(false)
 const isFullscreen = ref(false)
+const isWideMode = ref(false)
 const dialogVisible = ref(false)
 const imageVisible = ref(false)
 const formVisible = ref(false)
@@ -681,6 +758,14 @@ const needRefresh = ref(false)
 const renameVisible = ref(false)
 const removeVisible = ref(false)
 const pushVisible = ref(false)
+const doubanVisible = ref(false)
+const categories = ref<any[]>([])
+const doubanItems = ref<any[]>([])
+const doubanPage = ref(1)
+const doubanTotal = ref(0)
+const loadingCategories = ref(false)
+const loadingPosters = ref(false)
+const selectedCategory = ref('')
 const batch = ref(false)
 const clean = ref(false)
 const deleteVisible = ref(false)
@@ -878,7 +963,7 @@ const handleAdd = () => {
 
 const search = () => {
   searching.value = true
-  axios.get('/api/telegram/search?wd=' + keyword.value).then(({data}) => {
+  return axios.get('/api/telegram/search?wd=' + keyword.value).then(({data}) => {
     searching.value = false
     results.value = data.map(e => {
       return {
@@ -1491,6 +1576,62 @@ const toggleFullscreen = () => {
   }
 }
 
+const toggleWideMode = () => {
+  isWideMode.value = !isWideMode.value
+  localStorage.setItem('wideMode', isWideMode.value.toString())
+}
+
+const openDoubanMode = () => {
+  doubanVisible.value = true
+  if (categories.value.length === 0) {
+    loadingCategories.value = true
+    axios.get('/tg-db/' + store.token).then(({data}) => {
+      loadingCategories.value = false
+      if (data.class) {
+        categories.value = data.class
+        if (categories.value.length > 0) {
+          handleCategorySelect(categories.value[0].type_id)
+        }
+      }
+    }).catch(() => {
+      loadingCategories.value = false
+      ElMessage.error('获取分类失败')
+    })
+  }
+}
+
+const handleCategorySelect = (typeId: string) => {
+  selectedCategory.value = typeId
+  doubanPage.value = 1
+  loadDoubanItems(typeId, 1)
+}
+
+const loadDoubanItems = (typeId: string, page: number) => {
+  loadingPosters.value = true
+  axios.get('/tg-db/' + store.token + '?ac=web&size=35&t=' + encodeURIComponent(typeId) + '&pg=' + page).then(({data}) => {
+    loadingPosters.value = false
+    if (data.list) {
+      doubanItems.value = data.list
+      doubanTotal.value = data.total || data.pagecount * 20 || 0
+    }
+  }).catch(() => {
+    loadingPosters.value = false
+    ElMessage.error('获取列表失败')
+  })
+}
+
+const handleDoubanPageChange = (page: number) => {
+  doubanPage.value = page
+  loadDoubanItems(selectedCategory.value, page)
+}
+
+const searchDoubanItem = (item: any) => {
+  keyword.value = item.vod_name
+  search().then(() => {
+    doubanVisible.value = false
+  })
+}
+
 const enterFullscreen = (element) => {
   if (element.requestFullscreen) {
     element.requestFullscreen();
@@ -1607,6 +1748,9 @@ const updateMuteState = () => {
 }
 
 const sort = () => {
+  // 保存当前播放视频的URL作为标识
+  const currentUrl = playItem.value.url
+
   switch (order.value) {
     case "index":
       playlist.value.sort((a, b) => a.index - b.index)
@@ -1656,7 +1800,9 @@ const sort = () => {
       })
       break
   }
-  currentVideoIndex.value = playlist.value.findIndex(e => e === playItem.value)
+
+  // 根据URL重新找到当前视频的索引
+  currentVideoIndex.value = playlist.value.findIndex(e => e.url === currentUrl)
 }
 
 const getPlayUrl = () => {
@@ -1970,6 +2116,7 @@ onMounted(async () => {
     loadDevices()
   }
   currentVolume.value = parseInt(localStorage.getItem('volume') || '100')
+  isWideMode.value = localStorage.getItem('wideMode') === 'true'
   timer = setInterval(save, 5000)
   window.addEventListener('keydown', handleKeyDown);
   document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -2056,5 +2203,9 @@ video {
 
 #copy:hover {
   cursor: pointer;
+}
+
+.wide {
+  margin-left: 0;
 }
 </style>

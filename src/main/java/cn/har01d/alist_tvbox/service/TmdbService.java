@@ -31,6 +31,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -64,6 +65,10 @@ public class TmdbService {
     private final ObjectMapper objectMapper;
 
     private final int rateLimit = 2000;
+    private static final Set<String> SPECIAL_FOLDERS = Set.of(
+            "SDR", "国语", "国语版", "粤语", "粤语版", "番外彩蛋", "彩蛋",
+            "付费花絮合集", "大结局点映礼", "心动记录+彩蛋"
+    );
     private Map<String, String> countryNames = new HashMap<>();
 
     private String apiKey;
@@ -183,13 +188,7 @@ public class TmdbService {
         }
         Tmdb movie = getById(dto.getType(), dto.getTmId());
         if (movie != null) {
-            meta.setTmdb(movie);
-            meta.setTmId(movie.getTmdbId());
-            meta.setYear(movie.getYear());
-            meta.setName(movie.getName());
-            if (StringUtils.isNotBlank(movie.getScore())) {
-                meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-            }
+            updateMetaWithMovie(meta, movie);
             saveMeta(meta);
             return true;
         }
@@ -249,7 +248,7 @@ public class TmdbService {
             var movie = db.getMovie();
             if (movie == null) {
                 metaRepository.delete(db);
-                log.info("delete douban meta {}", db.getId());
+                log.info("delete TMDB meta {}", db.getId());
             } else {
                 db.setTmdb(null);
                 db.setYear(movie.getYear());
@@ -258,7 +257,7 @@ public class TmdbService {
                     db.setScore((int) (Double.parseDouble(movie.getDbScore()) * 10));
                 }
                 metaRepository.save(db);
-                log.info("update douban meta {}", db.getId());
+                log.info("update TMDB meta {}", db.getId());
             }
         }
         log.info("delete {} {}", meta.getId(), meta.getPath());
@@ -287,14 +286,7 @@ public class TmdbService {
         if (movie != null) {
             meta.setType(dto.getType());
             meta.setSiteId(dto.getSiteId());
-            meta.setTmdb(movie);
-            meta.setTmId(movie.getTmdbId());
-            meta.setYear(movie.getYear());
-            meta.setName(movie.getName());
-            if (StringUtils.isNotBlank(movie.getScore())) {
-                meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-            }
-
+            updateMetaWithMovie(meta, movie);
             saveMeta(meta);
             return true;
         }
@@ -371,7 +363,7 @@ public class TmdbService {
     }
 
     private String guessType(String path) {
-        if (path.contains("电影") || path.toLowerCase().contains("movie")) {
+        if (path.contains("电影") || path.toLowerCase().contains("movie") || path.contains("(系列)")) {
             return "movie";
         }
         if (path.contains("电视剧") || path.contains("连续剧") || path.contains("剧集") || path.contains("短剧")
@@ -404,6 +396,8 @@ public class TmdbService {
         return new HashSet<>();
     }
 
+    private static final Pattern TMDBID = Pattern.compile("\\{tmdbid-(\\d+)}");
+
     private Tmdb handleIndexLine(int id, String line, String type, boolean force, Set<String> failed) {
         String[] parts = line.split("#");
         String path = parts[0];
@@ -418,6 +412,7 @@ public class TmdbService {
         }
 
         Integer year = getYearFromPath(path);
+        log.debug("{} {} {}", type, year, path);
         String name = "";
         Tmdb movie = null;
         if (parts.length == 2) {
@@ -434,6 +429,24 @@ public class TmdbService {
                 }
                 if (movie != null) {
                     name = movie.getName();
+                }
+            }
+        } else {
+            Matcher matcher = TMDBID.matcher(line);
+            if (matcher.find()) {
+                try {
+                    movie = getById(type, Integer.parseInt(matcher.group(1)));
+                } catch (Exception e) {
+                    log.warn("{} {}", id + 1, path, e);
+                }
+                if (movie != null) {
+                    if (year != null && year.equals(movie.getYear())) {
+                        name = movie.getName();
+                    } else if (line.contains(movie.getName())) {
+                        name = movie.getName();
+                    } else {
+                        movie = null;
+                    }
                 }
             }
         }
@@ -507,15 +520,7 @@ public class TmdbService {
             }
 
             if (movie != null && TextUtils.isNormal(movie.getName())) {
-                meta.setPath(path);
-                meta.setTmdb(movie);
-                meta.setTmId(movie.getTmdbId());
-                meta.setYear(movie.getYear());
-                meta.setName(movie.getName());
-                if (StringUtils.isNotBlank(movie.getScore())) {
-                    meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-                }
-                saveMeta(meta);
+                updateMeta(path, meta, movie);
                 log.info("{} - add {} '{}' for path {}", id, movie.getId(), movie.getName(), path);
                 return movie;
             }
@@ -535,26 +540,25 @@ public class TmdbService {
     public Tmdb getByName(String name) {
         try {
             name = TextUtils.fixName(name);
-
-            List<Tmdb> movies = tmdbRepository.getByName(name);
-            if (movies != null && !movies.isEmpty()) {
-                return movies.get(0);
+            Tmdb movie = findFirstMovieByName(name);
+            if (movie != null) {
+                return movie;
             }
 
             String newName = TextUtils.updateName(name);
             if (!newName.equals(name)) {
-                name = newName;
-                log.debug("search by name: {}", name);
-
-                movies = tmdbRepository.getByName(name);
-                if (movies != null && !movies.isEmpty()) {
-                    return movies.get(0);
-                }
+                log.debug("search by name: {}", newName);
+                return findFirstMovieByName(newName);
             }
         } catch (Exception e) {
             log.warn("", e);
         }
         return null;
+    }
+
+    private Tmdb findFirstMovieByName(String name) {
+        List<Tmdb> movies = tmdbRepository.getByName(name);
+        return movies != null && !movies.isEmpty() ? movies.getFirst() : null;
     }
 
     private boolean isCancelled(Integer taskId) {
@@ -563,7 +567,13 @@ public class TmdbService {
     }
 
     private Tmdb updateMeta(String path, TmdbMeta meta, Tmdb movie) {
+        updateMetaWithMovie(meta, movie);
         meta.setPath(path);
+        saveMeta(meta);
+        return movie;
+    }
+
+    private void updateMetaWithMovie(TmdbMeta meta, Tmdb movie) {
         meta.setTmdb(movie);
         meta.setTmId(movie.getTmdbId());
         meta.setYear(movie.getYear());
@@ -571,54 +581,15 @@ public class TmdbService {
         if (StringUtils.isNotBlank(movie.getScore())) {
             meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
         }
-        saveMeta(meta);
-        return movie;
     }
 
     private boolean isSpecialFolder(String name) {
-        if (name.matches("Season \\d+")) {
-            return true;
-        }
-        if (name.toLowerCase().startsWith("4k")) {
-            return true;
-        }
-        if (name.toLowerCase().startsWith("2160p")) {
-            return true;
-        }
-        if (name.toLowerCase().startsWith("1080p")) {
-            return true;
-        }
-        if (name.equals("SDR")) {
-            return true;
-        }
-        if (name.equals("国语")) {
-            return true;
-        }
-        if (name.equals("国语版")) {
-            return true;
-        }
-        if (name.equals("粤语")) {
-            return true;
-        }
-        if (name.equals("粤语版")) {
-            return true;
-        }
-        if (name.equals("番外彩蛋")) {
-            return true;
-        }
-        if (name.equals("彩蛋")) {
-            return true;
-        }
-        if (name.equals("付费花絮合集")) {
-            return true;
-        }
-        if (name.equals("大结局点映礼")) {
-            return true;
-        }
-        if (name.equals("心动记录+彩蛋")) {
-            return true;
-        }
-        return false;
+        String lower = name.toLowerCase();
+        return name.matches("Season \\d+")
+            || lower.startsWith("4k")
+            || lower.startsWith("2160p")
+            || lower.startsWith("1080p")
+            || SPECIAL_FOLDERS.contains(name);
     }
 
     private String getName(String path) {
@@ -683,19 +654,7 @@ public class TmdbService {
         if (meta == null) {
             return false;
         }
-        Tmdb movie = scrape(type, name, meta);
-        if (movie != null) {
-            meta.setTmdb(movie);
-            meta.setTmId(movie.getTmdbId());
-            meta.setYear(movie.getYear());
-            meta.setName(movie.getName());
-            if (StringUtils.isNotBlank(movie.getScore())) {
-                meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-            }
-            saveMeta(meta);
-            return true;
-        }
-        return false;
+        return scrape(type, name, meta) != null;
     }
 
     public Tmdb scrape(String type, String name, TmdbMeta meta) {
@@ -708,24 +667,12 @@ public class TmdbService {
         }
         Tmdb movie = search(type, name, year);
         if (movie != null) {
-            meta.setTmdb(movie);
-            meta.setTmId(movie.getTmdbId());
-            meta.setYear(movie.getYear());
-            meta.setName(movie.getName());
-            if (StringUtils.isNotBlank(movie.getScore())) {
-                meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-            }
+            updateMetaWithMovie(meta, movie);
             saveMeta(meta);
         } else {
             movie = search("tv".equals(type) ? "movie" : "tv", name, year);
             if (movie != null) {
-                meta.setTmdb(movie);
-                meta.setTmId(movie.getTmdbId());
-                meta.setYear(movie.getYear());
-                meta.setName(movie.getName());
-                if (StringUtils.isNotBlank(movie.getScore())) {
-                    meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
-                }
+                updateMetaWithMovie(meta, movie);
                 saveMeta(meta);
             }
         }
@@ -749,7 +696,14 @@ public class TmdbService {
     }
 
     public Tmdb search(String type, String name, String year, boolean match) {
-        String url = "https://api.themoviedb.org/3/search/" + type + "?query=" + name + "&api_key=" + apiKey + "&language=zh-CN&year=" + year;
+        String url = UriComponentsBuilder.fromUriString("https://api.themoviedb.org/3/search/" + type)
+                .queryParam("query", name)
+                .queryParam("api_key", apiKey)
+                .queryParam("language", "zh-CN")
+                .queryParam("year", year)
+                .build()
+                .encode()
+                .toUriString();
         long now = System.currentTimeMillis();
         if (!log.isDebugEnabled() && TMDB_API_KEY.equals(apiKey) && now - lastRequestTime < rateLimit) {
             sleep(lastRequestTime + rateLimit - now);
@@ -780,7 +734,13 @@ public class TmdbService {
     }
 
     public Tmdb getDetails(String type, Integer id) {
-        String url = "https://api.themoviedb.org/3/" + type + "/" + id + "?language=zh-CN&append_to_response=credits&api_key=" + apiKey;
+        String url = UriComponentsBuilder.fromUriString("https://api.themoviedb.org/3/" + type + "/" + id)
+                .queryParam("language", "zh-CN")
+                .queryParam("append_to_response", "credits")
+                .queryParam("api_key", apiKey)
+                .build()
+                .encode()
+                .toUriString();
         long now = System.currentTimeMillis();
         if (!log.isDebugEnabled() && TMDB_API_KEY.equals(apiKey) && now - lastRequestTime < rateLimit) {
             sleep(lastRequestTime + rateLimit - now);

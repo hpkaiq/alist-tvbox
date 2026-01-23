@@ -5,8 +5,8 @@ import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.dto.FileItem;
 import cn.har01d.alist_tvbox.dto.FilesList;
 import cn.har01d.alist_tvbox.dto.ShareLink;
-import cn.har01d.alist_tvbox.dto.Video;
 import cn.har01d.alist_tvbox.dto.Subtitle;
+import cn.har01d.alist_tvbox.dto.Video;
 import cn.har01d.alist_tvbox.entity.AListAlias;
 import cn.har01d.alist_tvbox.entity.AListAliasRepository;
 import cn.har01d.alist_tvbox.entity.Account;
@@ -69,9 +69,9 @@ import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -104,7 +104,8 @@ public class TvBoxService {
     private static final Pattern NUMBER = Pattern.compile("^Season (\\d{1,2}).*");
     private static final Pattern NUMBER1 = Pattern.compile("^SE(\\d{1,2}).*");
     private static final Pattern NUMBER2 = Pattern.compile("^S(\\d{1,2}).*");
-    private static final Pattern NUMBER3 = Pattern.compile("^第(.{1,2})季.*");
+    private static final Pattern NUMBER3 = Pattern.compile("^第\\s*(.{1,2})\\s*季.*");
+    private static final Pattern SHARE_ID = Pattern.compile("^\\d+@.+@.*");
 
     private final AccountRepository accountRepository;
     private final AListAliasRepository aliasRepository;
@@ -1131,7 +1132,7 @@ public class TvBoxService {
         if ("gui".equals(ac)) {
             return fsInfo.getType() == 1 || fsInfo.getType() == 2;
         }
-        if (fsInfo.getType() == 1 || fsInfo.getType() == 2 || fsInfo.getType() == 3|| (fsInfo.getType() == 0 && fsInfo.getName().endsWith(".strm"))) {
+        if (fsInfo.getType() == 1 || fsInfo.getType() == 2 || fsInfo.getType() == 3 || (fsInfo.getType() == 0 && fsInfo.getName().endsWith(".strm"))) {
             return true;
         }
         if ("web".equals(ac)) {
@@ -1411,16 +1412,18 @@ public class TvBoxService {
 
         result.put("url", url);
 
-        if (isUseProxy(url)) {
+        if (url.contains("#proxy=0")) {
+            // do nothing
+        } else if (isUseProxy(url)) {
             url = buildProxyUrl(site, name, path);
             result.put("url", url);
         } else if (fsDetail.getProvider().equals("QuarkShare") || fsDetail.getProvider().equals("Quark")) {
             var account = getDriverAccount(url, DriverType.QUARK);
-            String cookie = account.getCookie();
+            String cookie = account == null ? "" : account.getCookie();
             result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.QUARK_USER_AGENT, "Referer", "https://pan.quark.cn"));
         } else if (fsDetail.getProvider().equals("UCShare") || fsDetail.getProvider().equals("UC")) {
             var account = getDriverAccount(url, DriverType.UC);
-            String cookie = account.getCookie();
+            String cookie = account == null ? "" : account.getCookie();
             result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.UC_USER_AGENT, "Referer", "https://drive.uc.cn"));
         } else if (url.contains("xunlei.com")) {
             result.put("header", Map.of("User-Agent", "AndroidDownloadManager/13 (Linux; U; Android 13; M2004J7AC Build/SP1A.210812.016)"));
@@ -1458,9 +1461,8 @@ public class TvBoxService {
     }
 
     private DriverAccount getDriverAccount(String url, DriverType type) {
-        int index = url.indexOf(Constants.STORAGE_ID_FRAGMENT);
-        if (index > 0) {
-            int id = Integer.parseInt(url.substring(index + Constants.STORAGE_ID_FRAGMENT.length())) - DriverAccountService.IDX;
+        int id = getAccountId(url);
+        if (id > 0) {
             return driverAccountRepository.findById(id).orElse(null);
         } else {
             return driverAccountRepository.findByTypeAndMasterTrue(type).orElse(null);
@@ -1480,21 +1482,33 @@ public class TvBoxService {
     }
 
     private DriverAccount getDriverAccount(String url) {
-        int index = url.indexOf(Constants.STORAGE_ID_FRAGMENT);
-        if (index > 0) {
-            int id = Integer.parseInt(url.substring(index + Constants.STORAGE_ID_FRAGMENT.length())) - DriverAccountService.IDX;
+        int id = getAccountId(url);
+        if (id > 0) {
             return driverAccountRepository.findById(id).orElse(null);
         }
         return null;
     }
 
     private Account getAliAccount(String url) {
-        int index = url.indexOf(Constants.STORAGE_ID_FRAGMENT);
-        if (index > 0) {
-            int id = (Integer.parseInt(url.substring(index + Constants.STORAGE_ID_FRAGMENT.length())) - AccountService.IDX) / 2 + 1;
+        int id = getAccountId(url);
+        if (id > 0) {
             return accountRepository.findById(id).orElse(null);
         }
         return null;
+    }
+
+    private int getAccountId(String url) {
+        int index = url.indexOf(Constants.STORAGE_ID_FRAGMENT);
+        if (index > 0) {
+            int start = index + Constants.STORAGE_ID_FRAGMENT.length();
+            int end = url.indexOf("#", start);
+            if (end == -1) {
+                end = url.length();
+            }
+            int id = Integer.parseInt(url.substring(start, end)) - DriverAccountService.IDX;
+            return id;
+        }
+        return 0;
     }
 
     public Map<String, Object> getPlayUrl(Integer siteId, Integer id, Integer index, boolean getSub, String client) {
@@ -1716,9 +1730,12 @@ public class TvBoxService {
                 movieDetail.setVod_content(parent);
             }
             if (fsDetail.getType() != 5 && !setMovieInfo(site, movieDetail, fsDetail.getName(), parent, true)) {
-                movieDetail.setVod_name(getNameFromPath(parent));
-                setMovieInfo(site, movieDetail, "", parent, true);
-                movieDetail.setVod_name(fsDetail.getName());
+                String newName = getNameFromPath(parent);
+                if (!SHARE_ID.matcher(newName).matches()) {
+                    movieDetail.setVod_name(newName);
+                    setMovieInfo(site, movieDetail, "", parent, true);
+                    movieDetail.setVod_name(fsDetail.getName());
+                }
             }
             if ("PikPakShare".equals(fsDetail.getProvider())) {
                 movieDetail.setVod_remarks("P" + movieDetail.getVod_remarks());
@@ -2194,7 +2211,7 @@ public class TvBoxService {
                     var m = pattern.matcher(filename);
                     if (m.matches()) {
                         String newName = getNameFromPath(getParent(path));
-                        if (!newName.equals(name)) {
+                        if (!newName.equals(name) && !SHARE_ID.matcher(newName).matches()) {
                             movie = doubanService.getByName(newName);
                             break;
                         }
@@ -2418,13 +2435,13 @@ public class TvBoxService {
         }
 
         try {
-            if (new URL(url).getPath().endsWith(".strm")){
+            if (new URL(url).getPath().endsWith(".strm")) {
                 Request request = new Request.Builder().url(url).get().build();
-                try (Response response = okHttpClient.newCall(request).execute(); ResponseBody body = response.body()){
+                try (Response response = okHttpClient.newCall(request).execute(); ResponseBody body = response.body()) {
                     url = body != null ? body.string() : url;
                 }
             }
-        }catch (Exception ignored){
+        } catch (Exception ignored) {
         }
 
         return url;
