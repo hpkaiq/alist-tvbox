@@ -143,7 +143,9 @@ public class EmbyService {
         log.info("Fix Emby device id.");
         List<Emby> list = embyRepository.findAll();
         for (Emby emby : list) {
-            emby.setDeviceId(deviceId);
+            if (StringUtils.isEmpty(emby.getDeviceId())) {
+                emby.setDeviceId(deviceId);
+            }
         }
         embyRepository.saveAll(list);
         settingRepository.save(new Setting("fix_emby_device_id", "true"));
@@ -229,6 +231,9 @@ public class EmbyService {
     public MovieList home() {
         MovieList result = new MovieList();
         for (Emby emby : findAll()) {
+            if (emby.isDisabled()) {
+                continue;
+            }
             var info = getEmbyInfo(emby);
             if (info == null) {
                 continue;
@@ -290,7 +295,7 @@ public class EmbyService {
         return movie;
     }
 
-    public MovieList detail(String tid) throws JsonProcessingException {
+    public MovieList detail(String tid) {
         String[] parts = tid.split("-", 2);
         Emby emby = embyRepository.findById(Integer.parseInt(parts[0])).orElseThrow(() -> new NotFoundException("站点不存在"));
         var info = getEmbyInfo(emby);
