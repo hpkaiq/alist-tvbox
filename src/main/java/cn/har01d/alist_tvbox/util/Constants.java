@@ -7,7 +7,7 @@ public final class Constants {
 
     public static final String ACCEPT = "application/json, text/plain, */*";
     public static final String OK_USER_AGENT = "okhttp/3.15";
-    public static final String USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+    public static final String USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
     public static final String EMBY_USER_AGENT = "Yamby/1.5.7.18(Android";
     public static final String JELLYFIN_USER_AGENT = "Jellyfin/2.6.2 (Linux;Android 13) AndroidXMedia3/1.5.1";
     public static final String USER_AGENT1 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppelWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36";
@@ -55,6 +55,7 @@ public final class Constants {
     public static final String APP_VERSION = "app_version";
     public static final String ALIST_VERSION = "alist_version";
     public static final String BILIBILI_COOKIE = "bilibili_cookie";
+    public static final String BILIBILI_TOKEN = "bilibili_token";
     public static final String BILIBILI_CODE = "6666";
     public static final String BILI_BILI = "BiliBili";
     public static final String ALI_SECRET = "ali_secret";

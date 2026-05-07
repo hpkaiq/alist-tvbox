@@ -9,6 +9,7 @@ import cn.har01d.alist_tvbox.entity.AccountRepository;
 import cn.har01d.alist_tvbox.entity.DriverAccount;
 import cn.har01d.alist_tvbox.entity.DriverAccountRepository;
 import cn.har01d.alist_tvbox.entity.EmbyRepository;
+import cn.har01d.alist_tvbox.entity.FeiniuRepository;
 import cn.har01d.alist_tvbox.entity.JellyfinRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
@@ -90,6 +91,7 @@ public class SubscriptionService {
     private final ShareRepository shareRepository;
     private final DriverAccountRepository panAccountRepository;
     private final EmbyRepository embyRepository;
+    private final FeiniuRepository feiniuRepository;
     private final JellyfinRepository jellyfinRepository;
     private final AListLocalService aListLocalService;
     private final ConfigFileService configFileService;
@@ -114,6 +116,7 @@ public class SubscriptionService {
                                ShareRepository shareRepository,
                                DriverAccountRepository panAccountRepository,
                                EmbyRepository embyRepository,
+                               FeiniuRepository feiniuRepository,
                                JellyfinRepository jellyfinRepository,
                                AListLocalService aListLocalService,
                                ConfigFileService configFileService,
@@ -135,6 +138,7 @@ public class SubscriptionService {
         this.shareRepository = shareRepository;
         this.panAccountRepository = panAccountRepository;
         this.embyRepository = embyRepository;
+        this.feiniuRepository = feiniuRepository;
         this.jellyfinRepository = jellyfinRepository;
         this.aListLocalService = aListLocalService;
         this.configFileService = configFileService;
@@ -176,6 +180,24 @@ public class SubscriptionService {
             subscriptionRepository.save(sub);
             settingRepository.save(new Setting("fix_sid", "true"));
             settingRepository.save(new Setting("fix_sub_id", "true"));
+
+            sub = new Subscription();
+            sub.setSid("pg");
+            sub.setName("PG");
+            sub.setUrl("/pg/jsm.json");
+            subscriptionRepository.save(sub);
+
+            sub = new Subscription();
+            sub.setSid("ok");
+            sub.setName("OK");
+            sub.setUrl("http://ok321.top/ok");
+            subscriptionRepository.save(sub);
+
+            sub = new Subscription();
+            sub.setSid("zx");
+            sub.setName("真心");
+            sub.setUrl("/zx/FongMi.json");
+            subscriptionRepository.save(sub);
         } else {
             fixUrl(list);
             fixSid(list);
@@ -190,28 +212,6 @@ public class SubscriptionService {
             map.put(sub.getSid(), sub);
         }
         subscriptionRepository.deleteAll(duplicated);
-
-        if (subscriptionRepository.findBySid("pg").isEmpty()) {
-            Subscription sub = new Subscription();
-            sub.setSid("pg");
-            sub.setName("PG");
-            sub.setUrl("/pg/jsm.json");
-            subscriptionRepository.save(sub);
-        }
-        if (subscriptionRepository.findBySid("ok").isEmpty()) {
-            Subscription sub = new Subscription();
-            sub.setSid("ok");
-            sub.setName("OK");
-            sub.setUrl("http://ok321.top/ok");
-            subscriptionRepository.save(sub);
-        }
-        if (subscriptionRepository.findBySid("zx").isEmpty()) {
-            Subscription sub = new Subscription();
-            sub.setSid("zx");
-            sub.setName("真心");
-            sub.setUrl("/zx/FongMi.json");
-            subscriptionRepository.save(sub);
-        }
     }
 
     private void fixUrl(List<Subscription> list) {
@@ -330,6 +330,11 @@ public class SubscriptionService {
             return getFirstToken();
         }
         return value;
+    }
+
+    public void clearRequestContext() {
+        currentToken.remove();
+        tenantService.clear();
     }
 
     public TokenDto updateToken(TokenDto dto) {
@@ -1066,6 +1071,16 @@ public class SubscriptionService {
         }
 
         try {
+            if (feiniuRepository.count() > 0) {
+                Map<String, Object> site = buildSite(token, uid, "csp_FeiNiu", "飞牛影视");
+                sites.add(id++, site);
+                log.debug("add 飞牛影视 site: {}", site);
+            }
+        } catch (Exception e) {
+            log.warn("", e);
+        }
+
+        try {
             Map<String, Object> site = buildSite(token, uid, "csp_Live", "网络直播");
             sites.add(id++, site);
             log.debug("add Live site: {}", site);
@@ -1110,6 +1125,18 @@ public class SubscriptionService {
                 log.warn("", e);
             }
         }
+    }
+
+    public Map<String, Boolean> getCapabilities() {
+        Map<String, Boolean> map = new HashMap<>();
+        map.put("emby", embyRepository.count() > 0);
+        map.put("jellyfin", jellyfinRepository.count() > 0);
+        map.put("feiniu", feiniuRepository.count() > 0);
+        map.put("pansou", StringUtils.isNotBlank(appProperties.getPanSouUrl()));
+        map.put("bilibili", StringUtils.isNotBlank(settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("")));
+        Site site = siteRepository.findById(1).orElse(null);
+        map.put("xiaoya", site != null);
+        return map;
     }
 
     private Map<String, Object> buildSite(String token, String uid, String key, String name) throws IOException {
@@ -1189,6 +1216,7 @@ public class SubscriptionService {
                 json = json.replace("./lib/tokenm.json", address + "/pg/lib/tokenm" + (StringUtils.isBlank(token) ? "" : "?token=" + token));
                 json = json.replace("./peizhi.json", address + "/zx/config" + (StringUtils.isBlank(token) ? "" : "?token=" + token));
                 json = json.replace("./json/peizhi.json", address + "/zx/config" + (StringUtils.isBlank(token) ? "" : "?token=" + token));
+                json = json.replace("tvfan/Cloud-drive.txt", address + "/tvfan/config" + (StringUtils.isBlank(token) ? "" : "?token=" + token));
                 json = json.replace("./", address + folder);
                 //json = json.replace(address + folder + "lib/tokenm.json", "./lib/tokenm.json");
                 json = json.replace("DOCKER_ADDRESS", address);
@@ -1300,6 +1328,11 @@ public class SubscriptionService {
             json = Pattern.compile("^\\s*//.*\r?\n?", Pattern.MULTILINE).matcher(json).replaceAll("");
             json = json.replace("\r", " ").replace("\n", " ");
             json = json.replace("{Cloud-drive", "{\"Cloud-drive");
+            if (json.contains("tvfan/Cloud-drive.txt")) {
+                String address = readHostAddress();
+                String token = getCurrentOrFirstToken();
+                json = json.replace("tvfan/Cloud-drive.txt", address + "/tvfan/config" + (StringUtils.isBlank(token) ? "" : "?token=" + token));
+            }
 
             return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
@@ -1326,7 +1359,7 @@ public class SubscriptionService {
             key = rightPadding(key, "0", 16);
             byte[] data2 = toBytes(data);
             SecretKeySpec keySpec = new SecretKeySpec(key.getBytes(), "AES");
-            Cipher cipher = Cipher.getInstance("AES/ECB/PKCS7Padding");
+            Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
             cipher.init(Cipher.DECRYPT_MODE, keySpec);
             return new String(cipher.doFinal(data2));
         } catch (Exception e) {
@@ -1337,7 +1370,7 @@ public class SubscriptionService {
 
     public static String CBC(String data, String key, String iv) {
         try {
-            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS7Padding");
+            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
             SecretKeySpec keySpec = new SecretKeySpec(key.getBytes(), "AES");
             AlgorithmParameterSpec paramSpec = new IvParameterSpec(iv.getBytes());
             cipher.init(Cipher.DECRYPT_MODE, keySpec, paramSpec);

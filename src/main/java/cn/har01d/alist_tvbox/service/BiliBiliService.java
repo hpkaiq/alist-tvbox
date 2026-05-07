@@ -107,11 +107,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_CODE;
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE;
+import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.BILI_BILI;
 import static cn.har01d.alist_tvbox.util.Constants.FILE;
 import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
@@ -292,6 +295,7 @@ public class BiliBiliService {
     private final SettingRepository settingRepository;
     private final NavigationService navigationService;
     private final AppProperties appProperties;
+    private final BiliCookieRefreshService biliCookieRefreshService;
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final ObjectMapper objectMapper;
@@ -314,11 +318,13 @@ public class BiliBiliService {
     public BiliBiliService(SettingRepository settingRepository,
                            NavigationService navigationService,
                            AppProperties appProperties,
+                           BiliCookieRefreshService biliCookieRefreshService,
                            RestTemplateBuilder builder,
                            ObjectMapper objectMapper) {
         this.settingRepository = settingRepository;
         this.navigationService = navigationService;
         this.appProperties = appProperties;
+        this.biliCookieRefreshService = biliCookieRefreshService;
         this.restTemplate1 = builder
                 .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.OK_USER_AGENT)
@@ -330,7 +336,14 @@ public class BiliBiliService {
     }
 
     public Map<String, Object> updateCookie(CookieData cookieData) {
-        settingRepository.save(new Setting(BILIBILI_COOKIE, cookieData.getCookie()));
+        String cookie = cookieData.getCookie();
+        if (!cookie.contains("buvid3=")) {
+            cookie += "; buvid3=" + UUID.randomUUID() + ThreadLocalRandom.current().nextInt(10000, 99999) + "infoc";
+        }
+        settingRepository.save(new Setting(BILIBILI_COOKIE, cookie));
+        if (cookieData.getRefreshToken() != null) {
+            settingRepository.save(new Setting(BILIBILI_TOKEN, cookieData.getRefreshToken().trim()));
+        }
         return getLoginStatus();
     }
 
@@ -376,6 +389,7 @@ public class BiliBiliService {
             }
             log.info("user: {} {} isLogin: {} vip: {}", data.get("uname"), data.get("mid"), data.get("isLogin"), data.get("vipType"));
         }
+        result.put("hasRefreshToken", settingRepository.findById(BILIBILI_TOKEN).map(Setting::getValue).filter(StringUtils::isNotBlank).isPresent());
         return result;
     }
 
@@ -399,6 +413,7 @@ public class BiliBiliService {
                     log.info("扫码登录成功");
                     String cookie = response.getHeaders().get("set-cookie").stream().map(e -> e.split(";")[0]).collect(Collectors.joining(";"));
                     settingRepository.save(new Setting(BILIBILI_COOKIE, cookie));
+                    settingRepository.save(new Setting(BILIBILI_TOKEN, result.getRefresh_token()));
 //                    try {
 //                        HttpEntity<Void> entity = buildHttpEntity(null);
 //                        var body = restTemplate.exchange("https://api.bilibili.com/x/frontend/finger/spi", HttpMethod.GET, entity, JsonNode.class).getBody();
@@ -549,7 +564,7 @@ public class BiliBiliService {
         movieDetail.setVod_tag(FILE);
         movieDetail.setType_name(info.getBadge());
         movieDetail.setVod_pic(fixCover(info.getCover()));
-        movieDetail.setVod_remarks(info.getRating());
+        movieDetail.setVod_remarks(StringUtils.isBlank(info.getRating()) ? info.getBadge() : info.getBadge() + " - " + info.getRating());
         return movieDetail;
     }
 
@@ -560,7 +575,7 @@ public class BiliBiliService {
         movieDetail.setVod_tag(FILE);
         movieDetail.setType_name(info.getBadge());
         movieDetail.setVod_pic(fixCover(info.getCover()));
-        movieDetail.setVod_remarks(info.getRating() == null ? "" : String.valueOf(info.getRating().getScore()));
+        movieDetail.setVod_remarks(info.getRating() == null ? info.getBadge() : info.getBadge() + " - " + info.getRating().getScore());
         return movieDetail;
     }
 
@@ -626,10 +641,10 @@ public class BiliBiliService {
     }
 
     private MovieDetail getMovieDetail(BiliBiliInfo info) {
-        return getMovieDetail(info, false);
+        return getMovieDetail(info, "", false);
     }
 
-    private MovieDetail getMovieDetail(BiliBiliInfo info, boolean full) {
+    private MovieDetail getMovieDetail(BiliBiliInfo info, String client, boolean full) {
         String id = info.getBvid();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id(id);
@@ -642,9 +657,13 @@ public class BiliBiliService {
             movieDetail.setVod_time(Instant.ofEpochSecond(info.getPubdate()).toString());
             movieDetail.setVod_play_from(BILI_BILI);
             if (info.getPages() == null || info.getPages().size() <= 1) {
-                movieDetail.setVod_play_url("视频$" + buildPlayUrl(id));
+                if ("gui".equals(client)) {
+                    movieDetail.setVod_play_url("视频(" + seconds2String(info.getDuration()) + ")$" + buildPlayUrl(id));
+                } else {
+                    movieDetail.setVod_play_url("视频$" + buildPlayUrl(id));
+                }
             } else {
-                movieDetail.setVod_play_url(info.getPages().stream().map(e -> fixTitle(e.getPart()) + "$" + info.getAid() + "-" + e.getCid()).collect(Collectors.joining("#")));
+                movieDetail.setVod_play_url(info.getPages().stream().map(e -> buildTitle(e, client) + "$" + info.getAid() + "-" + e.getCid()).collect(Collectors.joining("#")));
             }
             if (info.getOwner() != null) {
                 movieDetail.setVod_director(info.getOwner().getName());
@@ -670,6 +689,30 @@ public class BiliBiliService {
         }
 
         return movieDetail;
+    }
+
+    private String buildTitle(BiliBiliInfo.PageInfo info, String client) {
+        String title = fixTitle(info.getPart());
+        if ("gui".equals(client)) {
+            title += "(" + seconds2String(info.getDuration()) + ")";
+        }
+        return title;
+    }
+
+    private String buildTitle(BiliBiliInfo info, String client) {
+        String title = fixTitle(info.getTitle());
+        if ("gui".equals(client)) {
+            title += "(" + seconds2String(info.getDuration()) + ")";
+        }
+        return title;
+    }
+
+    private String buildTitle(BiliBiliSearchInfo.Video info, String client) {
+        String title = fixTitle(info.getTitle());
+        if ("gui".equals(client)) {
+            title += "(" + info.getLength() + ")";
+        }
+        return title;
     }
 
     private String playCount(String view) {
@@ -1134,7 +1177,7 @@ public class BiliBiliService {
         return result;
     }
 
-    public MovieList getUpPlaylist(String tid) throws IOException {
+    public MovieList getUpPlaylist(String tid, String client) throws IOException {
         String[] parts = tid.split("\\$");
         String id = parts[1];
         String sort = "new";
@@ -1180,7 +1223,7 @@ public class BiliBiliService {
         movieDetail.setVod_tag(FILE);
         movieDetail.setVod_pic(getListPic());
         movieDetail.setVod_play_from(BILI_BILI);
-        String playUrl = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + buildPlayUrl(e.getBvid())).collect(Collectors.joining("#"));
+        String playUrl = list.stream().map(e -> buildTitle(e, client) + "$" + buildPlayUrl(e.getBvid())).collect(Collectors.joining("#"));
         movieDetail.setVod_play_url(playUrl);
         movieDetail.setVod_content("共" + list.size() + "个视频");
         movieDetail.setVod_remarks(Utils.secondsToDuration(seconds));
@@ -1545,7 +1588,7 @@ public class BiliBiliService {
         }
 
         if (bvid.startsWith("up$")) {
-            return getUpPlaylist(bvid);
+            return getUpPlaylist(bvid, client);
         }
 
         if (bvid.startsWith("popular$")) {
@@ -1589,7 +1632,7 @@ public class BiliBiliService {
         }
 
         BiliBiliInfo info = cache.get(bvid);
-        MovieDetail movieDetail = getMovieDetail(info, true);
+        MovieDetail movieDetail = getMovieDetail(info, client, true);
 
         try {
             String url = String.format(RELATED_API, bvid);
@@ -1599,7 +1642,7 @@ public class BiliBiliService {
             log.debug("related videos: {} {}", url, list);
             if (!list.isEmpty()) {
                 movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$相关视频");
-                String related = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + e.getAid() + "-" + e.getCid()).collect(Collectors.joining("#"));
+                String related = list.stream().map(e -> buildTitle(e, client) + "$" + e.getAid() + "-" + e.getCid()).collect(Collectors.joining("#"));
                 movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + related);
             }
         } catch (Exception e) {
@@ -1615,7 +1658,7 @@ public class BiliBiliService {
             }
 
             try {
-                MovieList movieList = getUpPlaylist("up$" + info.getOwner().getMid());
+                MovieList movieList = getUpPlaylist("up$" + info.getOwner().getMid(), client);
                 movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$UP主视频");
                 String others = movieList.getList().get(0).getVod_play_url();
                 movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + others);
@@ -1768,6 +1811,8 @@ public class BiliBiliService {
         String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
         if (StringUtils.isBlank(cookie) || BILIBILI_CODE.equals(cookie)) {
             cookie = getCookie(cookie);
+        } else {
+            cookie = biliCookieRefreshService.refreshIfNeeded(cookie);
         }
         headers.set(HttpHeaders.COOKIE, cookie.trim());
         return new HttpEntity<>(data, headers);
@@ -1868,7 +1913,7 @@ public class BiliBiliService {
 
         result.put("subs", getSubtitles(aid, cid));
 
-        if ("com.fongmi.android.tv".equals(client)) {
+        if ("com.fongmi.android.tv".equals(client) || "gui".equals(client)) {
             result.put("danmaku", "https://comment.bilibili.com/" + cid + ".xml");
         }
 

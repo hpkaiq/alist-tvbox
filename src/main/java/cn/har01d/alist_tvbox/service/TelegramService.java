@@ -347,12 +347,16 @@ public class TelegramService {
                 .collect(Collectors.joining("\n"));
     }
 
-    public MovieList detail(String tid) {
+    public MovieList detail(String tid, String ac, String title) {
         ShareLink share = new ShareLink();
         share.setLink(tid);
         String path = shareService.add(share);
 
-        return tvBoxService.getDetail("", "1$" + path + "/~playlist");
+        MovieList result = tvBoxService.getDetail(ac, "1$" + path + "/~playlist");
+        if (StringUtils.isNotBlank(title)) {
+            result.getList().get(0).setVod_name(title);
+        }
+        return result;
     }
 
     private String encodeUrl(String url) {
@@ -682,7 +686,7 @@ public class TelegramService {
     }
 
     private MovieList getDoubanList(String type, String ac, String sort, Integer year, String genre, String region, int page, int size) {
-        String key = type + "-" + page;
+        String key = ac + "-" + type + "-" + page;
         MovieList result = douban.getIfPresent(key);
         if (result != null) {
             return result;
@@ -855,7 +859,7 @@ public class TelegramService {
     }
 
     private MovieList getDoubanItems(String type, String ac, int page, int size) {
-        String key = type + "-" + page;
+        String key = ac + "-" + type + "-" + page;
         int start = (page - 1) * size;
         String url = "https://m.douban.com/rexxar/api/v2/subject/recent_hot/movie?limit=" + size + "&start=" + start;
         if (type.equals("hot_tv")) {

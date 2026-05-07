@@ -1107,9 +1107,9 @@ public class TvBoxService {
 
         result.getList().addAll(folders);
 
-        if (page == 1 && files.size() > 1 && !"gui".equals(ac)) {
+        if (page == 1 && files.size() > 1) {
             MovieDetail playlist = generatePlaylist(site, path, total - folders.size(), files);
-            if ("web".equals(ac)) {
+            if ("web".equals(ac) || "gui".equals(ac)) {
                 playlist.setType(9);
                 playlist.setVod_remarks("");
                 playlist.setVod_play_url(buildM3u8Url(path));
@@ -1129,11 +1129,11 @@ public class TvBoxService {
     }
 
     private boolean isAcceptType(FsInfo fsInfo, String ac) {
-        if ("gui".equals(ac)) {
-            return fsInfo.getType() == 1 || fsInfo.getType() == 2;
-        }
+//        if ("gui".equals(ac)) {
+//            return fsInfo.getType() == 1 || fsInfo.getType() == 2;
+//        }
         if (fsInfo.getType() == 1 || fsInfo.getType() == 2 || fsInfo.getType() == 3
-                || (fsInfo.getType() == 0 && (fsInfo.getName().endsWith(".strm") || fsInfo.getName().endsWith(".iso")))) {
+                || (fsInfo.getType() == 0 && (fsInfo.getName().endsWith(".strm") || fsInfo.getName().endsWith(".iso") || fsInfo.getName().endsWith(".cas")))) {
             return true;
         }
         if ("web".equals(ac)) {
@@ -1374,7 +1374,7 @@ public class TvBoxService {
                 .toUriString();
     }
 
-    public Map<String, Object> getPlayUrl(Integer siteId, String path, boolean getSub, String client) {
+    public Map<String, Object> getPlayUrl(Integer siteId, String path, boolean getSub, String client, String type) {
         Site site = siteService.getById(siteId);
         String url = null;
         String name = getNameFromPath(path);
@@ -1413,31 +1413,50 @@ public class TvBoxService {
 
         result.put("url", url);
 
+        DriverType driverType = switch (fsDetail.getProvider()) {
+            case "QuarkShare", "Quark", "QuarkTV" -> DriverType.QUARK;
+            case "UCShare", "UC", "UCTV" -> DriverType.UC;
+            case "ThunderBrowser", "ThunderShare" -> DriverType.THUNDER;
+            case "115 Cloud", "115 Share" -> DriverType.PAN115;
+            case "BaiduNetdisk", "BaiduShare2" -> DriverType.BAIDU;
+            case "123Pan", "123PanShare" -> DriverType.PAN123;
+            case "139Yun", "Yun139Share" -> DriverType.PAN139;
+            case "189CloudPC", "189Share" -> DriverType.CLOUD189;
+            case "AliyunShare", "AliyundriveOpen" -> DriverType.ALI;
+            default -> DriverType.UNKNOWN;
+        };
+        if ("AliyunShare".equals(fsDetail.getProvider()) && fsDetail.getRawUrl().contains("115cdn.net")) {
+            driverType = DriverType.PAN115;
+        }
+        result.put("type", driverType);
+
         if (url.contains("#proxy=0")) {
             // do nothing
-        } else if (isUseProxy(url)) {
+        } else if (isUseProxy(url) && !"client-proxy".equals(type)) {
             url = buildProxyUrl(site, name, path);
             result.put("url", url);
-        } else if (fsDetail.getProvider().equals("QuarkShare") || fsDetail.getProvider().equals("Quark")) {
-            var account = getDriverAccount(url, DriverType.QUARK);
+        } else if (driverType == DriverType.QUARK) {
+            var account = getDriverAccount(url, driverType);
             String cookie = account == null ? "" : account.getCookie();
             result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.QUARK_USER_AGENT, "Referer", "https://pan.quark.cn"));
-        } else if (fsDetail.getProvider().equals("UCShare") || fsDetail.getProvider().equals("UC")) {
-            var account = getDriverAccount(url, DriverType.UC);
+        } else if (driverType == DriverType.UC) {
+            var account = getDriverAccount(url, driverType);
             String cookie = account == null ? "" : account.getCookie();
             result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.UC_USER_AGENT, "Referer", "https://drive.uc.cn"));
-        } else if (url.contains("xunlei.com")) {
+        } else if (driverType == DriverType.THUNDER) {
             result.put("header", Map.of("User-Agent", "AndroidDownloadManager/13 (Linux; U; Android 13; M2004J7AC Build/SP1A.210812.016)"));
-        } else if (url.contains("115cdn.net")) {
-            var account = getDriverAccount(url, DriverType.PAN115);
-            String cookie = account.getCookie();
+        } else if (driverType == DriverType.PAN115) {
             // 115会把UA生成签名校验
-            result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.USER_AGENT, "Referer", "https://115.com/"));
-        } else if (fsDetail.getProvider().contains("Baidu")) {
+            result.put("header", Map.of("User-Agent", Constants.USER_AGENT, "Referer", "https://115.com/"));
+        } else if (driverType == DriverType.BAIDU) {
             result.put("header", Map.of("User-Agent", "netdisk"));
-        } else if (url.contains("ali")) {
+        } else if (url.contains("ali") || driverType == DriverType.ALI) {
             result.put("format", "application/octet-stream");
             result.put("header", Map.of("User-Agent", appProperties.getUserAgent(), "Referer", Constants.ALIPAN, "origin", Constants.ALIPAN));
+        }
+
+        if ("UCTV".equals(fsDetail.getProvider())) {
+            result.put("header", Map.of("User-Agent", Constants.USER_AGENT));
         }
 
         if (!getSub) {
@@ -1512,15 +1531,15 @@ public class TvBoxService {
         return 0;
     }
 
-    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, Integer index, boolean getSub, String client) {
-        return getPlayUrl(siteId, id, cache.getIfPresent(id).get(index - 1), getSub, client);
+    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, Integer index, boolean getSub, String client, String type) {
+        return getPlayUrl(siteId, id, cache.getIfPresent(id).get(index - 1), getSub, client, type);
     }
 
-    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, boolean getSub, String client) {
-        return getPlayUrl(siteId, id, "", getSub, client);
+    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, boolean getSub, String client, String type) {
+        return getPlayUrl(siteId, id, "", getSub, client, type);
     }
 
-    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, String path, boolean getSub, String client) {
+    public Map<String, Object> getPlayUrl(Integer siteId, Integer id, String path, boolean getSub, String client, String type) {
         Meta meta = metaRepository.findById(id).orElseThrow(NotFoundException::new);
         if (siteId == null) {
             siteId = meta.getSiteId();
@@ -1529,7 +1548,7 @@ public class TvBoxService {
             siteId = 1;
         }
         log.debug("getPlayUrl: {} {} {}", siteId, id, path);
-        return getPlayUrl(siteId, meta.getPath() + path, getSub, client);
+        return getPlayUrl(siteId, meta.getPath() + path, getSub, client, type);
     }
 
     private String findBestSubtitle(List<String> subtitles, String name) {
@@ -1849,7 +1868,7 @@ public class TvBoxService {
         movieDetail.setVod_name(fsDetail.getName());
         movieDetail.setVod_time(fsDetail.getModified());
         movieDetail.setVod_play_from(site.getName());
-        if ("detail".equals(ac) || "web".equals(ac) || "gui".equals(ac)) {
+        if ("detail".equals(ac) || "web".equals(ac)) {
             depth = 1;
             movieDetail.setType(9);
         } else {
@@ -1915,10 +1934,12 @@ public class TvBoxService {
                     subfolders = fsResponse.getFiles().stream().filter(e -> e.getType() == 1).map(FsInfo::getName).toList();
                 }
                 Map<String, Long> size = new HashMap<>();
+                Map<String, Integer> duration = new HashMap<>();
                 Map<String, String> time = new HashMap<>();
                 for (var file : files) {
                     size.put(file.getName(), file.getSize());
                     time.put(file.getName(), file.getModified());
+                    duration.put(file.getName(), file.getDuration());
                 }
                 List<String> fileNames = files.stream().map(FsInfo::getName).collect(Collectors.toList());
                 String prefix = Utils.getCommonPrefix(fileNames);
@@ -1937,9 +1958,14 @@ public class TvBoxService {
                     if ("detail".equals(ac) || "web".equals(ac) || "gui".equals(ac)) {
                         Video item = new Video();
                         item.setName(name);
-                        item.setTitle(title);
+                        if ("gui".equals(ac) && StringUtils.isNotBlank(folder)) {
+                            item.setTitle(folder + " - " + title);
+                        } else {
+                            item.setTitle(title);
+                        }
                         item.setPath(filepath);
                         item.setTime(time.get(name));
+                        item.setDuration(duration.get(name));
                         item.setSize(size.get(name));
                         String url = buildProxyUrl(site, filepath, item);
                         item.setUrl(url);
@@ -2369,7 +2395,7 @@ public class TvBoxService {
         int index = name.lastIndexOf('.');
         if (index > 0) {
             String suffix = name.substring(index + 1).toLowerCase();
-            return appProperties.getFormats().contains(suffix) || "strm".equals(suffix);
+            return appProperties.getFormats().contains(suffix) || "strm".equals(suffix) || "cas".equals(suffix);
         }
         return false;
     }
@@ -2478,6 +2504,7 @@ public class TvBoxService {
         return ServletUriComponentsBuilder.fromCurrentRequest()
                 .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
                 .replacePath(p)
+                .replaceQuery("")
                 .build()
                 .toUriString();
     }

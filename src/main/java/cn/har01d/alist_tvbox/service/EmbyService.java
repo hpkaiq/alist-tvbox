@@ -143,9 +143,7 @@ public class EmbyService {
         log.info("Fix Emby device id.");
         List<Emby> list = embyRepository.findAll();
         for (Emby emby : list) {
-            if (StringUtils.isEmpty(emby.getDeviceId())) {
-                emby.setDeviceId(deviceId);
-            }
+            emby.setDeviceId(deviceId);
         }
         embyRepository.saveAll(list);
         settingRepository.save(new Setting("fix_emby_device_id", "true"));
@@ -231,9 +229,6 @@ public class EmbyService {
     public MovieList home() {
         MovieList result = new MovieList();
         for (Emby emby : findAll()) {
-            if (emby.isDisabled()) {
-                continue;
-            }
             var info = getEmbyInfo(emby);
             if (info == null) {
                 continue;
@@ -290,12 +285,12 @@ public class EmbyService {
             movie.setVod_tag(FOLDER);
         }
         movie.setVod_director(emby.getName());
-        movie.setVod_remarks(Objects.toString(item.getRating(), null));
+        movie.setVod_remarks(formatRating(item.getRating()));
         movie.setVod_year(Objects.toString(item.getYear(), null));
         return movie;
     }
 
-    public MovieList detail(String tid) {
+    public MovieList detail(String tid) throws JsonProcessingException {
         String[] parts = tid.split("-", 2);
         Emby emby = embyRepository.findById(Integer.parseInt(parts[0])).orElseThrow(() -> new NotFoundException("站点不存在"));
         var info = getEmbyInfo(emby);
@@ -431,9 +426,24 @@ public class EmbyService {
             }
             movie.setVod_pic(cover);
         }
-        movie.setVod_remarks(emby.getName() + " " + Objects.toString(item.getRating(), ""));
+        movie.setVod_remarks(formatSearchRating(emby.getName(), item.getRating()));
         movie.setVod_year(Objects.toString(item.getYear(), null));
         return movie;
+    }
+
+    private String formatRating(Double rating) {
+        if (rating == null || rating <= 0) {
+            return "";
+        }
+        return String.format(Locale.US, "%.1f", rating);
+    }
+
+    private String formatSearchRating(String name, Double rating) {
+        String value = formatRating(rating);
+        if (value.isEmpty()) {
+            return name;
+        }
+        return name + " " + value;
     }
 
     public MovieList list(String id, String sort, Integer pg) {
