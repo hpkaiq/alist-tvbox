@@ -70,6 +70,7 @@ import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
 import cn.har01d.alist_tvbox.util.BiliBiliUtils;
+import cn.har01d.alist_tvbox.util.BiliCookieRefreshUtils;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.util.Utils;
@@ -107,8 +108,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
@@ -336,13 +335,20 @@ public class BiliBiliService {
     }
 
     public Map<String, Object> updateCookie(CookieData cookieData) {
-        String cookie = cookieData.getCookie();
-        if (!cookie.contains("buvid3=")) {
-            cookie += "; buvid3=" + UUID.randomUUID() + ThreadLocalRandom.current().nextInt(10000, 99999) + "infoc";
-        }
+        String cookie = BiliCookieRefreshUtils.ensureBuvid3(cookieData.getCookie());
         settingRepository.save(new Setting(BILIBILI_COOKIE, cookie));
         if (cookieData.getRefreshToken() != null) {
             settingRepository.save(new Setting(BILIBILI_TOKEN, cookieData.getRefreshToken().trim()));
+        }
+        return getLoginStatus();
+    }
+
+    public Map<String, Object> refreshCookie() {
+        log.info("手动触发 B站 Cookie 刷新检查");
+        String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
+        String refreshedCookie = biliCookieRefreshService.refreshIfNeeded(cookie, true);
+        if (StringUtils.isNotBlank(refreshedCookie) && !StringUtils.equals(cookie, refreshedCookie)) {
+            settingRepository.save(new Setting(BILIBILI_COOKIE, refreshedCookie));
         }
         return getLoginStatus();
     }
@@ -412,6 +418,7 @@ public class BiliBiliService {
                 if (StringUtils.isNotBlank(result.getRefresh_token())) {
                     log.info("扫码登录成功");
                     String cookie = response.getHeaders().get("set-cookie").stream().map(e -> e.split(";")[0]).collect(Collectors.joining(";"));
+                    cookie = BiliCookieRefreshUtils.ensureBuvid3(cookie);
                     settingRepository.save(new Setting(BILIBILI_COOKIE, cookie));
                     settingRepository.save(new Setting(BILIBILI_TOKEN, result.getRefresh_token()));
 //                    try {
@@ -674,11 +681,16 @@ public class BiliBiliService {
             String time = "发布于" + Instant.ofEpochSecond(info.getPubdate()).atZone(ZoneId.systemDefault()).toLocalDateTime();
             time = time.replace("T", " ");
             if (info.getStat() != null) {
-                String stat = info.getStat().getCoin() + "投币; "
-                        + info.getStat().getLike() + "点赞; "
-                        + info.getStat().getFavorite() + "收藏; "
-                        + info.getStat().getDanmaku() + "弹幕";
-                movieDetail.setVod_content(time + "; " + info.getDesc() + "; " + stat);
+                if ("gui".equals(client)) {
+                    movieDetail.setExt(info.getStat());
+                    movieDetail.setVod_content(time + "; " + info.getDesc());
+                } else {
+                    String stat = info.getStat().getCoin() + "投币; "
+                            + info.getStat().getLike() + "点赞; "
+                            + info.getStat().getFavorite() + "收藏; "
+                            + info.getStat().getDanmaku() + "弹幕";
+                    movieDetail.setVod_content(time + "; " + info.getDesc() + "; " + stat);
+                }
             } else {
                 movieDetail.setVod_content(time + info.getDesc());
             }

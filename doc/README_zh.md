@@ -14,18 +14,27 @@ AList代理，支持xiaoya版AList界面管理。
 ## 功能
 - 管理界面
 - 海报墙
-- 多个AList、Emby、Jellyfin站点
+- 多个AList、Emby、Jellyfin、飞牛影视站点
 - 多个网盘账号
-- 支持百度、夸克、UC、115、123、天翼、移动、迅雷网盘
-- 支持百度、夸克、UC、115、123、天翼、移动、迅雷分享
+- 支持阿里、百度、夸克、UC、115、123、天翼、移动、迅雷、PikPak、光鸭网盘
+- 支持阿里、百度、夸克、UC、115、123、天翼、移动、迅雷、PikPak、光鸭分享
 - 自动刷新阿里Token
 - 自定义TvBox配置
 - 安全订阅配置
 - TvBox配置聚合
 - 支持BiliBili
+- 支持YouTube
+- 支持网络直播
+- Python爬虫插件管理
+- 插件过滤器
+- 115/光鸭/迅雷离线下载
+- 订阅源管理
+- 盘搜（支持链接检测）
+- 设备管理
 - 管理AList服务
 - 小雅配置文件管理
 - 构建索引
+- TMDB/豆瓣刮削
 - 在线日志
 
 ## 安装
@@ -175,6 +184,16 @@ docker run -d \
 
 ![Emby站源](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_emby.jpg)
 
+### Jellyfin站点
+在Jellyfin页面添加Jellyfin站点url和帐号。
+
+与Emby类似，支持浏览和播放Jellyfin媒体库内容。
+
+### 飞牛影视
+在飞牛页面添加飞牛影视站点url和帐号。
+
+支持浏览、搜索、播放飞牛影视内容，自动记录播放进度。
+
 ### 账号
 ![账号列表](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_account.png)
 
@@ -188,11 +207,17 @@ docker run -d \
 #### 网盘帐号
 网盘帐号在帐号页面添加。
 
+支持的网盘类型：夸克网盘、UC网盘、夸克TV、UC TV、115云盘、迅雷云盘、天翼云盘、移动云盘、123网盘、百度网盘、光鸭云盘。
+
 夸克网盘Cookie获取方式： https://alist.nn.ci/zh/guide/drivers/quark.html
 
 UC网盘Cookie获取方式： https://alist.nn.ci/zh/guide/drivers/uc.html
 
 115网盘Cookie获取方式： https://alist.nn.ci/zh/guide/drivers/115.html
+
+迅雷云盘需要输入用户名和密码登录，用户名格式：`+86 12345678900`（+86后面加一个空格）。
+
+天翼云盘、123网盘需要输入用户名和密码。
 
 网盘分享在资源页面添加。
 
@@ -221,6 +246,16 @@ AList代理具有多线程加速。也可以在网盘帐号开启加速代理，
 
 开启后主帐号不再生效。
 
+#### 网盘账号配置
+点击账号页面右上角的“配置”按钮，可以设置全局代理和离线下载。
+
+全局代理配置会下发到爬虫插件的 `local_proxy_config`，可分别为阿里、夸克、UC、115、123、移动、百度、光鸭设置是否启用、并发数和分片大小。
+
+离线下载支持 115 云盘、光鸭云盘、迅雷云盘。
+需要先添加对应网盘账号，并确保账号名称对应的挂载目录不为空。
+保存离线下载配置时，系统会在所选账号的目录下自动创建或复用 `alist-tvbox-offline` 临时目录。
+播放页或客户端离线下载接口提交任务后，会把完成后的资源作为 TvBox 详情返回。
+
 ### 订阅
 tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 
@@ -235,6 +270,23 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 站点`key`是必须的，其它字段可选。对于lives，rules，parses，doh类型，`name`字段是必须的。
 
 站点名称可以加前缀，通过订阅URL前面加前缀，使用`@`分割。比如：`饭@http://饭太硬.top/tv,菜@https://tv.菜妮丝.top`
+
+#### Python爬虫插件
+订阅页面添加的 Python 爬虫插件会通过内置 `spring.jar` 里的 `csp_PyProxy` 加载，不再直接把站点 `api` 指向 `Atvp.py`。
+
+生成后的站点结构类似：
+```json
+{
+  "key": "YouTube",
+  "name": "YouTube",
+  "type": 3,
+  "api": "csp_PyProxy",
+  "jar": "ATV_ADDRESS/spring.jar",
+  "ext": "base64({\"loader\":\"ATV_ADDRESS/Atvp.py\",\"api\":\"ATV_ADDRESS\",\"source\":\"...\",\"token\":\"...\",\"local_proxy_config\":{\"ALI\":{\"enabled\":true,\"concurrency\":20,\"chunk_size\":1024}}})"
+}
+```
+
+`loader`、`local_proxy_config` 和其他 Python 侧配置都会一起编码进 `ext`。配置为 `{}` 或对应网盘类型未开启时，不会启用播放加速代理。
 
 替换功能：
 
@@ -363,10 +415,75 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 }
 ```
 
+#### 自定义站点顺序
+在订阅定制中通过 `order` 字段控制站点顺序，数值越小越靠前。
+
+内置源和插件从1000开始，订阅源从2000开始，未设置order的站点默认9000排在最后。
+
+```json
+{
+  "sites": [
+    {
+      "key": "豆瓣",
+      "order": 100
+    },
+    {
+      "key": "YouTube",
+      "order": 500
+    }
+  ]
+}
+```
+
+#### 订阅源管理
+在订阅页面可以管理多个订阅源，启用/禁用、调整优先级。
+
+支持的订阅源类型：
+- 内置小雅搜索源
+- 自定义AList站点
+- Emby站点
+- Jellyfin站点
+- 飞牛影视站点
+- Python爬虫插件
+
+### 插件管理
+管理Python爬虫插件，扩展TvBox搜索和播放能力。
+
+功能：
+- 添加、编辑、删除插件
+- 从远程仓库导入插件
+- 刷新插件内容
+- 调整插件顺序
+- 配置插件运行模式（Java代理模式/Python原生模式）
+
+Java代理模式使用本地加速代理，Python原生模式使用后端代理。
+
+插件内容通过 `http://IP:4567/plugins/{token}/{id}.txt` 访问。
+
+### 插件过滤器
+对插件搜索结果进行过滤，支持自定义过滤规则。
+
+功能：
+- 添加、编辑、删除过滤器
+- 按插件作用范围配置过滤器
+- 支持过滤器自声明配置结构
+- 过滤器可以接收播放元数据
+
+过滤器内容通过 `http://IP:4567/plugin-filters/{token}/{id}.py` 访问。
+
+### 离线下载
+支持115云盘、光鸭云盘和迅雷云盘离线下载。
+
+在账号页面点击“配置”，设置离线下载目标网盘类型和账号。系统会自动创建或复用 `alist-tvbox-offline` 临时目录。
+
+TvBox播放页面可以触发离线下载，将资源下载到配置的网盘中。
+
 ### 资源
 第一次启动会自动读取/data/alishare_list.txt文件里面的分享内容，并保存到数据库，以后这个文件就不再生效。
 
 可以在界面批量导入文件里面的分享内容，批量删除分享。
+
+支持的分享类型：阿里云盘、PikPak、夸克、UC、115、123网盘、天翼、移动、迅雷、百度、光鸭分享，以及本地存储和STRM存储。
 
 添加资源如果路径以/开头就会创建在根目录下。否则在/🈴我的阿里分享/下面。
 
@@ -411,6 +528,8 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 
 或者使用已有的cookie登录。
 
+系统会自动刷新B站Cookie，保持登录状态。
+
 打开上报播放记录，B站才能看到播放记录。
 
 ![配置](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_bilibili_config.png)
@@ -424,7 +543,7 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 ![频道](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_bilibili_channel.png)
 
 ### YouTube
-已经停用！！！
+支持YouTube解析播放，通过Jar加载csp_YouTube爬虫。
 
 服务端代理，需要消耗服务器流量！
 
@@ -447,6 +566,27 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 @yuge
 @laogao:老高
 ```
+
+### 网络直播
+支持在网页播放网络直播，也提供 TvBox 兼容接口。
+
+支持的平台：
+- 虎牙
+- 斗鱼
+- B站直播
+- 网易CC
+- 快手
+- 抖音
+
+管理界面登录后进入“直播”页面，可以按平台浏览分类、翻页查看房间并播放直播流。
+
+TvBox接口：
+- `http://IP:4567/live`
+- 开启安全订阅后使用 `http://IP:4567/live/TOKEN`
+
+虎牙单独兼容接口：
+- `http://IP:4567/huya`
+- 开启安全订阅后使用 `http://IP:4567/huya/TOKEN`
 
 ### 配置
 ![配置页面](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/atv_config.png)
@@ -531,6 +671,16 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 ![WebDAV](https://raw.githubusercontent.com/power721/alist-tvbox/master/doc/webdav.jpg)
 
 4567端口代理了webdav请求。
+
+### 设备管理
+管理TvBox设备，支持扫码添加设备。
+
+功能：
+- 扫描局域网内的TvBox设备
+- 推送内容到设备
+- 同步观看历史
+- 通过二维码配置TvBox订阅地址
+
 ### 电报搜索
 不登陆默认使用网页搜索公开频道资源。
 
@@ -538,6 +688,14 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 在播放页面配置频道列表。
 
 如果在订阅页面不能登陆电报，在播放页面配置远程搜索地址 http://IP:7856 。
+
+#### 盘搜
+建议部署盘搜，不需要在订阅页面登陆电报，也不需要配置远程搜索。
+```bash
+docker run -d --name pansou -p 8888:8888 -v pansou-cache:/app/cache --restart=always ghcr.io/fish2018/pansou
+```
+
+盘搜支持链接检测功能，可以批量检查分享链接是否有效。
 
 #### 部署电报搜索服务
 1. 下载对应平台的文件解压
@@ -548,11 +706,6 @@ tvbox/my.json和juhe.json不能在TvBox直接使用，请使用订阅地址！
 3. 输入手机号和验证码，需要加国际区号86
 4. 然后使用nohup后台运行： `nohup ./tgs-amd64 &`
 5. 环境变量`TGS_PORT`，设置端口，默认为`7856`
-
-建议部署盘搜，不需要在订阅页面登陆电报，也不需要配置远程搜索。
-```bash
-docker run -d --name pansou -p 8888:8888 -v pansou-cache:/app/cache --restart=always ghcr.io/fish2018/pansou
-```
 
 ### 猫影视
 不再提供支持！
@@ -700,3 +853,5 @@ proxy.txt、tv.txt、my.json、iptv.m3u还是生效的，可以在文件页面�
 UPDATE users SET username='admin', password='$2a$10$90MH0QCl098tffOA3ZBDwu0pm24xsVyJeQ41Tvj7N5bXspaqg8b2m' WHERE id=1;
    ```
 11. 网盘添加了文件，在AList看不到。因为AList有缓存，默认30分钟。等待缓存过期，或者重启AList。
+12. 离线下载需要在账号页面点击“配置”，先设置目标网盘账号。目前支持115云盘、光鸭云盘和迅雷云盘。
+13. 光鸭云盘需要在网盘帐号页面添加，支持OAuth设备码授权方式登录。

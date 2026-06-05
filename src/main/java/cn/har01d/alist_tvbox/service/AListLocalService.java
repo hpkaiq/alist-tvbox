@@ -7,6 +7,7 @@ import cn.har01d.alist_tvbox.entity.Site;
 import cn.har01d.alist_tvbox.entity.SiteRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.model.AliTokensResponse;
+import cn.har01d.alist_tvbox.model.Response;
 import cn.har01d.alist_tvbox.model.SettingResponse;
 import cn.har01d.alist_tvbox.storage.Storage;
 import cn.har01d.alist_tvbox.util.Constants;
@@ -18,11 +19,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -47,6 +50,9 @@ import static cn.har01d.alist_tvbox.util.Constants.ALIST_START_TIME;
 @Service
 
 public class AListLocalService {
+    private static final String TYPE_STRING = "string";
+    private static final int OFFLINE_DOWNLOAD_GROUP = 6;
+    private static final int PRIVATE_FLAG = 2;
 
     private final SettingRepository settingRepository;
     private final SiteRepository siteRepository;
@@ -81,6 +87,7 @@ public class AListLocalService {
 
     @PostConstruct
     public void setup() {
+        addColumnIfMissing("ALTER TABLE x_storages ADD COLUMN custom_cache_policies text DEFAULT ''");
         log.info("AList internal port: {}", internalPort);
         log.info("AList external port: {}", externalPort);
         setSetting("external_port", String.valueOf(externalPort), "number");
@@ -192,14 +199,76 @@ public class AListLocalService {
         return response.getBody();
     }
 
+    public Response<String> set115TempDir(String tempDir) {
+        setOfflineDownloadTempDir("115_temp_dir", tempDir);
+        if (checkStatus() < 2) {
+            return successResponse();
+        }
+        HttpHeaders headers = new HttpHeaders();
+        Site site = siteRepository.findById(1).orElseThrow();
+        headers.set(HttpHeaders.AUTHORIZATION, site.getToken());
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> body = new HashMap<>();
+        body.put("temp_dir", tempDir);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<Response<String>> response = restTemplate.exchange("/api/admin/setting/set_115", HttpMethod.POST, entity, new ParameterizedTypeReference<Response<String>>() {
+        });
+        return response.getBody();
+    }
+
+    public Response<String> setThunderBrowserTempDir(String tempDir) {
+        setOfflineDownloadTempDir("thunder_browser_temp_dir", tempDir);
+        if (checkStatus() < 2) {
+            return successResponse();
+        }
+        HttpHeaders headers = new HttpHeaders();
+        Site site = siteRepository.findById(1).orElseThrow();
+        headers.set(HttpHeaders.AUTHORIZATION, site.getToken());
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> body = new HashMap<>();
+        body.put("temp_dir", tempDir);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<Response<String>> response = restTemplate.exchange("/api/admin/setting/set_thunder_browser", HttpMethod.POST, entity, new ParameterizedTypeReference<Response<String>>() {
+        });
+        return response.getBody();
+    }
+
+    public void setOfflineDownloadTempDir(String key, String tempDir) {
+        log.debug("set offline download temp dir {}={}", key, tempDir);
+        executeUpdate(String.format("DELETE FROM x_setting_items WHERE `key` = '%s'", key));
+        executeUpdate(String.format(
+                "INSERT INTO x_setting_items (`key`,value,type,flag,`group`) VALUES('%s','%s','%s',%d,%d)",
+                key, tempDir, TYPE_STRING, PRIVATE_FLAG, OFFLINE_DOWNLOAD_GROUP
+        ));
+    }
+
+    private Response<String> successResponse() {
+        Response<String> response = new Response<>();
+        response.setCode(200);
+        response.setMessage("success");
+        response.setData("ok");
+        return response;
+    }
+
+    private void addColumnIfMissing(String sql) {
+        try {
+            executeUpdate(sql);
+        } catch (Exception e) {
+            if (!e.getMessage().contains("duplicate column name")) {
+                throw e;
+            }
+        }
+    }
+
     public void saveStorage(Storage storage) {
         executeUpdate("DELETE FROM x_storages WHERE id = " + storage.getId());
         String time = storage.getTime().truncatedTo(ChronoUnit.SECONDS).atZone(ZoneId.systemDefault()).toLocalDateTime().toString();
         String sql = "INSERT INTO x_storages " +
-                "(id,mount_path,`order`,driver,cache_expiration,status,addition,modified,disabled,order_by,order_direction,extract_folder,web_proxy,webdav_policy) " +
-                "VALUES (%d,'%s',0,'%s',%d,'work','%s','%s',%d,'name','asc','front',%d,'%s');";
+                "(id,mount_path,`order`,driver,cache_expiration,custom_cache_policies,status,addition,modified,disabled,order_by,order_direction,extract_folder,web_proxy,webdav_policy) " +
+                "VALUES (%d,'%s',0,'%s',%d,'%s','work','%s','%s',%d,'name','asc','front',%d,'%s');";
         executeUpdate(String.format(sql, storage.getId(), storage.getPath(), storage.getDriver(),
-                storage.getCacheExpiration(), storage.getAddition(), time, storage.isDisabled() ? 1 : 0, storage.isWebProxy() ? 1 : 0, storage.getWebdavPolicy()));
+                storage.getCacheExpiration(), storage.getCustomCachePolicies(),
+                storage.getAddition(), time, storage.isDisabled() ? 1 : 0, storage.isWebProxy() ? 1 : 0, storage.getWebdavPolicy()));
         log.info("[{}] insert {} storage : {}", storage.getId(), storage.getDriver(), storage.getPath());
     }
 

@@ -11,6 +11,10 @@ import cn.har01d.alist_tvbox.entity.DriverAccountRepository;
 import cn.har01d.alist_tvbox.entity.EmbyRepository;
 import cn.har01d.alist_tvbox.entity.FeiniuRepository;
 import cn.har01d.alist_tvbox.entity.JellyfinRepository;
+import cn.har01d.alist_tvbox.entity.Plugin;
+import cn.har01d.alist_tvbox.entity.PluginFilter;
+import cn.har01d.alist_tvbox.entity.PluginFilterRepository;
+import cn.har01d.alist_tvbox.entity.PluginRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.ShareRepository;
@@ -79,6 +83,9 @@ import static cn.har01d.alist_tvbox.util.Constants.TOKEN;
 @Service
 @SuppressWarnings("unchecked")
 public class SubscriptionService {
+    private static final String PLUGIN_RUN_MODE = "plugin_run_mode";
+    private static final String PLUGIN_RUN_MODE_PYTHON = "python";
+
     private final Environment environment;
     private final AppProperties appProperties;
     private final RestTemplate restTemplate;
@@ -93,11 +100,14 @@ public class SubscriptionService {
     private final EmbyRepository embyRepository;
     private final FeiniuRepository feiniuRepository;
     private final JellyfinRepository jellyfinRepository;
+    private final PluginRepository pluginRepository;
+    private final PluginFilterRepository pluginFilterRepository;
     private final AListLocalService aListLocalService;
     private final ConfigFileService configFileService;
     private final TenantService tenantService;
     private final UserService userService;
     private final FileDownloader fileDownloader;
+    private final SubscriptionSourceService subscriptionSourceService;
 
     private final OkHttpClient okHttpClient = new OkHttpClient();
     private final ThreadLocal<String> currentToken = new ThreadLocal<>();
@@ -118,11 +128,14 @@ public class SubscriptionService {
                                EmbyRepository embyRepository,
                                FeiniuRepository feiniuRepository,
                                JellyfinRepository jellyfinRepository,
+                               PluginRepository pluginRepository,
+                               PluginFilterRepository pluginFilterRepository,
                                AListLocalService aListLocalService,
                                ConfigFileService configFileService,
                                TenantService tenantService,
                                UserService userService,
-                               FileDownloader fileDownloader) {
+                               FileDownloader fileDownloader,
+                               SubscriptionSourceService subscriptionSourceService) {
         this.environment = environment;
         this.appProperties = appProperties;
         this.restTemplate = builder
@@ -140,11 +153,14 @@ public class SubscriptionService {
         this.embyRepository = embyRepository;
         this.feiniuRepository = feiniuRepository;
         this.jellyfinRepository = jellyfinRepository;
+        this.pluginRepository = pluginRepository;
+        this.pluginFilterRepository = pluginFilterRepository;
         this.aListLocalService = aListLocalService;
         this.configFileService = configFileService;
         this.tenantService = tenantService;
         this.userService = userService;
         this.fileDownloader = fileDownloader;
+        this.subscriptionSourceService = subscriptionSourceService;
     }
 
     @PostConstruct
@@ -581,17 +597,27 @@ public class SubscriptionService {
             overrideConfig(config, fixUrl(url.trim()), prefix, getConfigData(url.trim()));
         }
 
+//        injectCookies(config);
+
         sortSites(config, sort);
 
         if (StringUtils.isNotBlank(override)) {
             config = overrideConfig(config, override);
         }
 
-        addSite(token, config);
+        int order = addSite(token, config);
+
+        if (StringUtils.isNotBlank(override)) {
+            fixSiteOrder(config, order);
+        }
 
         // should after overrideConfig
         handleWhitelist(config);
         removeBlacklist(config);
+
+        if (StringUtils.isBlank(sort)) {
+            sortSitesByOrder(config);
+        }
 
         try {
             replaceAliToken(config);
@@ -607,6 +633,14 @@ public class SubscriptionService {
             config.put("headers", List.of(buildHeader("img\\d+.doubanio.com")));
         }
 
+        if (config.containsKey("parses")) {
+            List<Map<String, Object>> parses = new ArrayList<>((List<Map<String, Object>>) config.get("parses"));
+            parses.addFirst(addXiaMi());
+            config.put("parses", parses);
+        } else {
+            config.put("parses", List.of(addXiaMi()));
+        }
+
 //        addRules(config);
 
         log.debug("{} {}", apiUrl, config);
@@ -615,6 +649,14 @@ public class SubscriptionService {
 
     private Map<String, Object> buildHeader(String host) {
         return Map.of("host", host, "header", Map.of("Referer", "https://movie.douban.com"));
+    }
+
+    private Map<String, Object> addXiaMi() {
+        return buildParse("虾米", "https://jx.xmflv.com/?url=", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.57");
+    }
+
+    private Map<String, Object> buildParse(String name, String url, String userAgent) {
+        return Map.of("name", name, "url", url, "type", 0, "ext", Map.of("header", Map.of("User-Agent", userAgent)));
     }
 
     private void replaceAliToken(Map<String, Object> config) {
@@ -660,11 +702,77 @@ public class SubscriptionService {
         }
     }
 
+    private void injectCookies(Map<String, Object> config) {
+        List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        List<Map<String, Object>> list = new ArrayList<>();
+        boolean tvFan = false;
+        for (Map<String, Object> site : sites) {
+            Object ext = site.get("ext");
+            if (ext instanceof String str) {
+                if (str.contains("Cloud-drive")) {
+                    tvFan = true;
+                }
+            } else if (ext instanceof Map map) {
+                if (map.containsKey("Cloud-drive")) {
+                    tvFan = true;
+                }
+            }
+            Object api = site.get("api");
+            if (api instanceof String str) {
+                if ("csp_BiliGuard".equals(str)) {
+                    list.add(site);
+                }
+            }
+        }
+
+        if (tvFan) {
+            String cookie = settingRepository.findById(BILIBILI_COOKIE).map(Setting::getValue).orElse("");
+            for (Map<String, Object> site : list) {
+                Object ext = site.get("ext");
+                if (ext instanceof String json) {
+                     log.debug(json);
+                } else if (ext instanceof Map map) {
+                    map.put("cookie", cookie);
+                }
+            }
+        }
+    }
+
     private void sortSites(Map<String, Object> config, String sort) {
         List<Map<String, String>> list = (List<Map<String, String>>) config.get("sites");
         if (StringUtils.isNotBlank(sort)) {
             log.info("sort by filed {}", sort);
             list.sort(Comparator.comparing(a -> a.get(sort)));
+        } else {
+            List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+            int order = 5000;
+            for (Map<String, Object> site : sites) {
+                if (!site.containsKey("order")) {
+                    site.put("order", order);
+                    order += 10;
+                }
+            }
+        }
+    }
+
+    private void sortSitesByOrder(Map<String, Object> config) {
+        List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        sites.sort(Comparator.comparing(a -> {
+            Integer order = (Integer) a.get("order");
+            if (order == null) {
+                order = 9000;
+            }
+            return order;
+        }));
+    }
+
+    private void fixSiteOrder(Map<String, Object> config, int order) {
+        List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        for (Map<String, Object> site : sites) {
+            if (!site.containsKey("order")) {
+                site.put("order", order);
+                order += 10;
+            }
         }
     }
 
@@ -1016,115 +1124,41 @@ public class SubscriptionService {
         return UUID.randomUUID().toString().replace("-", "");
     }
 
-    private void addSite(String token, Map<String, Object> config) {
+    private int addSite(String token, Map<String, Object> config) {
         int id = 0;
+        int order = 1000;
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
-
         String uid = generateUid();
-        try {
-            Site site1 = siteRepository.findById(1).orElse(null);
-            if (site1 != null) {
-                Map<String, Object> site = buildSite(token, uid, "csp_XiaoYa", site1.getName());
-                sites.add(id++, site);
-                log.debug("add XiaoYa site: {}", site);
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            String key = "Alist";
-            Map<String, Object> site = buildSite(token, uid, "csp_AList", "AList");
-            sites.removeIf(item -> key.equals(item.get("key")));
-            sites.add(id++, site);
-            log.debug("add AList site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            Map<String, Object> site = buildSite(token, uid, "csp_BiliBili", "BiliBili");
-            sites.add(id++, site);
-            log.debug("add BiliBili site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            if (embyRepository.count() > 0) {
-                Map<String, Object> site = buildSite(token, uid, "csp_Emby", "Emby");
-                sites.add(id++, site);
-                log.debug("add Emby site: {}", site);
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            if (jellyfinRepository.count() > 0) {
-                Map<String, Object> site = buildSite(token, uid, "csp_Jellyfin", "Jellyfin");
-                sites.add(id++, site);
-                log.debug("add Jellyfin site: {}", site);
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            if (feiniuRepository.count() > 0) {
-                Map<String, Object> site = buildSite(token, uid, "csp_FeiNiu", "飞牛影视");
-                sites.add(id++, site);
-                log.debug("add 飞牛影视 site: {}", site);
-            }
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            Map<String, Object> site = buildSite(token, uid, "csp_Live", "网络直播");
-            sites.add(id++, site);
-            log.debug("add Live site: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        try {
-            Map<String, Object> site = buildSite(token, uid, "csp_TgDouBan", "电报豆瓣");
-            site.put("searchable", 0);
-            site.put("quickSearch", 0);
-            sites.add(id++, site);
-            log.debug("add TG DouBan: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        if (appProperties.isTgLogin() || StringUtils.isNotBlank(appProperties.getTgSearch())) {
+        String secret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElseThrow();
+        for (SubscriptionSourceService.SubscriptionSourceRef source : subscriptionSourceService.findEnabledSources()) {
             try {
-                Map<String, Object> site = buildSite(token, uid, "csp_TgSearch", "电报搜索");
-                sites.add(id++, site);
-                log.debug("add TG search: {}", site);
+                if (source.builtin()) {
+                    Map<String, Object> site = buildSite(token, secret, uid, source.siteKey(), source.name());
+                    site.put("order", order);
+                    if ("csp_AList".equals(source.siteKey())) {
+                        sites.removeIf(item -> "Alist".equals(item.get("key")));
+                    } else if ("csp_TgDouBan".equals(source.siteKey())) {
+                        site.put("searchable", 0);
+                        site.put("quickSearch", 0);
+                    } else if ("csp_Push".equals(source.siteKey())) {
+                        site.put("key", "push_agent");
+                        site.put("searchable", 0);
+                        site.put("quickSearch", 0);
+                        sites.removeIf(item -> "push_agent".equals(item.get("key")));
+                    }
+                    sites.add(id++, site);
+                    log.debug("add builtin source {}: {}", source.siteKey(), site);
+                } else if (source.plugin() != null) {
+                    Map<String, Object> site = buildPluginSite(source.plugin(), token, secret);
+                    site.put("order", order);
+                    sites.add(id++, site);
+                }
+                order += 10;
             } catch (Exception e) {
-                log.warn("", e);
+                log.warn("add source failed: {}", source.id(), e);
             }
         }
-
-        try {
-            Map<String, Object> site = buildSite(token, uid, "csp_TgWeb", "电报网页");
-            sites.add(id++, site);
-            log.debug("add TG web: {}", site);
-        } catch (Exception e) {
-            log.warn("", e);
-        }
-
-        if (StringUtils.isNotBlank(appProperties.getPanSouUrl())) {
-            try {
-                Map<String, Object> site = buildSite(token, uid, "csp_FishPanSou", "鱼佬盘搜");
-                sites.add(id++, site);
-                log.debug("add Pansou: {}", site);
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-        }
+        return order;
     }
 
     public Map<String, Boolean> getCapabilities() {
@@ -1139,17 +1173,35 @@ public class SubscriptionService {
         return map;
     }
 
-    private Map<String, Object> buildSite(String token, String uid, String key, String name) throws IOException {
-        Map<String, Object> site = new HashMap<>();
+    private Map<String, Object> readLocalProxyConfig() {
+        Map<String, Map<String, Object>> config = appProperties.getLocalProxyConfig();
+        if (config == null || config.isEmpty()) {
+            return new HashMap<>(AppProperties.defaultLocalProxyConfig());
+        }
+        return new HashMap<>(AppProperties.copyLocalProxyConfig(config));
+    }
+
+    private boolean isNativePythonPluginRunMode() {
+        return settingRepository.findById(PLUGIN_RUN_MODE)
+                .map(Setting::getValue)
+                .map(StringUtils::trimToEmpty)
+                .map(PLUGIN_RUN_MODE_PYTHON::equalsIgnoreCase)
+                .orElse(false);
+    }
+
+    private Map<String, Object> buildSite(String token, String secret, String uid, String key, String name) throws IOException {
         String url = readHostAddress("");
+        Map<String, Object> site = new HashMap<>();
         site.put("key", key);
         site.put("api", key);
         site.put("name", name);
         site.put("type", 3);
-        Map<String, String> map = new HashMap<>();
+        Map<String, Object> map = new HashMap<>();
         map.put("api", url);
         map.put("token", token.isBlank() ? "-" : token);
+        map.put("secret", secret);
         map.put("uid", uid);
+        map.put("local_proxy_config", readLocalProxyConfig());
         String ext = objectMapper.writeValueAsString(map).replaceAll("\\s", "");
         ext = Base64.getEncoder().encodeToString(ext.getBytes());
         site.put("ext", ext);
@@ -1166,6 +1218,118 @@ public class SubscriptionService {
             site.put("style", style);
         }
         return site;
+    }
+
+    private Map<String, Object> buildPluginSite(Plugin plugin, String token, String secret) throws JsonProcessingException {
+        Map<String, Object> site = new HashMap<>();
+        site.put("filterable", 1);
+        site.put("quickSearch", 1);
+        site.put("name", plugin.getName());
+        site.put("changeable", 0);
+        String url = readHostAddress("");
+        boolean nativePython = isNativePythonPluginRunMode();
+        site.put("api", nativePython ? url + "/Atvp.py" : "csp_PyProxy");
+        site.put("type", 3);
+        site.put("key", plugin.getName());
+        site.put("searchable", 1);
+        String jar = url + "/spring.jar";
+        site.put("jar", jar);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("api", url);
+        //map.put("loader", url + "/Atvp.py");
+        String source = readHostAddress("") + "/plugins/" + getCurrentOrFirstToken() + "/" + plugin.getId() + ".txt";
+        map.put("source", source);
+        map.put("token", token.isBlank() ? "-" : token);
+        map.put("secret", secret);
+        map.put("local_proxy_config", nativePython ? new HashMap<>() : readLocalProxyConfig());
+        if (StringUtils.isNotBlank(plugin.getExtend())) {
+            map.put("data", plugin.getExtend());
+        }
+        // 每个插件站点只下发与自己作用域匹配的过滤器
+        List<Map<String, Object>> filters = buildPluginFilters(plugin);
+        if (!filters.isEmpty()) {
+            map.put("filters", filters);
+        }
+        String ext = objectMapper.writeValueAsString(map);
+        ext = Base64.getEncoder().encodeToString(ext.getBytes());
+        site.put("ext", ext);
+        return site;
+    }
+
+    private List<Map<String, Object>> buildPluginFilters(Plugin plugin) {
+        List<Map<String, Object>> filters = new ArrayList<>();
+        String token = getCurrentOrFirstToken();
+        String address = readHostAddress("");
+        for (PluginFilter filter : pluginFilterRepository.findByEnabledTrueOrderBySortOrderAscIdAsc()) {
+            if (!isPluginFilterInScope(filter, plugin)) {
+                continue;
+            }
+            List<String> stages = parsePluginFilterStages(filter.getStages());
+            if (stages.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> map = new HashMap<>();
+            map.put("name", filter.getName());
+            map.put("source", address + "/plugin-filters/" + token + "/" + filter.getId() + ".py?v=" + getPluginFilterRevision(filter));
+            map.put("stages", stages);
+            map.put("error_strategy", StringUtils.defaultIfBlank(filter.getErrorStrategy(), "skip"));
+            if (StringUtils.isNotBlank(filter.getExtend())) {
+                map.put("data", filter.getExtend());
+            }
+            filters.add(map);
+        }
+        return filters;
+    }
+
+    private boolean isPluginFilterInScope(PluginFilter filter, Plugin plugin) {
+        String scope = StringUtils.defaultIfBlank(filter.getPluginScope(), "all");
+        if ("all".equals(scope)) {
+            return true;
+        }
+        // 过滤器按插件 ID 生效，避免插件改名后作用范围失效
+        Set<String> pluginIds = parsePluginFilterPluginIds(filter.getPluginIds());
+        String pluginId = plugin.getId() == null ? "" : plugin.getId().toString();
+        boolean selected = pluginIds.contains(pluginId);
+        if ("include".equals(scope)) {
+            return selected;
+        }
+        if ("exclude".equals(scope)) {
+            return !selected;
+        }
+        return true;
+    }
+
+    private Set<String> parsePluginFilterPluginIds(String pluginIds) {
+        if (StringUtils.isBlank(pluginIds)) {
+            return Set.of();
+        }
+        return Arrays.stream(pluginIds.split(","))
+                .map(StringUtils::trimToEmpty)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toSet());
+    }
+
+    private String getPluginFilterRevision(PluginFilter filter) {
+        if (filter.getLastCheckedAt() != null) {
+            return String.valueOf(filter.getLastCheckedAt().toInstant().toEpochMilli());
+        }
+        if (filter.getVersion() != null) {
+            return String.valueOf(filter.getVersion());
+        }
+        return String.valueOf(filter.getId());
+    }
+
+    private List<String> parsePluginFilterStages(String stages) {
+        if (StringUtils.isBlank(stages)) {
+            return List.of();
+        }
+        List<String> list = Arrays.stream(stages.split(","))
+                .map(StringUtils::trimToEmpty)
+                .filter(StringUtils::isNotBlank)
+                .distinct()
+                .collect(Collectors.toList());
+        return list;
     }
 
     private String loadConfigJson(String url) {

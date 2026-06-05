@@ -3,6 +3,7 @@ package cn.har01d.alist_tvbox.web;
 import cn.har01d.alist_tvbox.dto.MetaDto;
 import cn.har01d.alist_tvbox.dto.Versions;
 import cn.har01d.alist_tvbox.entity.MetaRepository;
+import cn.har01d.alist_tvbox.entity.Movie;
 import cn.har01d.alist_tvbox.service.DoubanService;
 import cn.har01d.alist_tvbox.service.IndexService;
 import lombok.extern.slf4j.Slf4j;
@@ -24,12 +25,27 @@ import java.util.List;
 public class DoubanController {
     private final DoubanService service;
     private final IndexService indexService;
+    private final DoubanService doubanService;
     private final MetaRepository metaRepository;
 
-    public DoubanController(DoubanService service, IndexService indexService, MetaRepository metaRepository) {
+    public DoubanController(DoubanService service, IndexService indexService, DoubanService doubanService, MetaRepository metaRepository) {
         this.service = service;
         this.indexService = indexService;
+        this.doubanService = doubanService;
         this.metaRepository = metaRepository;
+    }
+
+    @GetMapping("/api/movies")
+    public Page<Movie> localSearch(String q, Integer year) {
+        return doubanService.localSearch(q, year).map(e -> {
+            e.setDescription(null);
+            return e;
+        });
+    }
+
+    @GetMapping("/api/movies/{id}")
+    public Movie getDetail(@PathVariable Integer id) {
+        return doubanService.getDetail(id);
     }
 
     @GetMapping("/api/meta")

@@ -51,7 +51,7 @@ public class ProxyService {
     private final AListLocalService aListLocalService;
     private final HuyaParseService huyaParseService;
     private final Set<String> proxyDrivers = Set.of("AliyundriveOpen", "AliyunShare", "BaiduNetdisk", "BaiduShare2",
-            "Quark", "UC", "UCTV", "QuarkShare", "UCShare", "115 Cloud");
+            "Quark", "UC", "UCTV", "QuarkShare", "UCShare", "115 Cloud", "115 Share", "GuangYaPan", "GuangYaPanShare");
     private final OkHttpClient okHttpClient = new OkHttpClient();
 
     public ProxyService(AppProperties appProperties,
@@ -129,8 +129,7 @@ public class ProxyService {
     }
 
     public void proxy(String tid, HttpServletRequest request, HttpServletResponse response) throws IOException {
-        String[] parts = tid.split("@");
-        int id = Integer.parseInt(parts[1]);
+        int id = parsePlayUrlId(tid);
         PlayUrl playUrl = playUrlRepository.findById(id).orElseThrow(() -> new NotFoundException("Not found: " + id));
         String path = playUrl.getPath();
         String url;
@@ -191,6 +190,11 @@ public class ProxyService {
         log.trace("headers: {}", headers);
 
         downloadStraight(url, request, response, headers);
+    }
+
+    static int parsePlayUrlId(String tid) {
+        String[] parts = tid.split("@");
+        return Integer.parseInt(parts[1].split("\\.")[0]);
     }
 
     private String buildAListProxyUrl(Site site, String path, String sign) {

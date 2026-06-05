@@ -24,12 +24,15 @@ public class MovieDetail {
     private String vod_director;
     private String vod_lang;
     private String vod_year;
+    private String validity_state;
+    private String validity_summary;
     private String path;
     private Integer dbid;
     private Integer type;
     private Long size;
     private CategoryList cate;
     private List<Video> items = new ArrayList<>();
+    private Object ext;
 
     @Override
     public boolean equals(Object o) {

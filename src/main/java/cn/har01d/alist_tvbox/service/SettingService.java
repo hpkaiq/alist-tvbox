@@ -13,6 +13,8 @@ import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -52,6 +54,7 @@ public class SettingService {
     private final TokenFilter tokenFilter;
     private final SettingRepository settingRepository;
     private final DriverAccountRepository driverAccountRepository;
+    private final ObjectMapper objectMapper;
 
     public SettingService(JdbcTemplate jdbcTemplate,
                           Environment environment,
@@ -60,7 +63,8 @@ public class SettingService {
                           AListLocalService aListLocalService,
                           TokenFilter tokenFilter,
                           SettingRepository settingRepository,
-                          DriverAccountRepository driverAccountRepository) {
+                          DriverAccountRepository driverAccountRepository,
+                          ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
         this.environment = environment;
         this.appProperties = appProperties;
@@ -69,6 +73,7 @@ public class SettingService {
         this.tokenFilter = tokenFilter;
         this.settingRepository = settingRepository;
         this.driverAccountRepository = driverAccountRepository;
+        this.objectMapper = objectMapper;
     }
 
     @PostConstruct
@@ -86,9 +91,15 @@ public class SettingService {
         appProperties.setTgSearch(settingRepository.findById("tg_search").map(Setting::getValue).orElse(""));
         appProperties.setPanSouUrl(settingRepository.findById("pan_sou_url").map(Setting::getValue).orElse(""));
         appProperties.setPanSouSource(settingRepository.findById("pan_sou_source").map(Setting::getValue).orElse("all"));
+        appProperties.setPanSouChannels(settingRepository.findById("pan_sou_channels").map(Setting::getValue).map(this::normalizePanSouChannels).orElse("custom"));
+        appProperties.setPanSouUsername(settingRepository.findById("pan_sou_username").map(Setting::getValue).orElse(""));
+        appProperties.setPanSouPassword(settingRepository.findById("pan_sou_password").map(Setting::getValue).orElse(""));
+        appProperties.setPanSouLinkCheckEnabled(settingRepository.findById("pan_sou_link_check_enabled").map(Setting::getValue).orElse("").equals("true"));
+        appProperties.setPanSouLinkCheckMaxCount(settingRepository.findById("pan_sou_link_check_max_count").map(Setting::getValue).map(Integer::parseInt).orElse(30));
         appProperties.setTgSortField(settingRepository.findById("tg_sort_field").map(Setting::getValue).orElse("time"));
         appProperties.setTempShareExpiration(settingRepository.findById("temp_share_expiration").map(Setting::getValue).map(Integer::parseInt).orElse(72));
         appProperties.setValidateSharesInterval(settingRepository.findById("validateSharesInterval").map(Setting::getValue).map(Integer::parseInt).orElse(4));
+        appProperties.setLocalProxyConfig(loadLocalProxyConfig());
         appProperties.setQns(settingRepository.findById("bilibili_qn").map(Setting::getValue).map(e -> e.split(",")).map(Arrays::asList).orElse(List.of()));
         settingRepository.findById("debug_log").ifPresent(this::setLogLevel);
         settingRepository.findById("user_agent").ifPresent(e -> appProperties.setUserAgent(e.getValue()));
@@ -110,7 +121,7 @@ public class SettingService {
             appProperties.setTgDriverOrder(orders);
             settingRepository.save(new Setting("tgDriverOrder", String.join(",", orders)));
         } else {
-            appProperties.setTgDriverOrder(Arrays.asList(value.split(",")));
+            appProperties.setTgDriverOrder(normalizeTgDrivers(value));
         }
         value = settingRepository.findById("tg_timeout").map(Setting::getValue).orElse("");
         if (StringUtils.isBlank(value)) {
@@ -258,6 +269,7 @@ public class SettingService {
         }
         if ("tgDriverOrder".equals(setting.getName())) {
             String value = StringUtils.isBlank(setting.getValue()) ? Constants.TG_DRIVERS : setting.getValue();
+            value = String.join(",", normalizeTgDrivers(value));
             setting.setValue(value);
             appProperties.setTgDriverOrder(Arrays.stream(value.split(",")).toList());
         }
@@ -282,6 +294,25 @@ public class SettingService {
         if ("pan_sou_source".equals(setting.getName())) {
             appProperties.setPanSouSource(setting.getValue());
         }
+        if ("pan_sou_channels".equals(setting.getName())) {
+            String value = normalizePanSouChannels(setting.getValue());
+            setting.setValue(value);
+            appProperties.setPanSouChannels(value);
+        }
+        if ("pan_sou_username".equals(setting.getName())) {
+            appProperties.setPanSouUsername(setting.getValue());
+        }
+        if ("pan_sou_password".equals(setting.getName())) {
+            appProperties.setPanSouPassword(setting.getValue());
+        }
+        if ("pan_sou_link_check_enabled".equals(setting.getName())) {
+            appProperties.setPanSouLinkCheckEnabled("true".equals(setting.getValue()));
+        }
+        if ("pan_sou_link_check_max_count".equals(setting.getName())) {
+            int value = Math.max(0, Integer.parseInt(setting.getValue()));
+            setting.setValue(String.valueOf(value));
+            appProperties.setPanSouLinkCheckMaxCount(value);
+        }
         if ("panSouPlugins".equals(setting.getName())) {
             appProperties.setPanSouPlugins(Arrays.asList(setting.getValue().split(",")));
         }
@@ -296,6 +327,9 @@ public class SettingService {
         }
         if ("debug_log".equals(setting.getName())) {
             setLogLevel(setting);
+        }
+        if ("local_proxy_config".equals(setting.getName())) {
+            appProperties.setLocalProxyConfig(parseLocalProxyConfig(setting.getValue()));
         }
         if ("delete_delay_time".equals(setting.getName())) {
             aListLocalService.updateSetting("delete_delay_time", setting.getValue(), "number");
@@ -313,6 +347,46 @@ public class SettingService {
             aListLocalService.updateSetting("ali_to_115", setting.getValue(), "bool");
         }
         return settingRepository.save(setting);
+    }
+
+    private Map<String, Map<String, Object>> loadLocalProxyConfig() {
+        return settingRepository.findById("local_proxy_config")
+                .map(Setting::getValue)
+                .filter(StringUtils::isNotBlank)
+                .map(this::parseLocalProxyConfig)
+                .orElseGet(AppProperties::defaultLocalProxyConfig);
+    }
+
+    private List<String> normalizeTgDrivers(String value) {
+        List<String> drivers = new ArrayList<>(Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(StringUtils::isNotBlank)
+                .distinct()
+                .toList());
+        for (String driver : Constants.TG_DRIVERS.split(",")) {
+            if (!drivers.contains(driver)) {
+                drivers.add(driver);
+            }
+        }
+        return drivers;
+    }
+
+    private String normalizePanSouChannels(String value) {
+        return switch (value) {
+            case "project", "pansou" -> value;
+            default -> "custom";
+        };
+    }
+
+    private Map<String, Map<String, Object>> parseLocalProxyConfig(String value) {
+        try {
+            Map<String, Map<String, Object>> map = objectMapper.readValue(value, new TypeReference<>() {
+            });
+            return map == null || map.isEmpty() ? AppProperties.defaultLocalProxyConfig() : AppProperties.copyLocalProxyConfig(map);
+        } catch (Exception e) {
+            log.warn("parse local proxy config failed: {}", value, e);
+            return AppProperties.defaultLocalProxyConfig();
+        }
     }
 
     private void setLogLevel(Setting setting) {

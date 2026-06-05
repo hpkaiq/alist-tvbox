@@ -20,6 +20,7 @@ public class Storage {
     private String driver;
     private String path;
     private String addition = "";
+    private String customCachePolicies = "";
     private String webdavPolicy = "302_redirect";
     private int cacheExpiration = 30;
     private boolean webProxy;
@@ -113,6 +114,8 @@ public class Storage {
             return "/我的移动分享/" + path;
         } else if (share.getType() == 10) {
             return "/我的百度分享/" + path;
+        } else if (share.getType() == 12) {
+            return "/我的光鸭分享/" + path;
         } else if (share.getType() == 11) {
             return "/strm/" + path;
         }
@@ -145,6 +148,8 @@ public class Storage {
             return "/我的123网盘/" + account.getName();
         } else if (account.getType() == DriverType.BAIDU) {
             return "/我的百度网盘/" + account.getName();
+        } else if (account.getType() == DriverType.GUANGYA) {
+            return "/我的光鸭云盘/" + account.getName();
         }
         return "/网盘" + account.getName();
         // cn.har01d.alist_tvbox.service.TvBoxService.addMyFavorite

@@ -22,9 +22,6 @@ import org.springframework.web.client.RestTemplate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
-
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE;
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_TOKEN;
 
@@ -53,23 +50,40 @@ public class BiliCookieRefreshService {
     }
 
     public synchronized String refreshIfNeeded(String cookie) {
+        return refreshIfNeeded(cookie, false);
+    }
+
+    public synchronized String refreshIfNeeded(String cookie, boolean forceCheck) {
         if (StringUtils.isBlank(cookie) || Constants.BILIBILI_CODE.equals(cookie)) {
+            if (forceCheck) {
+                log.info("B站 Cookie 强制刷新检查已跳过：cookie 为空或为内置账号");
+            }
             return cookie;
         }
+        cookie = BiliCookieRefreshUtils.ensureBuvid3(cookie);
         String refreshToken = settingRepository.findById(BILIBILI_TOKEN).map(Setting::getValue).orElse("");
         if (StringUtils.isBlank(refreshToken)) {
+            if (forceCheck) {
+                log.info("B站 Cookie 强制刷新检查已跳过：缺少 refresh_token");
+            }
             return cookie;
         }
-        if (cookie.equals(lastCheckedCookie) && Instant.now().isBefore(lastCheckedAt.plus(CHECK_INTERVAL))) {
+        if (!forceCheck && cookie.equals(lastCheckedCookie) && Instant.now().isBefore(lastCheckedAt.plus(CHECK_INTERVAL))) {
             return cookie;
         }
         String csrf = BiliCookieRefreshUtils.getCookieValue(cookie, "bili_jct");
         if (StringUtils.isBlank(csrf)) {
+            if (forceCheck) {
+                log.info("B站 Cookie 强制刷新检查已跳过：cookie 中缺少 bili_jct");
+            }
             return cookie;
         }
         try {
             JsonNode info = restTemplate.exchange(COOKIE_INFO_API, HttpMethod.GET, new HttpEntity<>(buildHeaders(cookie, false)), JsonNode.class).getBody();
             if (!needsRefresh(info)) {
+                if (forceCheck) {
+                    log.info("B站 Cookie 强制刷新检查完成：当前无需刷新");
+                }
                 remember(cookie);
                 return cookie;
             }
@@ -81,10 +95,21 @@ public class BiliCookieRefreshService {
                     .map(JsonNode::asLong)
                     .orElse(System.currentTimeMillis());
             String correspondPath = BiliCookieRefreshUtils.getCorrespondPath(timestamp);
-            String html = restTemplate.exchange(String.format(CORRESPOND_API, correspondPath), HttpMethod.GET, new HttpEntity<>(buildHeaders(cookie, false)), String.class).getBody();
+            ResponseEntity<byte[]> correspondResponse = restTemplate.exchange(
+                    String.format(CORRESPOND_API, correspondPath),
+                    HttpMethod.GET,
+                    new HttpEntity<>(buildHeaders(cookie, false)),
+                    byte[].class
+            );
+            String html = BiliCookieRefreshUtils.decodeHtml(
+                    correspondResponse.getBody(),
+                    correspondResponse.getHeaders().getFirst(HttpHeaders.CONTENT_ENCODING)
+            );
             String refreshCsrf = BiliCookieRefreshUtils.extractRefreshCsrf(html);
             if (StringUtils.isBlank(refreshCsrf)) {
-                log.warn("B站 Cookie 刷新失败：未获取到 refresh_csrf");
+                log.warn("B站 Cookie 刷新失败：未获取到 refresh_csrf，status={}，body={}",
+                        correspondResponse.getStatusCode(),
+                        StringUtils.abbreviate(StringUtils.normalizeSpace(StringUtils.defaultString(html)), 200));
                 return cookie;
             }
 
@@ -107,9 +132,7 @@ public class BiliCookieRefreshService {
             }
 
             String newCookie = BiliCookieRefreshUtils.mergeCookieHeader(cookie, refreshResponse.getHeaders().get(HttpHeaders.SET_COOKIE));
-            if (!newCookie.contains("buvid3=")) {
-                newCookie += "; buvid3=" + UUID.randomUUID() + ThreadLocalRandom.current().nextInt(10000, 99999) + "infoc";
-            }
+            newCookie = BiliCookieRefreshUtils.ensureBuvid3(newCookie);
             String newRefreshToken = refreshJson.path("data").path("refresh_token").asText("");
             settingRepository.save(new Setting(BILIBILI_COOKIE, newCookie));
             if (StringUtils.isNotBlank(newRefreshToken)) {
@@ -118,7 +141,11 @@ public class BiliCookieRefreshService {
 
             confirmRefresh(newCookie, refreshToken);
             remember(newCookie);
-            log.info("B站 Cookie 已刷新");
+            if (forceCheck) {
+                log.info("B站 Cookie 强制刷新检查完成：Cookie 已刷新");
+            } else {
+                log.info("B站 Cookie 已刷新");
+            }
             return newCookie;
         } catch (Exception e) {
             log.warn("B站 Cookie 刷新异常", e);

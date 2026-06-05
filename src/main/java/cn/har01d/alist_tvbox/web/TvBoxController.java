@@ -50,24 +50,27 @@ public class TvBoxController {
     public Object api1(String t, String f, String ids, String ac, String wd, String sort,
                        @RequestParam(required = false, defaultValue = "1") Integer pg,
                        @RequestParam(required = false, defaultValue = "100") Integer size,
+                       @RequestParam(required = false, defaultValue = "0") Integer depth,
                        HttpServletRequest request) {
-        return api("", t, f, ids, ac, wd, sort, pg, size, 0, request);
+        return api("", t, f, ids, ac, wd, sort, pg, size, 0, depth, request);
     }
 
     @GetMapping("/vod1/{token}")
     public Object api1(@PathVariable String token, String t, String f, String ids, String ac, String wd, String sort,
                        @RequestParam(required = false, defaultValue = "1") Integer pg,
                        @RequestParam(required = false, defaultValue = "100") Integer size,
+                       @RequestParam(required = false, defaultValue = "0") Integer depth,
                        HttpServletRequest request) {
-        return api(token, t, f, ids, ac, wd, sort, pg, size, 0, request);
+        return api(token, t, f, ids, ac, wd, sort, pg, size, 0, depth, request);
     }
 
     @GetMapping("/vod")
     public Object api(String t, String f, String ids, String ac, String wd, String sort,
                       @RequestParam(required = false, defaultValue = "1") Integer pg,
                       @RequestParam(required = false, defaultValue = "100") Integer size,
+                      @RequestParam(required = false, defaultValue = "0") Integer depth,
                       HttpServletRequest request) {
-        return api("", t, f, ids, ac, wd, sort, pg, size, 1, request);
+        return api("", t, f, ids, ac, wd, sort, pg, size, 1, depth, request);
     }
 
     @GetMapping("/vod/{token}")
@@ -75,6 +78,7 @@ public class TvBoxController {
                       @RequestParam(required = false, defaultValue = "1") Integer pg,
                       @RequestParam(required = false, defaultValue = "100") Integer size,
                       @RequestParam(required = false, defaultValue = "1") Integer type,
+                      @RequestParam(required = false, defaultValue = "0") Integer depth,
                       HttpServletRequest request) {
         subscriptionService.checkToken(token);
 
@@ -86,7 +90,7 @@ public class TvBoxController {
             } else if (ids.equals("recommend")) {
                 return tvBoxService.recommend(ac, pg);
             }
-            return tvBoxService.getDetail(ac, ids);
+            return tvBoxService.getDetail(ac, ids, depth);
         } else if (t != null && !t.isEmpty()) {
             if (t.equals("0")) {
                 return tvBoxService.recommend(ac, pg);
@@ -181,12 +185,16 @@ public class TvBoxController {
     }
 
     @GetMapping("/sub/{id}")
-    public Map<String, Object> subscription(@PathVariable String id) {
-        return subscription("", id);
+    public Map<String, Object> subscription(@PathVariable String id, HttpServletRequest request) {
+        return subscription("", id, request);
     }
 
     @GetMapping("/sub/{token}/{id}")
-    public Map<String, Object> subscription(@PathVariable String token, @PathVariable String id) {
+    public Map<String, Object> subscription(@PathVariable String token, @PathVariable String id, HttpServletRequest request) {
+        for (var it = request.getHeaderNames().asIterator();it.hasNext();) {
+            var header = it.next();
+            log.debug("header: {} {}", header, request.getHeader(header));
+        }
         subscriptionService.checkToken(token);
 
         return subscriptionService.subscription(token, id);

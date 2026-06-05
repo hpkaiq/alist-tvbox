@@ -36,6 +36,8 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.env.Environment;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -798,6 +800,13 @@ public class DoubanService {
         }
     }
 
+    public Page<Movie> localSearch(String text, Integer year) {
+        if (year == null) {
+            return movieRepository.findByNameContains(text, Pageable.ofSize(10));
+        }
+        return movieRepository.findByYearAndNameContains(year, text, Pageable.ofSize(10));
+    }
+
     private Movie search(String text, Integer year) throws IOException {
         if (text.trim().isEmpty()) {
             return null;
@@ -870,6 +879,12 @@ public class DoubanService {
 
         log.warn("找不到: {}", text);
         return null;
+    }
+
+    public Movie getDetail(Integer id) {
+        Movie movie = movieRepository.findById(id).orElse(null);
+        log.debug("{} {}", id, movie);
+        return movie;
     }
 
     public Movie getById(Integer id) {

@@ -93,6 +93,11 @@ public class BiliBiliController {
         return biliBiliService.updateCookie(cookieData);
     }
 
+    @PostMapping("/api/bilibili/refresh")
+    public Map<String, Object> refreshCookie() {
+        return biliBiliService.refreshCookie();
+    }
+
     @PostMapping("/api/bilibili/login")
     public QrCode scanLogin() throws IOException {
         return biliBiliService.scanLogin();
