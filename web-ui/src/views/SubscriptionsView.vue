@@ -3,6 +3,7 @@
     <h1>订阅列表</h1>
     <el-row justify="end">
       <el-button @click="load">刷新</el-button>
+      <el-button @click="showGlobalConfig">全局配置</el-button>
       <el-button @click="showPlugins">订阅源管理</el-button>
       <el-button @click="showPluginFilters">过滤器管理</el-button>
       <el-button @click="showScan">同步影视</el-button>
@@ -107,12 +108,12 @@
         <el-form-item label="配置URL" label-width="140">
           <el-input v-model="form.url" autocomplete="off" placeholder="支持多个，逗号分割。留空使用默认配置。"/>
         </el-form-item>
-        <el-form-item label="排序字段" label-width="140">
-          <el-input v-model="form.sort" autocomplete="off" placeholder="留空保持默认排序"/>
-        </el-form-item>
+<!--        <el-form-item label="排序字段" label-width="140">-->
+<!--          <el-input v-model="form.sort" autocomplete="off" placeholder="留空保持默认排序"/>-->
+<!--        </el-form-item>-->
         <el-form-item label="定制" label-width="140">
-          <el-input v-model="form.override" type="textarea" rows="15"/>
-          <a href="https://www.json.cn/" target="_blank">JSON验证</a>
+          <el-button @click="openEditor(false)">🎨 可视化编辑</el-button>
+          <span class="hint">{{ form.override ? '已配置' : '未配置' }}</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -355,11 +356,21 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="managedSources" row-key="id" id="plugins-table" border style="width: 100%" @selection-change="onPluginSelectionChange">
+      <el-input v-model="sourceFilter" placeholder="搜索插件名称或地址" clearable style="width: 280px; margin-bottom: 10px"/>
+
+      <el-table :data="filteredManagedSources" row-key="id" id="plugins-table" border style="width: 100%" @selection-change="onPluginSelectionChange">
         <el-table-column type="selection" width="55" :selectable="isSourceDeletable"/>
-        <el-table-column label="顺序" width="80">
+        <el-table-column label="顺序" width="100">
           <template #default="scope">
-            <span class="pointer">{{ scope.row.sortOrder }}</span>
+            <el-input-number
+              v-model="scope.row.sortOrder"
+              :min="1"
+              :max="managedSources.length"
+              :controls="false"
+              size="small"
+              style="width: 60px"
+              @change="(val: number) => reorderManagedSource(scope.row.id, val)"
+            />
           </template>
         </el-table-column>
         <el-table-column label="类型" width="90">
@@ -619,6 +630,45 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="editorVisible" :title="editorTargetIsGlobal ? '全局订阅配置' : '订阅定制'" width="900px" destroy-on-close>
+      <div style="margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between">
+        <span v-if="editorTargetIsGlobal">参考订阅：
+          <el-select v-model="globalReferenceSid" style="width: 220px">
+            <el-option v-for="item in subscriptions" :key="item.sid" :label="item.name" :value="item.sid" />
+          </el-select>
+        </span>
+        <span v-else />
+        <el-link type="info" href="https://github.com/FongMi/TV/blob/release/docs/CONFIG.md" target="_blank" :underline="false">
+          配置文档 <el-icon><Link /></el-icon>
+        </el-link>
+      </div>
+      <SubscriptionConfigEditor
+        ref="editorRef"
+        :model-value="editorTargetIsGlobal ? globalConfigJson : form.override"
+        :mode="editorTargetIsGlobal ? 'global' : 'subscription'"
+        :reference-sid="editorTargetIsGlobal ? globalReferenceSid : form.sid"
+        :token="token"
+      />
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="editorVisible = false">取消</el-button>
+          <el-button type="primary" @click="saveEditor">{{ editorTargetIsGlobal ? '保存全局' : '应用到定制' }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <!-- JSON 预览确认 -->
+    <el-dialog v-model="jsonPreviewVisible" title="确认保存" width="700px" append-to-body>
+      <el-alert type="info" :closable="false" style="margin-bottom: 8px">
+        <template #title>请确认以下配置内容无误后点击「确认保存」</template>
+      </el-alert>
+      <el-input v-model="jsonPreviewText" type="textarea" :rows="16" readonly style="font-family: monospace" />
+      <template #footer>
+        <el-button @click="jsonPreviewVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmSaveEditor">确认保存</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -626,9 +676,12 @@
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue'
 import axios from "axios"
 import {ElMessage} from "element-plus";
+import {Link} from "@element-plus/icons-vue";
 import Sortable from "sortablejs";
 import type {Device} from "@/model/Device";
 import PluginFilterConfigFieldEditor from "@/components/PluginFilterConfigFieldEditor.vue";
+import SubscriptionConfigEditor from "@/components/SubscriptionConfigEditor.vue";
+import {isPluginDragEnabledForUserAgent} from "@/utils/pluginDragSupport.mjs";
 
 interface Sub {
   sid: '',
@@ -763,6 +816,8 @@ const importingPlugins = ref(false)
 const tgVisible = ref(false)
 const scanVisible = ref(false)
 const confirm = ref(false)
+const jsonPreviewVisible = ref(false)
+const jsonPreviewText = ref('')
 const push = ref(false)
 const device = ref<Device>({
   name: "",
@@ -775,6 +830,7 @@ const pushForm = ref({
   id: 0,
   sid: '',
   token: '',
+  name: '',
   url: '',
 })
 const sub = ref({
@@ -796,8 +852,22 @@ const user = ref({
   last_name: '',
   phone: ''
 })
+const globalConfigJson = ref('')
+const editorVisible = ref(false)
+const editorRef = ref<any>(null)
+const editorTargetIsGlobal = ref(false)
+const globalReferenceSid = ref('')
 const plugins = ref<Plugin[]>([])
 const managedSources = ref<ManagedSource[]>([])
+const sourceFilter = ref('')
+const filteredManagedSources = computed(() => {
+  const keyword = sourceFilter.value.trim().toLowerCase()
+  if (!keyword) return managedSources.value
+  return managedSources.value.filter(item =>
+    (item.name && item.name.toLowerCase().includes(keyword)) ||
+    (item.url && item.url.toLowerCase().includes(keyword))
+  )
+})
 const pluginFilters = ref<PluginFilter[]>([])
 const pluginForm = ref<Plugin>({
   id: 0,
@@ -855,6 +925,7 @@ const pluginFilterConfigJson = ref('{}')
 const pluginFilterConfigObject = ref<Record<string, any>>({})
 const pluginFilterConfigExtras = ref<PluginFilterExtraEntry[]>([])
 const pluginFilterConfigError = ref('')
+const pluginDragEnabled = ref(isPluginDragEnabledForUserAgent(window.navigator.userAgent))
 let timer = 0
 let pluginSortable: Sortable | null = null
 let pluginFilterSortable: Sortable | null = null
@@ -1348,6 +1419,11 @@ const formatPluginCheckedAt = (value: string) => {
 }
 
 const enablePluginRowDrop = () => {
+  if (!pluginDragEnabled.value) {
+    pluginSortable?.destroy()
+    pluginSortable = null
+    return
+  }
   const tbody = document.querySelector('#plugins-table .el-table__body-wrapper tbody') as HTMLElement
   if (!tbody) {
     return
@@ -1374,6 +1450,11 @@ const enablePluginRowDrop = () => {
 }
 
 const enablePluginFilterRowDrop = () => {
+  if (!pluginDragEnabled.value) {
+    pluginFilterSortable?.destroy()
+    pluginFilterSortable = null
+    return
+  }
   const tbody = document.querySelector('#plugin-filters-table .el-table__body-wrapper tbody') as HTMLElement
   if (!tbody) {
     return
@@ -1405,6 +1486,25 @@ const loadPlugins = () => {
   })
 }
 
+const reorderManagedSource = (sourceId: string, newSortOrder: number) => {
+  const list = managedSources.value
+  const oldIndex = list.findIndex(item => item.id === sourceId)
+  if (oldIndex < 0) return
+  const clamped = Math.max(1, Math.min(newSortOrder, list.length))
+  const newIndex = clamped - 1
+  if (newIndex === oldIndex) {
+    return
+  }
+  const row = list.splice(oldIndex, 1)[0]
+  list.splice(newIndex, 0, row)
+  list.forEach((item, index) => {
+    item.sortOrder = index + 1
+  })
+  axios.post('/api/subscription-sources/reorder', list.map(item => item.id)).then(() => {
+    ElMessage.success('排序已更新')
+  })
+}
+
 const loadManagedSources = () => {
   axios.get('/api/subscription-sources').then(({data}) => {
     managedSources.value = data
@@ -1426,6 +1526,56 @@ const loadPluginSettings = () => {
   axios.get('/api/settings/plugin_run_mode').then(({data}) => {
     pluginSettingsForm.value.pluginRunMode = data?.value || 'java'
   })
+}
+
+const showGlobalConfig = () => {
+  openEditor(true)
+}
+
+const loadGlobalConfig = () => {
+  axios.get('/api/subscriptions/global-config').then(response => {
+    globalConfigJson.value = JSON.stringify(response.data || {})
+  })
+}
+
+const openEditor = (isGlobal: boolean) => {
+  editorTargetIsGlobal.value = isGlobal
+  if (isGlobal) {
+    globalReferenceSid.value = subscriptions.value.length ? (subscriptions.value[0] as any).sid : ''
+    loadGlobalConfig()
+  }
+  editorVisible.value = true
+}
+
+const saveEditor = () => {
+  const value = editorRef.value?.getValue()
+  if (value === null || value === undefined) {
+    ElMessage.error('JSON 格式错误,请修正后再保存')
+    return
+  }
+  jsonPreviewText.value = value ? JSON.stringify(JSON.parse(value), null, 2) : '(空)'
+  jsonPreviewVisible.value = true
+}
+
+const confirmSaveEditor = () => {
+  const value = editorRef.value?.getValue()
+  if (value === null || value === undefined) return
+  jsonPreviewVisible.value = false
+  if (editorTargetIsGlobal.value) {
+    let config: any = {}
+    try { config = value ? JSON.parse(value) : {} } catch { ElMessage.error('JSON格式错误'); return }
+    axios.put('/api/subscriptions/global-config', config).then(() => {
+      ElMessage.success('全局配置保存成功')
+      editorVisible.value = false
+    })
+  } else {
+    form.value.override = value
+    axios.post('/api/subscriptions', form.value).then(() => {
+      editorVisible.value = false
+      ElMessage.success('订阅配置保存成功')
+      load()
+    })
+  }
 }
 
 const showPlugins = () => {
@@ -1621,6 +1771,7 @@ const handleEdit = (data: any) => {
     sort: data.sort,
     override: data.override
   }
+
   formVisible.value = true
 }
 
@@ -1658,6 +1809,7 @@ const loadDevices = () => {
 const showPush = () => {
   pushForm.value.id = devices.value[0].id
   pushForm.value.sid = subscriptions.value[0].sid
+  pushForm.value.name = subscriptions.value[0].name
   pushForm.value.token = tokens.value[0]
   pushForm.value.url = currentUrl + '/sub/' + pushForm.value.token + '/' + pushForm.value.sid
   push.value = true
@@ -1668,7 +1820,7 @@ const onTokenChange = () => {
 }
 
 const pushConfig = () => {
-  axios.post(`/api/devices/${pushForm.value.id}/push?type=setting&url=${pushForm.value.url}`).then(() => {
+  axios.post(`/api/devices/${pushForm.value.id}/push?type=setting&name=${pushForm.value.name}&url=${pushForm.value.url}`).then(() => {
     ElMessage.success('推送成功')
   })
 }

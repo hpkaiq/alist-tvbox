@@ -12,6 +12,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +31,8 @@ public class Message {
     private String type;
     private String link;
     private String cover;
+    private List<String> images = List.of();
+    private Map<String, Object> media;
     private String validityState;
     private String validitySummary;
 
@@ -86,6 +89,19 @@ public class Message {
         this.type = type;
         this.name = link.getNote();
         this.channel = link.getSource();
+    }
+
+    public Message(String type, String url, String note, Instant datetime, List<String> images, Map<String, Object> media) {
+        this.time = datetime == null ? Instant.now() : datetime;
+        this.content = note == null ? "" : note;
+        this.link = url;
+        this.type = type;
+        this.images = images == null ? List.of() : images;
+        this.media = media;
+        this.cover = this.images.isEmpty() ? null : this.images.getFirst();
+        Object title = media == null ? null : media.get("title");
+        this.name = title == null || String.valueOf(title).isBlank() ? this.content : String.valueOf(title);
+        this.channel = "tg-search";
     }
 
     public String toPgString() {
@@ -160,11 +176,46 @@ public class Message {
         return links;
     }
 
+    private static final String TRAILING_GARBAGE = "，。；：；,.;:?！？、）》」』】)]}·…—–​‌‍﻿";
+
     private static String fixLink(String link) {
         if (link.endsWith("**")) {
             return link.substring(0, link.length() - 2);
         }
+        // Strip trailing punctuation, emoji and other garbage characters
+        int end = link.length();
+        while (end > 0) {
+            char ch = link.charAt(end - 1);
+            if (isTrailingGarbage(ch)) {
+                end--;
+            } else {
+                break;
+            }
+        }
+        if (end < link.length()) {
+            return link.substring(0, end);
+        }
         return link;
+    }
+
+    private static boolean isTrailingGarbage(char ch) {
+        // Common punctuation and invisible characters
+        if (TRAILING_GARBAGE.indexOf(ch) >= 0) {
+            return true;
+        }
+        // CJK punctuation range
+        if (ch >= '　' && ch <= '〿') {
+            return true;
+        }
+        // Emoji ranges
+        if (ch >= 0x1F300 && ch <= 0x1FAFF) {
+            return true;
+        }
+        // Emoji modifier and variation selector
+        if (ch == 0xFE0F || ch == 0xFE0E || ch >= 0x1F3FB && ch <= 0x1F3FF) {
+            return true;
+        }
+        return false;
     }
 
     private static String parseType(String link) {
@@ -183,13 +234,13 @@ public class Message {
         if (link.contains("xunlei.com")) {
             return "2";
         }
-        if (link.contains("123pan.com") || link.contains("123pan.cn") || link.contains("123684.com") || link.contains("123865.com") || link.contains("123912.com") || link.contains("123592.com")) {
+        if (link.contains("123pan.com") || link.contains("123pan.cn") || link.contains("123684.com") || link.contains("123685.com") || link.contains("123865.com") || link.contains("123912.com") || link.contains("123592.com")) {
             return "3";
         }
         if (link.contains("quark.cn")) {
             return "5";
         }
-        if (link.contains("139.com")) {
+        if (link.contains("139.com") || link.contains("caiyun.feixin.10086.cn")) {
             return "6";
         }
         if (link.contains("uc.cn")) {
@@ -200,6 +251,9 @@ public class Message {
         }
         if (link.contains("189.cn")) {
             return "9";
+        }
+        if (link.contains("guangyapan.com")) {
+            return "12";
         }
         if (link.contains("baidu.com")) {
             return "10";
