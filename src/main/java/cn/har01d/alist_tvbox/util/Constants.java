@@ -25,6 +25,7 @@ public final class Constants {
     public static final String FOLDER = "folder";
     public static final String COLLECTION = "collection";
     public static final String LIST = "list";
+    public static final String INDEX_115_NAME = "/115分享索引";
 
     public static final String TG_DRIVERS = "9,10,5,7,8,3,2,0,6,1,12,magnet,ed2k";
 
@@ -42,6 +43,8 @@ public final class Constants {
     public static final String ALIST_PASSWORD = "alist_password";
     public static final String ALIST_USERNAME = "alist_username";
     public static final String ALIST_LOGIN = "alist_login";
+    public static final String BASIC_AUTH_USERNAME = "basic_auth_username";
+    public static final String BASIC_AUTH_PASSWORD = "basic_auth_password";
     public static final String SCHEDULE_TIME = "schedule_time";
     public static final String ZONE_ID = "Asia/Shanghai";
     public static final String ALIST_START_TIME = "alist_start_time";

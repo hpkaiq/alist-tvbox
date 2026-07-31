@@ -1,4 +1,4 @@
-name: Release jar and native binary
+name: Release
 
 on:
   push:
@@ -6,11 +6,12 @@ on:
       - '*'
 
 jobs:
-  build-and-release:
+  # Job 1: 构建基础资源（web UI + Maven jar）
+  build-base:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Write tag version to file
         run: |
@@ -18,9 +19,9 @@ jobs:
           cat app.version.txt
 
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: ./web-ui
 
@@ -32,45 +33,314 @@ jobs:
         working-directory: ./web-ui
         run: npm run build
 
-      - name: Setup GraalVM
+      - name: setup graalvm
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
+          java-version: '25'
           distribution: 'graalvm'
-          native-image-musl: 'true'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: 'maven'
 
-      - name: Build native with Maven
-        run: |
-          mvn -B -Pnative \
-              -Dnative.image.cache=true \
-              -Dnative-image.parallelism=4 \
-              -DskipTests \
-              package
-          chmod +x target/atv
-          cd target
-          tar zcvf atv.tar.gz atv
-          ls -lh
+      - name: Build with Maven
+        run: mvn -B package --file pom.xml
 
-      - name: Create release and upload binary
+      - name: Extract Spring Boot layers
+        working-directory: ./target
+        run: java -Djarmode=layertools -jar alist-tvbox-1.0.jar extract
+
+      - name: Set APP version
+        run: |
+          [ -d data ] || mkdir data
+          echo "${{ github.ref_name }}" > data/version
+          echo "${{ github.ref_name }}" > data/app_version
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-artifacts
+          path: |
+            target/
+            data/
+            src/
+            pom.xml
+            web-ui/dist/
+            app.version.txt
+          retention-days: 1
+
+  # Job 2: 快速测试（AMD64 only，本地构建）
+  quick-test:
+    needs: build-base
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-artifacts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build test image (AMD64 only, local)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: alist-tvbox:test
+          cache-from: type=gha,scope=quick-test
+          cache-to: type=gha,mode=max,scope=quick-test
+
+      - name: Test image
+        run: |
+          docker run -d --name quick-test -p 4567:4567 alist-tvbox:test
+
+          echo "Waiting for AList to start (max 60 seconds)..."
+          SUCCESS=false
+          for i in {1..30}; do
+            RESPONSE=$(curl -s http://localhost:4567/api/alist/status || echo "0")
+            echo "Attempt $i/30: status=$RESPONSE"
+
+            if [ "$RESPONSE" == "2" ]; then
+              echo "✅ AList is running (status=2)"
+              SUCCESS=true
+              break
+            elif [ "$RESPONSE" == "1" ]; then
+              echo "⏳ AList is starting, waiting..."
+            else
+              echo "❌ AList not responding, waiting..."
+            fi
+
+            sleep 2
+          done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Quick test failed: AList did not reach status 2 within 60 seconds"
+            docker logs quick-test
+            docker stop quick-test
+            docker rm quick-test
+            exit 1
+          fi
+
+          echo "✅ Quick test passed"
+          docker stop quick-test
+          docker rm quick-test
+
+  # Job 3: 构建 JVM 镜像（只推送版本标签）
+  build-jvm-images:
+    needs: build-base
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - name: xiaoya-tvbox
+            dockerfile: docker/Dockerfile-xiaoya
+            image_name: xiaoya-tvbox
+          - name: xiaoya-tvbox-host
+            dockerfile: docker/Dockerfile-host
+            image_name: xiaoya-tvbox-hostmode
+            additional_image: xiaoya-tvbox-host
+          - name: alist-tvbox
+            dockerfile: docker/Dockerfile
+            image_name: alist-tvbox
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-artifacts
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build tags list
+        id: tags
+        run: |
+          TAGS="${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}:${{ github.ref_name }}"
+          if [ -n "${{ matrix.image.additional_image }}" ]; then
+            TAGS="$TAGS,${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.additional_image }}:${{ github.ref_name }}"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image.name }} (version tag only)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+
+  # Job 6: 测试镜像（测试版本标签）
+  test-images:
+    needs: [build-jvm-images]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test:
+          - name: xiaoya-tvbox
+            image: xiaoya-tvbox
+            port: 4567
+          - name: xiaoya-tvbox-hostmode
+            image: xiaoya-tvbox-hostmode
+            port: 4568
+          - name: alist-tvbox
+            image: alist-tvbox
+            port: 4569
+    steps:
+      - name: Test ${{ matrix.test.name }} container
+        run: |
+          docker run -d --name test-${{ matrix.test.name }} -p ${{ matrix.test.port }}:4567 ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.test.image }}:${{ github.ref_name }}
+
+          echo "Waiting for AList to start (max 60 seconds)..."
+          SUCCESS=false
+          for i in {1..30}; do
+            RESPONSE=$(curl -s http://localhost:${{ matrix.test.port }}/api/alist/status || echo "0")
+            echo "Attempt $i/30: status=$RESPONSE"
+
+            if [ "$RESPONSE" == "2" ]; then
+              echo "✅ AList is running (status=2)"
+              SUCCESS=true
+              break
+            elif [ "$RESPONSE" == "1" ]; then
+              echo "⏳ AList is starting, waiting..."
+            else
+              echo "❌ AList not responding, waiting..."
+            fi
+
+            sleep 2
+          done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Test failed: AList did not reach status 2 within 60 seconds"
+            docker logs test-${{ matrix.test.name }}
+            docker stop test-${{ matrix.test.name }}
+            docker rm test-${{ matrix.test.name }}
+            exit 1
+          fi
+
+          echo "✅ Test passed: AList status is 2 (running)"
+          docker stop test-${{ matrix.test.name }}
+          docker rm test-${{ matrix.test.name }}
+
+  # Job 7: 创建 GitHub Release 并上传制品（测试通过后）
+  create-release:
+    needs: test-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download build artifacts (for jar files)
+        uses: actions/download-artifact@v7
+        with:
+          name: build-artifacts
+
+      - name: Create release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             target/alist-tvbox-1.0.jar
             target/alist-tvbox-1.0.jar.original
             target/atv.tar.gz
 
-      - name: Send version
+  # Job 8: 添加 latest 标签 - JVM 镜像（多架构，保留 linux/arm64）
+  # 用 buildx imagetools 在 registry 侧复制 manifest list，
+  # 避免 pull/tag/push 在 amd64 runner 上只取本地架构而丢失 arm64。
+  tag-latest:
+    needs: test-images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - source_image: xiaoya-tvbox-hostmode
+            target_tags: "xiaoya-tvbox:hostmode xiaoya-tvbox:host xiaoya-tvbox-hostmode:latest xiaoya-tvbox-host:latest"
+          - source_image: xiaoya-tvbox
+            target_tags: "xiaoya-tvbox:latest"
+          - source_image: alist-tvbox
+            target_tags: "alist-tvbox:latest"
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Retag multi-arch manifest (amd64 + arm64)
+        run: |
+          SOURCE_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.source_image }}:${{ github.ref_name }}"
+          for TARGET in ${{ matrix.target_tags }}; do
+            TARGET_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${TARGET}"
+            echo "Tagging $SOURCE_IMAGE as $TARGET_IMAGE"
+            docker buildx imagetools create -t "$TARGET_IMAGE" "$SOURCE_IMAGE"
+          done
+
+  # Job 9: 发送通知（Release 创建后）
+  notify:
+    needs: [create-release, tag-latest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read release notes
+        id: release_notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_BODY="$(gh release view "${{ github.ref_name }}" --json body --jq .body || true)"
+          {
+            echo "body<<EOF"
+            printf '%s\n' "$RELEASE_BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send version notification
         env:
           api: ${{ secrets.VERSION_API }}
         if: ${{ env.api != '' }}
         run: |
           curl -s "${{ env.api }}?type=app&version=${{ github.ref_name }}"
 
-      - name: Send notification
+      - name: Send general notification
         env:
           api: ${{ secrets.NOTIFY_API }}
         if: ${{ env.api != '' }}
         run: |
           curl -s "${{ env.api }}?type=app&version=${{ github.ref_name }}"
+
+      - name: Send telegram message
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.CHANNEL_ID }}
+          token: ${{ secrets.BOT_TOKEN }}
+          message: |
+            AList-TvBox 发布新版本 ✅
+            版本: ${{ github.ref_name }}
+            仓库: ${{ github.repository }}
+            发布人: ${{ github.actor }}
+            Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+
+            更新内容:
+            ${{ steps.release_notes.outputs.body }}

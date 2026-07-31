@@ -26,7 +26,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -466,7 +466,7 @@ public class JellyfinService {
 
     public List<Jellyfin> findAll() {
         List<Jellyfin> list = new ArrayList<>(jellyfinRepository.findAll());
-        list.sort(Comparator.comparing(Jellyfin::getOrder));
+        list.sort(Comparator.comparing(Jellyfin::getSortOrder));
         return list;
     }
 

@@ -30,7 +30,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -122,6 +122,10 @@ public class AListService {
     }
 
     public FsResponse listFiles(Site site, String path, int page, int size) {
+        return listFiles(site, path, page, size, false);
+    }
+
+    public FsResponse listFiles(Site site, String path, int page, int size, boolean refresh) {
         int version = getVersion(site);
         String url = getUrl(site) + (version == 2 ? "/api/public/path" : "/api/fs/list");
         FsRequest request = new FsRequest();
@@ -132,6 +136,7 @@ public class AListService {
         }
         request.setPage(page);
         request.setSize(size);
+        request.setRefresh(refresh);
         log.debug("call api: {} request: {}", url, request);
         FsListResponse response = post(site, url, request, FsListResponse.class);
         logError(response);
@@ -143,21 +148,35 @@ public class AListService {
         if (response == null) {
             return null;
         }
+
+        // Check for null files list to prevent NPE
+        List<FsInfo> files = response.getFiles();
+        if (files == null) {
+            log.warn("Response has null files list");
+            return response;
+        }
+
         if (version == 2) {
-            for (FsInfo fsInfo : response.getFiles()) {
+            for (FsInfo fsInfo : files) {
                 fsInfo.setThumb(fsInfo.getThumbnail());
             }
-        } else if (response != null && response.getContent() != null) {
+        } else if (response.getContent() != null) {
             response.setFiles(response.getContent());
+            files = response.getFiles();
         }
-        response.setFiles(filter(response.getFiles()));
-        for (var file : response.getFiles()) {
-            try {
-                file.setModified(OffsetDateTime.parse(file.getModified()).toLocalDateTime().truncatedTo(ChronoUnit.SECONDS).toString());
-            } catch (Exception e) {
-                log.debug("{}", e.getMessage());
+
+        // Filter files if list is not null
+        if (files != null) {
+            response.setFiles(filter(files));
+            for (var file : response.getFiles()) {
+                try {
+                    file.setModified(OffsetDateTime.parse(file.getModified()).toLocalDateTime().truncatedTo(ChronoUnit.SECONDS).toString());
+                } catch (Exception e) {
+                    log.debug("{}", e.getMessage());
+                }
             }
         }
+
         return response;
     }
 
@@ -313,8 +332,8 @@ public class AListService {
     }
 
     private Integer getVersion(Site site) {
-        if (site.getVersion() != null) {
-            return site.getVersion();
+        if (site.getStorageVersion() != null) {
+            return site.getStorageVersion();
         }
 
         String url = getUrl(site) + "/api/public/settings";
@@ -327,7 +346,7 @@ public class AListService {
             version = 2;
         }
         log.info("site {}:{} version: {}", site.getId(), site.getName(), version);
-        site.setVersion(version);
+        site.setStorageVersion(version);
         siteService.save(site);
 
         return version;

@@ -1,24 +1,31 @@
 <template>
-  <div class="files">
-    <h1>用户列表</h1>
-    <el-row justify="end">
-      <el-button @click="load">刷新</el-button>
-      <el-button type="primary" @click="handleAdd">添加</el-button>
-    </el-row>
-    <div class="space"></div>
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">用户列表</h1>
+      <div class="page-actions">
+        <el-button @click="load">刷新</el-button>
+        <el-button type="primary" @click="handleAdd">添加</el-button>
+      </div>
+    </div>
 
-    <el-table :data="users" border style="width: 100%">
+    <div class="page-card">
+    <div class="table-scroll-wrapper">
+    <el-table :data="users" border style="width: 100%; min-width: 600px">
       <el-table-column prop="id" label="ID"/>
       <el-table-column prop="username" label="用户名"/>
       <el-table-column fixed="right" label="操作" width="200">
         <template #default="scope">
-          <el-button type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
+          <el-button type="primary" size="small" @click="handleEdit(scope.row)" v-if="scope.row.id!=1">编辑</el-button>
+          <el-button type="primary" size="small" @click="updateAdmin" v-else>编辑</el-button>
           <el-button type="danger" size="small" @click="handleDelete(scope.row)" v-if="scope.row.id!=1">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
+    </div>
+    </div>
+  </div>
 
-    <el-dialog v-model="formVisible" :title="dialogTitle">
+    <el-dialog v-model="formVisible" :title="dialogTitle" width="500">
       <el-form :model="form" label-width="120">
         <el-form-item label="用户名" required>
           <el-input v-model="form.username" autocomplete="off"/>
@@ -45,12 +52,13 @@
       </span>
       </template>
     </el-dialog>
-  </div>
 </template>
 
 <script setup lang="ts">
 import {onMounted, ref} from 'vue'
 import axios from "axios"
+import {useRouter} from "vue-router";
+const router = useRouter()
 
 interface User {
   id: number
@@ -78,6 +86,10 @@ const handleAdd = () => {
     password: '',
   }
   formVisible.value = true
+}
+
+const updateAdmin = () => {
+  router.push('/user')
 }
 
 const handleEdit = (file: User) => {

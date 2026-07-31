@@ -2,10 +2,11 @@ package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.entity.Task;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -25,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Enumeration;
@@ -45,21 +47,30 @@ public class FileDownloader {
 
     private static final String BASE_URL = "https://d.har01d.cn/";
     private static final String REMOTE_DIFF_ZIP_URL = BASE_URL + "diff.zip";
+    private static final String PG_LATEST_URL = "https://github.com/power721/PG/releases/latest";
+    private static final String ZX_LATEST_URL = "https://github.com/power721/ZX/releases/latest";
+    private static final String XS_INDEX_URL = BASE_URL + "xs.txt";
+    private static final String XS_USER_AGENT = "okhttp/5.3.2";
 
     private static final Set<String> GITHUB_PROXY = Set.of("https://slink.ltd/", "https://cors.zme.ink/", "https://git.886.be/", "https://gitdl.cn/", "https://ghfast.top/", "https://ghproxy.net/", "https://github.moeyy.xyz/", "https://gh-proxy.com/", "https://ghproxy.cc/", "https://gh.llkk.cc/", "https://gh.ddlc.top/", "https://gh-proxy.llyke.com/");
+
+    private final GitHubProxyService gitHubProxyService;
 
     private final Path pgVersionFile;
     private final Path zxBaseVersionFile;
     private final Path zxVersionFile;
     private final Path movieVersionFile;
+    private final Path xsVersionFile;
 
     private final Path pgZip;
     private final Path zxBaseZip;
     private final Path zxZip;
     private final Path diffZip;
+    private final Path xsZip;
 
     private final Path pgWebDir;
     private final Path zxWebDir;
+    private final Path xsWebDir;
 
     private final Path atvDataDir;
     private final Path pgDataDir;
@@ -67,20 +78,29 @@ public class FileDownloader {
 
     private final TaskService taskService;
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
 
-    public FileDownloader(TaskService taskService, RestTemplateBuilder builder) {
+    public FileDownloader(TaskService taskService, RestTemplateBuilder builder, GitHubProxyService gitHubProxyService, ObjectMapper objectMapper) {
         this.taskService = taskService;
-        this.restTemplate = builder.build();
+        this.restTemplate = builder
+                .connectTimeout(Duration.ofSeconds(5))
+                .readTimeout(Duration.ofSeconds(10))
+                .build();
+        this.gitHubProxyService = gitHubProxyService;
+        this.objectMapper = objectMapper;
         pgVersionFile = Utils.getDataPath("pg_version.txt");
         zxBaseVersionFile = Utils.getDataPath("zx_base_version.txt");
         zxVersionFile = Utils.getDataPath("zx_version.txt");
         movieVersionFile = Utils.getDataPath("atv", "movie_version");
+        xsVersionFile = Utils.getDataPath("xs_version.txt");
         pgZip = Utils.getDataPath("pg.zip");
         zxBaseZip = Utils.getDataPath("zx.base.zip");
         zxZip = Utils.getDataPath("zx.zip");
         diffZip = Utils.getDataPath("diff.zip");
+        xsZip = Utils.getDataPath("xs.zip");
         pgWebDir = Utils.getWebPath("pg");
         zxWebDir = Utils.getWebPath("zx");
+        xsWebDir = Utils.getWebPath("static", "xs");
         atvDataDir = Utils.getDataPath("atv");
         pgDataDir = Utils.getDataPath("pg");
         zxDataDir = Utils.getDataPath("zx");
@@ -103,6 +123,8 @@ public class FileDownloader {
             executor.submit(() -> downloadPgWithRetry(task));
         } else if ("zx".equals(type)) {
             executor.submit(() -> downloadZxWithRetry(task));
+        } else if ("xs".equals(type)) {
+            executor.submit(() -> downloadXsWithRetry(task));
         } else if ("movie".equals(type)) {
             String remoteVersion = args.length > 0 ? args[0] : null;
             executor.submit(() -> downloadMovieWithRetry(task, remoteVersion));
@@ -127,6 +149,18 @@ public class FileDownloader {
         executeWithRetry(() -> {
             try {
                 downloadZx(task);
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        }, task);
+        return task;
+    }
+
+    private Task downloadXsWithRetry(Task task) {
+        taskService.startTask(task.getId());
+        executeWithRetry(() -> {
+            try {
+                downloadXs(task);
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }
@@ -243,30 +277,161 @@ public class FileDownloader {
         taskService.completeTask(task.getId(), "文件下载成功", remoteVersion);
     }
 
+    public void downloadXs(Task task) throws IOException {
+        String localVersion = getLocalVersion(xsVersionFile, "0.0");
+        String remoteVersion = getXsVersion();
+
+        log.info("local xs: {}, remote xs: {}", localVersion, remoteVersion);
+
+        if (!localVersion.equals(remoteVersion)) {
+            String downloadUrl = getXsDownloadUrl();
+            log.debug("download xs file {} from {}", remoteVersion, downloadUrl);
+            downloadFile(downloadUrl, xsZip, XS_USER_AGENT);
+
+            logFileInfo(xsZip);
+
+            deleteDirectory(xsWebDir);
+
+            log.debug("unzip xs file to {}", xsWebDir);
+            unzipFile(xsZip, xsWebDir);
+
+            log.debug("save xs version: {}", remoteVersion);
+            saveVersion(xsVersionFile, remoteVersion);
+        }
+
+        taskService.completeTask(task.getId(), "文件下载成功", remoteVersion);
+    }
+
     public String getPgVersion() {
-        String html = restTemplate.getForObject("https://github.com/power721/PG/releases/latest", String.class);
-        var m = PG_PATTERN.matcher(html);
-        if (m.find()) {
-            return m.group(1);
+        try {
+            return getRemoteVersion("https://d.har01d.cn/pg.version.txt");
+        } catch (IOException e) {
+            log.warn("getPgVersion IOException", e);
+        }
+        return getGitHubVersion("PG", PG_LATEST_URL, PG_PATTERN);
+    }
+
+    public String getZxVersion() {
+        try {
+            return getRemoteVersion("https://d.har01d.cn/zx.version.txt");
+        } catch (IOException e) {
+            log.warn("getZxVersion IOException", e);
+        }
+        return getGitHubVersion("ZX", ZX_LATEST_URL, ZX_PATTERN);
+    }
+
+    public String getXsVersion() {
+        try {
+            return getRemoteText(deriveVersionUrl(resolveXsSingleUrl()), XS_USER_AGENT).trim();
+        } catch (Exception e) {
+            log.warn("getXsVersion failed", e);
         }
         return "";
     }
 
-    public String getZxVersion() {
-        String html = restTemplate.getForObject("https://github.com/power721/ZX/releases/latest", String.class);
-        var m = ZX_PATTERN.matcher(html);
-        if (m.find()) {
-            return m.group(1);
+    private String getXsDownloadUrl() throws IOException {
+        String json = getRemoteText(resolveXsSingleUrl(), XS_USER_AGENT);
+        var root = objectMapper.readTree(json);
+        for (var section : root) {
+            if ("本地包".equals(section.path("name").asText())) {
+                for (var item : section.path("list")) {
+                    if ("点击下载".equals(item.path("name").asText())) {
+                        String url = item.path("url").asText();
+                        if (!url.isEmpty()) {
+                            return url;
+                        }
+                    }
+                }
+            }
+        }
+        throw new IOException("Cannot find xs download url from single.json");
+    }
+
+    static String deriveVersionUrl(String singleUrl) {
+        int idx = singleUrl.lastIndexOf('/');
+        return (idx >= 0 ? singleUrl.substring(0, idx) : singleUrl) + "/version.txt";
+    }
+
+    static String parseXsSingleUrl(String text) {
+        if (text != null) {
+            for (String line : text.split("\\R")) {
+                String s = line.trim();
+                if (!s.isEmpty()) {
+                    return s;
+                }
+            }
+        }
+        throw new IllegalStateException("xs.txt 内容为空");
+    }
+
+    private String resolveXsSingleUrl() throws IOException {
+        return parseXsSingleUrl(getRemoteText(XS_INDEX_URL, XS_USER_AGENT));
+    }
+
+    private String getGitHubVersion(String name, String url, Pattern pattern) {
+        for (String candidate : getVersionUrls(url)) {
+            try {
+                String html = restTemplate.getForObject(candidate, String.class);
+                if (html == null) {
+                    continue;
+                }
+                var m = pattern.matcher(html);
+                if (m.find()) {
+                    return m.group(1);
+                }
+                log.warn("parse {} version failed from {}", name, candidate);
+            } catch (Exception e) {
+                log.warn("load {} version failed from {}", name, candidate, e);
+            }
         }
         return "";
+    }
+
+    private List<String> getVersionUrls(String url) {
+        List<String> urls = new ArrayList<>();
+        for (String proxy : gitHubProxyService.readProxyListFromFile()) {
+            if (proxy == null || proxy.trim().isEmpty()) {
+                urls.add(url);
+            } else {
+                urls.add(proxy + url);
+            }
+        }
+        if (!urls.contains(url)) {
+            urls.add(url);
+        }
+        return urls;
     }
 
     private List<String> getDownloadUrls(String url) {
         List<String> urls = new ArrayList<>();
-        for (String proxy : GITHUB_PROXY) {
-            urls.add(proxy + url);
+
+        // 从文件读取配置的代理列表（最多 5 个，按优先级排序）
+        List<String> configuredProxies = gitHubProxyService.readProxyListFromFile();
+
+        if (configuredProxies.isEmpty()) {
+            // 如果没有配置，使用默认代理列表作为 fallback
+            log.debug("未配置 GitHub 代理");
+//            for (String proxy : GITHUB_PROXY) {
+//                urls.add(proxy + url);
+//            }
+        } else {
+            // 使用配置的代理列表
+            log.debug("使用配置的 {} 个 GitHub 代理", configuredProxies.size());
+            for (String proxy : configuredProxies) {
+                if (proxy == null || proxy.trim().isEmpty()) {
+                    // 空字符串表示直连
+                    urls.add(url);
+                } else {
+                    urls.add(proxy + url);
+                }
+            }
         }
-        urls.add(url);
+
+        // 最后添加直连作为 fallback
+        if (!urls.contains(url)) {
+            urls.add(url);
+        }
+
         return urls;
     }
 
@@ -318,11 +483,39 @@ public class FileDownloader {
         }
     }
 
+    private String getRemoteText(String url, String userAgent) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(10000);
+        if (userAgent != null && !userAgent.isEmpty()) {
+            conn.setRequestProperty("User-Agent", userAgent);
+        }
+
+        try (BufferedReader in = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = in.readLine()) != null) {
+                sb.append(line).append('\n');
+            }
+            return sb.toString();
+        } finally {
+            conn.disconnect();
+        }
+    }
+
     private void downloadFile(String fileUrl, Path destination) throws IOException {
+        downloadFile(fileUrl, destination, null);
+    }
+
+    private void downloadFile(String fileUrl, Path destination, String userAgent) throws IOException {
         log.info("download file: {}", fileUrl);
         HttpURLConnection conn = (HttpURLConnection) new URL(fileUrl).openConnection();
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(30000);
+        if (userAgent != null && !userAgent.isEmpty()) {
+            conn.setRequestProperty("User-Agent", userAgent);
+        }
 
         try (InputStream in = new BufferedInputStream(conn.getInputStream());
              FileOutputStream out = new FileOutputStream(destination.toFile())) {

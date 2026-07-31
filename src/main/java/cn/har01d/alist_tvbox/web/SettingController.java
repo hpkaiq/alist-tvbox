@@ -1,6 +1,11 @@
 package cn.har01d.alist_tvbox.web;
 
+import cn.har01d.alist_tvbox.dto.GitHubProxyBenchmarkRequest;
+import cn.har01d.alist_tvbox.dto.GitHubProxyNode;
+import cn.har01d.alist_tvbox.dto.backup.BackupRestoreMode;
+import cn.har01d.alist_tvbox.dto.backup.BackupRestoreResponse;
 import cn.har01d.alist_tvbox.entity.Setting;
+import cn.har01d.alist_tvbox.service.GitHubProxyService;
 import cn.har01d.alist_tvbox.service.SettingService;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,19 +19,27 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api/settings")
 public class SettingController {
-    private final SettingService service;
+    private static final DateTimeFormatter BACKUP_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss");
 
-    public SettingController(SettingService service) {
+    private final SettingService service;
+    private final GitHubProxyService gitHubProxyService;
+
+    public SettingController(SettingService service, GitHubProxyService gitHubProxyService) {
         this.service = service;
+        this.gitHubProxyService = gitHubProxyService;
     }
 
     @GetMapping
@@ -58,9 +71,103 @@ public class SettingController {
 
     @GetMapping("/export")
     public FileSystemResource exportDatabase(HttpServletResponse response) throws IOException {
-        response.addHeader("Content-Disposition", "attachment; filename=\"database-" + LocalDate.now() + ".zip\"");
+        response.addHeader("Content-Disposition", "attachment; filename=\"database-" + LocalDateTime.now().format(BACKUP_FMT) + ".zip\"");
         response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
         return service.exportDatabase();
+    }
+
+    @GetMapping("/export-json")
+    public FileSystemResource exportJsonDatabase(HttpServletResponse response) throws Exception {
+        response.addHeader("Content-Disposition", "attachment; filename=\"database-json-" + LocalDateTime.now().format(BACKUP_FMT) + ".zip\"");
+        response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
+        return service.exportJsonDatabase();
+    }
+
+    @PostMapping("/import-json")
+    public BackupRestoreResponse importJsonDatabase(@RequestParam("file") MultipartFile file,
+                                                    @RequestParam(name = "mode", defaultValue = "OVERWRITE") BackupRestoreMode mode) throws Exception {
+        return service.importJsonDatabase(file, mode);
+    }
+
+    /**
+     * 获取预设的 GitHub 代理节点列表
+     */
+    @GetMapping("/github-proxy/nodes")
+    public List<GitHubProxyNode> getGitHubProxyNodes() {
+        return gitHubProxyService.getDefaultNodes();
+    }
+
+    /**
+     * 并发测速多个 GitHub 代理节点（5线程）- 同步版本
+     */
+    @PostMapping("/github-proxy/benchmark")
+    public List<GitHubProxyNode> benchmarkGitHubProxyNodes(@RequestBody GitHubProxyBenchmarkRequest request) {
+        return gitHubProxyService.benchmarkNodes(request.getUrls());
+    }
+
+    /**
+     * 启动异步测速任务（实时更新）
+     */
+    @PostMapping("/github-proxy/benchmark/start")
+    public Map<String, Object> startBenchmark(@RequestBody GitHubProxyBenchmarkRequest request) {
+        gitHubProxyService.benchmarkNodesAsync(request.getUrls());
+        return Map.of("success", true, "message", "测速任务已启动");
+    }
+
+    /**
+     * 获取测速结果（实时更新）
+     */
+    @GetMapping("/github-proxy/benchmark/results")
+    public Map<String, Object> getBenchmarkResults() {
+        return Map.of(
+            "results", gitHubProxyService.getBenchmarkResults(),
+            "isRunning", gitHubProxyService.isBenchmarking()
+        );
+    }
+
+    /**
+     * 获取已配置的 GitHub 代理列表
+     */
+    @GetMapping("/github-proxy/list")
+    public List<String> getGitHubProxyList() {
+        return gitHubProxyService.readProxyListFromFile();
+    }
+
+    /**
+     * 保存 GitHub 代理列表（最多 5 个）
+     */
+    @PostMapping("/github-proxy/list")
+    public Map<String, Object> saveGitHubProxyList(@RequestBody List<String> proxyList) throws IOException {
+        gitHubProxyService.saveProxyListToFile(proxyList);
+        return Map.of("success", true, "count", Math.min(proxyList.size(), 5));
+    }
+
+    /**
+     * 获取用户自定义的 GitHub 代理节点列表
+     */
+    @GetMapping("/github-proxy/custom-nodes")
+    public List<String> getCustomNodes() {
+        Setting setting = service.get("github_custom_nodes");
+        if (setting == null || setting.getValue() == null || setting.getValue().isEmpty()) {
+            return List.of();
+        }
+        return List.of(setting.getValue().split("\n"));
+    }
+
+    /**
+     * 保存用户自定义的 GitHub 代理节点列表
+     */
+    @PostMapping("/github-proxy/custom-nodes")
+    public Map<String, Object> saveCustomNodes(@RequestBody List<String> nodes) {
+        String value = String.join("\n", nodes);
+        Setting setting = service.get("github_custom_nodes");
+        if (setting == null) {
+            setting = new Setting();
+            setting.setName("github_custom_nodes");
+        }
+        setting.setValue(value);
+        service.update(setting);
+        return Map.of("success", true, "count", nodes.size());
     }
 
 }

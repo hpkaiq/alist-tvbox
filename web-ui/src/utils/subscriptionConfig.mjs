@@ -16,12 +16,23 @@ export function stringify(config) {
   return JSON.stringify(config)
 }
 
+// 返回 obj 中不在 modeledKeys 内的所有键 (raw 透传袋)
+export function pickExtra(obj, modeledKeys) {
+  const extra = {}
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return extra
+  const set = new Set(modeledKeys)
+  for (const k of Object.keys(obj)) {
+    if (!set.has(k)) extra[k] = obj[k]
+  }
+  return extra
+}
+
 export function detectFilterMode(config) {
   const wl = config['sites-whitelist']
-  if (Array.isArray(wl) && wl.length) return 'whitelist'
+  if (Array.isArray(wl) && (wl.length > 0)) return 'whitelist'
   const bl = config.blacklist
   const legacy = config['sites-blacklist']
-  if ((Array.isArray(legacy) && legacy.length) || (bl && Array.isArray(bl.sites) && bl.sites.length)) return 'blacklist'
+  if ((Array.isArray(legacy) && (legacy.length > 0)) || (bl && Array.isArray(bl.sites) && bl.sites.length)) return 'blacklist'
   return 'none'
 }
 
@@ -46,7 +57,8 @@ export function siteOverrideMap(config) {
   if (Array.isArray(config.sites)) {
     for (const s of config.sites) {
       if (s && s.key != null) {
-        map[String(s.key)] = { ...s }
+        const { key, ...override } = s
+        map[String(key)] = override
       }
     }
   }
@@ -60,17 +72,23 @@ export function customSites(config, catalogKeys) {
   return config.sites.filter((s) => s && s.key != null && !set.has(String(s.key)))
 }
 
-const CUSTOM_SITE_KEYS = [
-  'key', 'name', 'type', 'api', 'ext', 'jar', 'searchable', 'quickSearch',
-  'filterable', 'changeable', 'indexs', 'timeout', 'order', 'style',
-  'categories', 'header', 'playUrl', 'click',
-]
+const SITE_INTERNAL_KEYS = new Set([
+  'isCustom', 'origin', 'enabled', 'originalName', 'hadNameOverride',
+  'hasAdvancedOverride', 'styleType', 'styleRatio', '_extra',
+])
 
+// 自定义站点:发射除内部 UI 键外的所有非空键 (保留 homePage/hide/extensions 等全部业务字段)
 function buildCustomSite(row) {
   const s = {}
-  for (const k of CUSTOM_SITE_KEYS) {
+  for (const k of Object.keys(row)) {
+    if (SITE_INTERNAL_KEYS.has(k)) continue
     const v = row[k]
     if (v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)) continue
+    if (k === 'order') {
+      const n = Number(v)
+      if (Number.isFinite(n)) s[k] = n
+      continue
+    }
     s[k] = v
   }
   return s
@@ -85,6 +103,7 @@ export function buildHeaderRows(config) {
       pairs: h.header && typeof h.header === 'object'
         ? Object.entries(h.header).map(([name, value]) => ({ name, value: String(value) }))
         : [],
+      _extra: pickExtra(h, ['host', 'header']),
     }))
 }
 
@@ -93,11 +112,10 @@ function buildHeaderItem(row) {
   for (const p of row.pairs || []) {
     if (p.name) header[p.name] = p.value || ''
   }
-  if (!row.host && !Object.keys(header).length) return null
-  const item = {}
+  const item = { ...(row._extra || {}) }
   if (row.host) item.host = row.host
-  if (Object.keys(header).length) item.header = header
-  return item
+  if (Object.keys(header).length > 0) item.header = header
+  return (Object.keys(item).length > 0) ? item : null
 }
 
 // --- Live helpers ---
@@ -107,6 +125,7 @@ function normalizeGroup(g) {
     name: g.name || '',
     pass: g.pass ?? 0,
     channels: Array.isArray(g.channel) ? g.channel.map(normalizeChannel) : [],
+    _extra: pickExtra(g, ['name', 'pass', 'channel']),
   }
 }
 
@@ -128,6 +147,7 @@ function normalizeChannel(c) {
     header: c.header && typeof c.header === 'object' ? { ...c.header } : {},
     catchup: c.catchup || null,
     drm: c.drm || null,
+    _extra: pickExtra(c, CHANNEL_KEYS),
   }
 }
 
@@ -156,6 +176,7 @@ export function buildLiveRows(config) {
       boot: l.boot ?? 0,
       pass: l.pass ?? 0,
       groups: Array.isArray(l.groups) ? l.groups.map(normalizeGroup) : [],
+      _extra: pickExtra(l, LIVE_KEYS),
     }))
 }
 
@@ -171,32 +192,32 @@ const CHANNEL_KEYS = [
 ]
 
 function buildChannelItem(c) {
-  const item = {}
+  const item = { ...(c._extra || {}) }
   for (const k of CHANNEL_KEYS) {
     if (k === 'header') {
-      if (c.header && typeof c.header === 'object' && Object.keys(c.header).length) item.header = { ...c.header }
+      if (c.header && typeof c.header === 'object' && (Object.keys(c.header).length > 0)) item.header = { ...c.header }
       continue
     }
     if (k === 'catchup' || k === 'drm') {
-      if (c[k] && typeof c[k] === 'object' && Object.keys(c[k]).length) item[k] = { ...c[k] }
+      if (c[k] && typeof c[k] === 'object' && (Object.keys(c[k]).length > 0)) item[k] = { ...c[k] }
       continue
     }
     const v = c[k]
-    if (v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length)) continue
+    if (v === undefined || v === null || v === '' || (Array.isArray(v) && (v.length === 0))) continue
     item[k] = v
   }
-  return Object.keys(item).length ? item : null
+  return (Object.keys(item).length > 0) ? item : null
 }
 
 function buildGroupsArray(groups) {
   if (!Array.isArray(groups)) return []
   return groups.map((g) => {
-    const item = {}
+    const item = { ...(g._extra || {}) }
     if (g.name) item.name = g.name
     if (g.pass) item.pass = g.pass
     const channels = buildChannelsArray(g.channels)
-    if (channels.length) item.channel = channels
-    return Object.keys(item).length ? item : null
+    if (channels.length > 0) item.channel = channels
+    return (Object.keys(item).length > 0) ? item : null
   }).filter(Boolean)
 }
 
@@ -207,21 +228,21 @@ function buildChannelsArray(channels) {
 
 function buildLiveItem(row) {
   if (!row.name && !row.url && !row.api) return null
-  const item = {}
+  const item = { ...(row._extra || {}) }
   for (const k of LIVE_KEYS) {
     if (k === 'groups') {
       const groups = buildGroupsArray(row.groups)
-      if (groups.length) item.groups = groups
+      if (groups.length > 0) item.groups = groups
       continue
     }
     if (k === 'header') {
-      if (row.header && typeof row.header === 'object' && Object.keys(row.header).length) {
+      if (row.header && typeof row.header === 'object' && (Object.keys(row.header).length > 0)) {
         item.header = { ...row.header }
       }
       continue
     }
     if (k === 'catchup') {
-      if (row.catchup && typeof row.catchup === 'object' && Object.keys(row.catchup).length) {
+      if (row.catchup && typeof row.catchup === 'object' && (Object.keys(row.catchup).length > 0)) {
         item.catchup = { ...row.catchup }
       }
       continue
@@ -230,19 +251,19 @@ function buildLiveItem(row) {
     if (v === undefined || v === null || v === '') continue
     item[k] = v
   }
-  return Object.keys(item).length ? item : null
+  return (Object.keys(item).length > 0) ? item : null
 }
 
 // --- Parse helpers ---
 
 function buildCustomParse(row) {
-  const p = { name: row.name }
+  const p = { ...(row._extra || {}), name: row.name }
   if (row.type != null && row.type !== '') p.type = Number(row.type)
   if (row.url) p.url = row.url
   const ext = {}
   if (Array.isArray(row.flag) && row.flag.length) ext.flag = row.flag
-  if (row.header && Object.keys(row.header).length) ext.header = row.header
-  if (Object.keys(ext).length) p.ext = ext
+  if (row.header && (Object.keys(row.header).length > 0)) ext.header = row.header
+  if (Object.keys(ext).length > 0) p.ext = ext
   return p
 }
 
@@ -256,6 +277,7 @@ export function buildDohRows(config) {
       name: d.name || '',
       url: d.url || '',
       ips: Array.isArray(d.ips) ? [...d.ips] : [],
+      _extra: pickExtra(d, ['name', 'url', 'ips']),
     }))
 }
 
@@ -267,6 +289,7 @@ export function buildProxyRows(config) {
       name: p.name || '',
       hosts: Array.isArray(p.hosts) ? [...p.hosts] : [],
       urls: Array.isArray(p.urls) ? [...p.urls] : [],
+      _extra: pickExtra(p, ['name', 'hosts', 'urls']),
     }))
 }
 
@@ -280,6 +303,7 @@ export function buildRulesRows(config) {
       regex: Array.isArray(r.regex) ? [...r.regex] : [],
       script: Array.isArray(r.script) ? [...r.script] : [],
       exclude: Array.isArray(r.exclude) ? [...r.exclude] : [],
+      _extra: pickExtra(r, ['name', 'hosts', 'regex', 'script', 'exclude']),
     }))
 }
 
@@ -291,14 +315,14 @@ function setOrDelete(config, key, value) {
 }
 
 function setArrOrDelete(config, key, value) {
-  if (Array.isArray(value) && value.length) config[key] = value
+  if (Array.isArray(value) && (value.length > 0)) config[key] = value
   else delete config[key]
 }
 
 // 把编辑器状态写回 config(保留未建模键)
 const ADVANCED_OVERRIDE_KEYS = [
   'ext', 'searchable', 'quickSearch', 'filterable', 'changeable',
-  'style', 'timeout', 'indexs', 'playUrl', 'click', 'categories', 'header',
+  'style', 'timeout', 'indexs', 'playUrl', 'click', 'categories', 'header', 'homePage',
 ]
 
 function buildAdvancedOverride(row) {
@@ -320,12 +344,12 @@ export function serialize(baseConfig, state) {
     if (row.isCustom) {
       sites.push(buildCustomSite(row))
     } else {
-      const o = {}
+      const o = { ...(row._extra || {}) }
       if (row.name && row.name !== row.originalName) o.name = row.name
       else if (row.hadNameOverride && row.name) o.name = row.name
       if (row.order !== '' && row.order !== null && row.order !== undefined) o.order = Number(row.order)
       if (row.hasAdvancedOverride) Object.assign(o, buildAdvancedOverride(row))
-      if (Object.keys(o).length) {
+      if (Object.keys(o).length > 0) {
         o.key = row.key
         sites.push(o)
       }
@@ -353,7 +377,7 @@ export function serialize(baseConfig, state) {
   if (disabledParses.length) blacklist.parses = disabledParses
   else delete blacklist.parses
 
-  if (Object.keys(blacklist).length) config.blacklist = blacklist
+  if (Object.keys(blacklist).length > 0) config.blacklist = blacklist
   else delete config.blacklist
 
   // 自定义解析
@@ -377,7 +401,7 @@ export function serialize(baseConfig, state) {
 
   // doh
   const doh = state.doh.filter((d) => d.name || d.url).map((d) => {
-    const item = {}
+    const item = { ...(d._extra || {}) }
     if (d.name) item.name = d.name
     if (d.url) item.url = d.url
     if (Array.isArray(d.ips) && d.ips.length) item.ips = [...d.ips]
@@ -387,7 +411,7 @@ export function serialize(baseConfig, state) {
 
   // proxy
   const proxyItems = state.proxy.filter((p) => p.name || p.hosts.length || p.urls.length).map((p) => {
-    const item = {}
+    const item = { ...(p._extra || {}) }
     if (p.name) item.name = p.name
     if (p.hosts.length) item.hosts = [...p.hosts]
     if (p.urls.length) item.urls = [...p.urls]
@@ -397,7 +421,7 @@ export function serialize(baseConfig, state) {
 
   // rules
   const rules = state.rules.filter((r) => r.name || r.hosts.length || r.regex.length).map((r) => {
-    const item = {}
+    const item = { ...(r._extra || {}) }
     if (r.name) item.name = r.name
     if (r.hosts.length) item.hosts = [...r.hosts]
     if (r.regex.length) item.regex = [...r.regex]

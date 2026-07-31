@@ -4,11 +4,16 @@ import cn.har01d.alist_tvbox.auth.TokenService;
 import cn.har01d.alist_tvbox.auth.UserToken;
 import cn.har01d.alist_tvbox.domain.Role;
 import cn.har01d.alist_tvbox.dto.UserDto;
+import cn.har01d.alist_tvbox.dto.SessionDto;
+import cn.har01d.alist_tvbox.entity.Session;
 import cn.har01d.alist_tvbox.entity.SessionRepository;
 import cn.har01d.alist_tvbox.entity.User;
 import cn.har01d.alist_tvbox.entity.UserRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
+import cn.har01d.alist_tvbox.exception.UserUnauthorizedException;
+import cn.har01d.alist_tvbox.service.backup.RestoreState;
+import cn.har01d.alist_tvbox.util.UserAgentParser;
 import cn.har01d.alist_tvbox.util.Utils;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -37,11 +43,18 @@ public class UserService {
     private final SessionRepository sessionRepository;
     private final PasswordEncoder passwordEncoder;
     private final TokenService tokenService;
+    private final RestoreState restoreState;
+    private final JdbcTemplate jdbcTemplate;
 
     private final Set<String> usernames = new HashSet<>();
 
     @PostConstruct
     public void init() {
+        if (restoreState.shouldSkipInitializationWrites()) {
+            log.info("Skip user initialization during startup JSON restore");
+            return;
+        }
+        ensureAdminOccupiesIdOne();
         try {
             initializeAdminUser();
         } catch (Exception e) {
@@ -51,6 +64,29 @@ public class UserService {
 
         fixUserRole();
         loadUsernames();
+    }
+
+    /**
+     * Guarantee the admin occupies id=1. The IDENTITY-backed {@link User} id cannot be preserved across a
+     * JSON restore (the handler falls back to DB auto-increment), so a restored admin may land at id≠1.
+     * {@code initializeAdminUser}/{@code resetAdminPassword}/{@code delete} all key on id=1, and a missing
+     * id=1 makes {@code createNewAdmin()} fire every boot — silently producing duplicate {@code admin}
+     * rows (no unique constraint) that crash {@code findByUsername} on login. If id=1 is empty but an
+     * ADMIN exists elsewhere, move the lowest-id admin into id=1 via native SQL. Idempotent; no-op on a
+     * fresh DB (no admin yet — {@code createNewAdmin} then seeds id=1 naturally).
+     */
+    public void ensureAdminOccupiesIdOne() {
+        if (userRepository.findById(1).isPresent()) {
+            return;
+        }
+        userRepository.findFirstByRoleOrderByIdAsc(Role.ADMIN).ifPresent(admin -> {
+            Integer oldId = admin.getId();
+            if (oldId == null || oldId == 1) {
+                return;
+            }
+            log.warn("Moving admin user from id={} to id=1 to restore the id=1 invariant", oldId);
+            jdbcTemplate.update("update x_user set id = 1 where id = ?", oldId);
+        });
     }
 
     private void fixUserRole() {
@@ -146,9 +182,41 @@ public class UserService {
         }
     }
 
-    public UserToken generateToken(User user) {
+    public List<SessionDto> listSessions(String currentToken) {
+        String username = SecurityContextHolder.getContext().getAuthentication().getPrincipal().toString();
+        return sessionRepository.findAllByUsername(username).stream()
+                .map(s -> toDto(s, currentToken))
+                .toList();
+    }
+
+    public void revokeSession(int id) {
+        String username = SecurityContextHolder.getContext().getAuthentication().getPrincipal().toString();
+        Session session = sessionRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("会话不存在"));
+        if (!username.equals(session.getUsername())) {
+            throw new UserUnauthorizedException("无权操作该会话", 40301);
+        }
+        sessionRepository.delete(session);
+    }
+
+    private SessionDto toDto(Session s, String currentToken) {
+        SessionDto dto = new SessionDto();
+        dto.setId(s.getId());
+        dto.setUsername(s.getUsername());
+        dto.setRole(s.getRole());
+        dto.setLoginIp(s.getLoginIp());
+        dto.setUserAgent(s.getUserAgent());
+        dto.setBrowser(UserAgentParser.parseBrowser(s.getUserAgent()));
+        dto.setOs(UserAgentParser.parseOs(s.getUserAgent()));
+        dto.setLoginTime(s.getCreateTime());
+        dto.setExpireTime(s.getExpireTime());
+        dto.setCurrent(currentToken != null && currentToken.equals(s.getToken()));
+        return dto;
+    }
+
+    public UserToken generateToken(User user, String loginIp, String userAgent) {
         var authorities = List.of(new SimpleGrantedAuthority(user.getRole().name()));
-        String token = tokenService.encodeToken(user.getId(), user.getUsername(), user.getRole().name());
+        String token = tokenService.encodeToken(user.getId(), user.getUsername(), user.getRole().name(), loginIp, userAgent);
         return new UserToken(user.getId(), user.getUsername(), authorities, token);
     }
 
@@ -217,7 +285,7 @@ public class UserService {
         loadUsernames();
     }
 
-    public UserToken updateAccount(UserDto dto) {
+    public UserToken updateAccount(UserDto dto, String loginIp, String userAgent) {
         String username = SecurityContextHolder.getContext().getAuthentication().getPrincipal().toString();
         User user = userRepository.findByUsername(username);
         if (user == null) {
@@ -245,6 +313,6 @@ public class UserService {
         userRepository.save(user);
         usernames.remove(username);
         usernames.add(user.getUsername());
-        return generateToken(user);
+        return generateToken(user, loginIp, userAgent);
     }
 }

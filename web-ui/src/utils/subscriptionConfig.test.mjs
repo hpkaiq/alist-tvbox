@@ -9,6 +9,7 @@ import {
   siteOverrideMap,
   serialize,
   stringify,
+  pickExtra,
   buildHeaderRows,
   buildLiveRows,
   buildDohRows,
@@ -118,6 +119,17 @@ test('serialize: upstream rename + order emit sites partial; custom site full', 
   assert.equal(custom.api, 'csp_X')
   assert.equal(out.wallpaper, 'http://w')
   assert.deepEqual(out.flags, ['x'])
+})
+
+test('serialize: custom site order is written as number', () => {
+  const state = {
+    ...defaultState(),
+    sites: [
+      { key: 'mine', origin: 'custom', enabled: true, isCustom: true, name: '自定义', type: 3, api: 'csp_X', order: '12' },
+    ],
+  }
+  const out = serialize({}, state)
+  assert.equal(out.sites[0].order, 12)
 })
 
 test('stringify: empty object -> empty string', () => {
@@ -355,4 +367,109 @@ test('serialize: empty doh/proxy/rules/hosts are deleted', () => {
   assert.equal(out.proxy, undefined)
   assert.equal(out.rules, undefined)
   assert.equal(out.hosts, undefined)
+})
+
+test('pickExtra: returns unmodeled keys only', () => {
+  assert.deepEqual(pickExtra({ a: 1, b: 2, c: 3 }, ['a', 'c']), { b: 2 })
+  assert.deepEqual(pickExtra({}, ['a']), {})
+  assert.deepEqual(pickExtra(null, ['a']), {})
+  assert.deepEqual(pickExtra([1, 2], ['a']), {})
+})
+
+test('serialize: custom site preserves unknown fields + homePage, no internal leak', () => {
+  const state = {
+    ...defaultState(),
+    sites: [{
+      key: 'mine', origin: 'custom', enabled: true, isCustom: true,
+      name: '自定义', type: 3, api: 'csp_X',
+      homePage: 'http://h/6v.html', hide: 1, extensions: { a: 1 },
+      originalName: '自定义', styleType: '', styleRatio: '',
+    }],
+  }
+  const out = serialize({}, state)
+  const s = out.sites.find((x) => x.key === 'mine')
+  assert.equal(s.homePage, 'http://h/6v.html')
+  assert.equal(s.hide, 1)
+  assert.deepEqual(s.extensions, { a: 1 })
+  assert.equal(s.styleType, undefined)
+  assert.equal(s.isCustom, undefined)
+  assert.equal(s.enabled, undefined)
+})
+
+test('serialize: non-custom site preserves _extra and emits homePage', () => {
+  const state = {
+    ...defaultState(),
+    sites: [{
+      key: 'a', origin: 'upstream', enabled: true, isCustom: false,
+      name: 'A', originalName: 'A', order: '',
+      _extra: { hide: 1, extensions: { x: 1 } },
+      hasAdvancedOverride: true, homePage: 'http://h/6v.html', searchable: 1,
+    }],
+  }
+  const out = serialize({}, state)
+  const s = out.sites.find((x) => x.key === 'a')
+  assert.equal(s.homePage, 'http://h/6v.html')
+  assert.equal(s.hide, 1)
+  assert.deepEqual(s.extensions, { x: 1 })
+})
+
+test('serialize: non-custom site with only _extra is still emitted', () => {
+  const state = {
+    ...defaultState(),
+    sites: [{
+      key: 'b', origin: 'builtin', enabled: true, isCustom: false,
+      name: 'B', originalName: 'B', order: '', _extra: { hide: 1 },
+    }],
+  }
+  const out = serialize({}, state)
+  assert.equal(out.sites.find((x) => x.key === 'b').hide, 1)
+})
+
+test('serialize: custom parse preserves _extra', () => {
+  const out = serialize({}, { ...defaultState(), parses: [
+    { name: 'p', isCustom: true, enabled: true, type: 0, url: 'http://u', flag: [], header: {}, _extra: { ext2: 'x' } },
+  ] })
+  assert.equal(out.parses[0].ext2, 'x')
+  assert.equal(out.parses[0].name, 'p')
+})
+
+test('headers round-trip unknown fields', () => {
+  const rows = buildHeaderRows({ headers: [{ host: 'a.com', header: { X: '1' }, timeout: 5 }] })
+  assert.equal(rows[0]._extra.timeout, 5)
+  const out = serialize({}, { ...defaultState(), headers: rows })
+  assert.equal(out.headers[0].timeout, 5)
+  assert.equal(out.headers[0].host, 'a.com')
+})
+
+test('doh round-trip unknown fields', () => {
+  const rows = buildDohRows({ doh: [{ name: 'G', url: 'u', ips: [], remark: 'r' }] })
+  assert.equal(rows[0]._extra.remark, 'r')
+  const out = serialize({}, { ...defaultState(), doh: rows })
+  assert.equal(out.doh[0].remark, 'r')
+})
+
+test('proxy round-trip unknown fields', () => {
+  const rows = buildProxyRows({ proxy: [{ name: 'P', hosts: ['x.com'], urls: [], remark: 'r' }] })
+  const out = serialize({}, { ...defaultState(), proxy: rows })
+  assert.equal(out.proxy[0].remark, 'r')
+})
+
+test('rules round-trip unknown fields', () => {
+  const rows = buildRulesRows({ rules: [{ name: 'R', hosts: [], regex: [], script: [], exclude: [], enabled: true }] })
+  const out = serialize({}, { ...defaultState(), rules: rows })
+  assert.equal(out.rules[0].enabled, true)
+})
+
+test('lives preserve unknown live/group/channel fields', () => {
+  const rows = buildLiveRows({ lives: [{
+    name: 'L', url: './live.json', customField: 'lf',
+    groups: [{ name: 'G', gExtra: 1, channel: [{ name: 'C', urls: ['u'], cExtra: 2 }] }],
+  }] })
+  assert.equal(rows[0]._extra.customField, 'lf')
+  assert.equal(rows[0].groups[0]._extra.gExtra, 1)
+  assert.equal(rows[0].groups[0].channels[0]._extra.cExtra, 2)
+  const out = serialize({}, { ...defaultState(), lives: rows })
+  assert.equal(out.lives[0].customField, 'lf')
+  assert.equal(out.lives[0].groups[0].gExtra, 1)
+  assert.equal(out.lives[0].groups[0].channel[0].cExtra, 2)
 })

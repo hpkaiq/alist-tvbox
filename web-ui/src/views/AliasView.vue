@@ -1,13 +1,16 @@
 <template>
-  <div class="files">
-    <h1>别名列表</h1>
-    <el-row justify="end">
-      <el-button @click="load">刷新</el-button>
-      <el-button type="primary" @click="handleAdd">添加</el-button>
-    </el-row>
-    <div class="space"></div>
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">别名列表</h1>
+      <div class="page-actions">
+        <el-button @click="load">刷新</el-button>
+        <el-button type="primary" @click="handleAdd">添加</el-button>
+      </div>
+    </div>
 
-    <el-table :data="files" border style="width: 100%">
+    <div class="page-card">
+    <div class="table-scroll-wrapper">
+    <el-table :data="files" border style="width: 100%; min-width: 600px">
       <el-table-column prop="id" label="ID" width="70"/>
       <el-table-column prop="path" label="挂载路径"/>
       <el-table-column fixed="right" label="操作" width="200">
@@ -17,6 +20,9 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
+    </div>
+  </div>
 
     <el-dialog v-model="formVisible" :fullscreen="fullscreen" :title="dialogTitle">
       <el-form :model="form">
@@ -46,7 +52,6 @@
       </span>
       </template>
     </el-dialog>
-  </div>
 </template>
 
 <script setup lang="ts">

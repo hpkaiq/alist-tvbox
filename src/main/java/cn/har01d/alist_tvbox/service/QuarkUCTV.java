@@ -46,7 +46,7 @@ public class QuarkUCTV {
     public LoginResponse getLoginCode() {
         String pathname = "/oauth/authorize";
 
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromHttpUrl(conf.api + pathname)
+        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(conf.api + pathname)
                 .queryParam("auth_type", "code")
                 .queryParam("client_id", conf.clientID)
                 .queryParam("scope", "netdisk")
@@ -101,7 +101,7 @@ public class QuarkUCTV {
     public String getCode(String queryToken) {
         String pathname = "/oauth/code";
 
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromHttpUrl(conf.api + pathname)
+        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(conf.api + pathname)
                 .queryParam("client_id", conf.clientID)
                 .queryParam("scope", "netdisk")
                 .queryParam("query_token", queryToken);
@@ -147,7 +147,7 @@ public class QuarkUCTV {
         String[] reqSign = generateReqSign("POST", pathname, conf.signKey);
         String reqID = reqSign[2];
 
-        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromHttpUrl(conf.codeApi + pathname);
+        UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(conf.codeApi + pathname);
 
         query(reqSign[2]).forEach(uriBuilder::queryParam);
         String url = uriBuilder.toUriString();
@@ -263,5 +263,8 @@ public class QuarkUCTV {
         private String qrData;
         @JsonProperty("query_token")
         private String queryToken;
+        // 浏览器跳转式授权(如 123 Open 走 oauth 代理)没有二维码,前端改为新标签页打开该链接。
+        @JsonProperty("auth_url")
+        private String authUrl;
     }
 }

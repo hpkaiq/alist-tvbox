@@ -1,6 +1,6 @@
 set -e
 
-BASE_DIR=/opt/alist
+BASE_DIR=/opt/alist-tvbox
 PORT1=4567
 PORT2=5344
 MOUNT=""
@@ -58,7 +58,7 @@ cd target && java -Djarmode=layertools -jar alist-tvbox-1.0.jar extract && cd ..
 #mv application-backup.yaml src/main/resources/application.yaml
 
 export TZ=Asia/Shanghai
-echo $((($(date +%Y) - 2023) * 366 + $(date +%j | sed 's/^0*//'))).$(date +%H%M) > data/version
+echo $(git describe --tags --abbrev=0)-$((($(date +%Y) - 2023) * 366 + $(date +%j | sed 's/^0*//'))).$(date +%H%M) > data/version
 echo "build haroldli/alist-tvbox:latest"
 docker build -f docker/Dockerfile --tag=haroldli/alist-tvbox:latest .
 
@@ -68,7 +68,7 @@ echo -e "\e[36m端口映射：\e[0m $PORT1:4567  $PORT2:5244"
 sudo systemctl stop atv
 
 docker rm -f xiaoya-tvbox alist-tvbox 2>/dev/null
-docker run -d -p $PORT1:4567 -p $PORT2:5244 -e ALIST_PORT=$PORT2 -e INSTALL=new -v "$BASE_DIR":/data -v tvbox-www-static:/www/static -v "$BASE_DIR/alist":/opt/alist/data ${MOUNT} --name=alist-tvbox haroldli/alist-tvbox:latest
+docker run -d -p $PORT1:4567 -p $PORT2:5244 -e ALIST_PORT=$PORT2 -e INSTALL=new -v "$BASE_DIR":/data -v "$BASE_DIR/www-static":/www/static -v "$BASE_DIR/alist":/opt/alist/data ${MOUNT} --name=alist-tvbox haroldli/alist-tvbox:latest
 
 sleep 1
 

@@ -23,11 +23,13 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class SubscriptionSourceService {
     private static final String BUILTIN_SETTINGS_KEY = "builtin_subscription_sources";
     private static final String SORT_ORDER_MIGRATED_KEY = "subscription_source_sort_order_migrated";
+    private static final Set<String> EXTENDABLE_BUILTINS = Set.of("csp_PianDan");
 
     private final AppProperties appProperties;
     private final PluginRepository pluginRepository;
@@ -135,6 +137,7 @@ public class SubscriptionSourceService {
             BuiltinSubscriptionSourceState state = settings.computeIfAbsent(siteKey, ignored -> new BuiltinSubscriptionSourceState());
             state.setName(StringUtils.trimToNull(update.name()));
             state.setEnabled(update.enabled());
+            state.setExtend(StringUtils.trimToNull(update.extend()));
             if (state.getSortOrder() == null || state.getSortOrder() < 1) {
                 state.setSortOrder(definition.defaultSortOrder());
             }
@@ -212,14 +215,22 @@ public class SubscriptionSourceService {
                 state == null || state.getEnabled() == null || state.getEnabled(),
                 state == null || state.getSortOrder() == null || state.getSortOrder() < 1 ? definition.defaultSortOrder() : state.getSortOrder(),
                 null,
-                "",
+                StringUtils.defaultString(state == null ? null : state.getExtend()),
                 "",
                 "",
                 false,
                 false,
-                false
+                EXTENDABLE_BUILTINS.contains(definition.siteKey())
         );
         return new ManagedSourceHolder(source, null);
+    }
+
+    public String getBuiltinExtend(String siteKey) {
+        if (!EXTENDABLE_BUILTINS.contains(siteKey)) {
+            return null;
+        }
+        BuiltinSubscriptionSourceState state = readBuiltinSettings().get(siteKey);
+        return state == null ? null : state.getExtend();
     }
 
     private ManagedSourceHolder buildPluginSource(Plugin plugin) {
@@ -255,6 +266,7 @@ public class SubscriptionSourceService {
     private List<BuiltinDefinition> builtinDefinitions() {
         List<BuiltinDefinition> definitions = new ArrayList<>();
         int order = 1;
+        definitions.add(new BuiltinDefinition("csp_PianDan", "片单导航", order++));
         Site xiaoya = siteRepository.findById(1).orElse(null);
         if (xiaoya != null) {
             definitions.add(new BuiltinDefinition("csp_XiaoYa", xiaoya.getName(), order++));
@@ -278,8 +290,9 @@ public class SubscriptionSourceService {
         definitions.add(new BuiltinDefinition("csp_TgWeb", "电报网页", order++));
         if (StringUtils.isNotBlank(appProperties.getPanSouUrl())) {
             definitions.add(new BuiltinDefinition("csp_FishPanSou", "鱼佬盘搜", order));
+            definitions.add(new BuiltinDefinition("csp_FishPanSouGroup", "盘搜 • 分组", order++));
         }
-        definitions.add(new BuiltinDefinition("csp_Push", "推送", order++));
+        definitions.add(new BuiltinDefinition("csp_Push", "AT推送", order++));
         return definitions;
     }
 

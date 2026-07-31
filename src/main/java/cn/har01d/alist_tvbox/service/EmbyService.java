@@ -29,7 +29,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -117,7 +117,7 @@ public class EmbyService {
         int i = 1;
         List<Emby> list = embyRepository.findAll();
         for (Emby emby : list) {
-            emby.setOrder(i++);
+            emby.setSortOrder(i++);
         }
         embyRepository.saveAll(list);
         settingRepository.save(new Setting("fix_emby_order", "true"));
@@ -153,7 +153,7 @@ public class EmbyService {
 
     public List<Emby> findAll() {
         List<Emby> list = new ArrayList<>(embyRepository.findAll());
-        list.sort(Comparator.comparing(Emby::getOrder));
+        list.sort(Comparator.comparing(Emby::getSortOrder));
         return list;
     }
 

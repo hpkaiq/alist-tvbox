@@ -33,7 +33,7 @@ public class Storage {
 
     public Storage(Site site) {
         this.id = 8000 + site.getId();
-        this.driver = site.getVersion() == 4 ? "OpenList" : "AList V" + site.getVersion();
+        this.driver = site.getStorageVersion() != null && site.getStorageVersion() == 4 ? "OpenList" : "AList V" + site.getStorageVersion();
         this.path = "/\uD83C\uDF8E我的套娃/" + site.getName();
     }
 
@@ -146,6 +146,8 @@ public class Storage {
             return "/我的移动云盘/" + account.getName();
         } else if (account.getType() == DriverType.PAN123) {
             return "/我的123网盘/" + account.getName();
+        } else if (account.getType() == DriverType.OPEN123) {
+            return "/我的123Open/" + account.getName();
         } else if (account.getType() == DriverType.BAIDU) {
             return "/我的百度网盘/" + account.getName();
         } else if (account.getType() == DriverType.GUANGYA) {

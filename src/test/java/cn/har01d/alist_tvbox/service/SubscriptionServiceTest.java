@@ -165,4 +165,76 @@ class SubscriptionServiceTest {
         List<Map<String, Object>> parses = (List<Map<String, Object>>) catalog.get("parses");
         assertThat(parses).extracting(p -> p.get("name")).containsExactly("虾米");
     }
+
+    @Test
+    void rawPythonPluginShouldUsePyProxyLoaderAndLocalProxyInEveryRunMode() {
+        Plugin plugin = new Plugin();
+        plugin.setId(7);
+        plugin.setUrl("https://example.com/demo.py?raw=1");
+        plugin.setExtend("{\"site\":\"demo\"}");
+        Map<String, Object> localProxyConfig = new HashMap<>();
+        localProxyConfig.put("ALI", Map.of("enabled", true));
+
+        Map<String, Object> payload = SubscriptionService.buildPluginExtPayload(
+                plugin, "http://atv", "web", "vod-token", "secret", true, localProxyConfig);
+
+        assertThat(SubscriptionService.selectPluginApi(plugin, true, "http://atv"))
+                .isEqualTo("csp_PyProxy");
+        assertThat(SubscriptionService.selectPluginApi(plugin, false, "http://atv"))
+                .isEqualTo("csp_PyProxy");
+        assertThat(payload)
+                .containsEntry("loader", "http://atv/Atvp.py")
+                .containsEntry("source", "http://atv/plugins/web/7.py")
+                .containsEntry("raw", true)
+                .containsEntry("api", "http://atv")
+                .containsEntry("token", "vod-token")
+                .containsEntry("secret", "secret")
+                .containsEntry("data", "{\"site\":\"demo\"}")
+                .containsEntry("local_proxy_config", localProxyConfig);
+        assertThat(payload.get("loader")).isNotEqualTo("http://atv/plugins/web/7.py");
+    }
+
+    @Test
+    void encryptedTxtPluginShouldKeepSourceAndNativePythonModeBehavior() {
+        Plugin plugin = new Plugin();
+        plugin.setId(8);
+        plugin.setUrl("https://example.com/demo.txt");
+        Map<String, Object> localProxyConfig = new HashMap<>();
+        localProxyConfig.put("ALI", Map.of("enabled", true));
+
+        Map<String, Object> payload = SubscriptionService.buildPluginExtPayload(
+                plugin, "http://atv", "web", "", "secret", true, localProxyConfig);
+
+        assertThat(SubscriptionService.selectPluginApi(plugin, true, "http://atv"))
+                .isEqualTo("http://atv/Atvp.py");
+        assertThat(SubscriptionService.selectPluginApi(plugin, false, "http://atv"))
+                .isEqualTo("csp_PyProxy");
+        assertThat(payload)
+                .containsEntry("source", "http://atv/plugins/web/8.txt")
+                .containsEntry("token", "-")
+                .doesNotContainKey("loader");
+        assertThat(payload.get("local_proxy_config"))
+                .isEqualTo(new HashMap<>());
+
+        Map<String, Object> javaPayload = SubscriptionService.buildPluginExtPayload(
+                plugin, "http://atv", "web", "", "secret", false, localProxyConfig);
+        assertThat(javaPayload.get("local_proxy_config")).isEqualTo(localProxyConfig);
+    }
+
+    @Test
+    void pianDanBuiltinAlwaysKeepsIndexNavigationCapabilities() {
+        Map<String, Object> site = new HashMap<>();
+        site.put("indexs", 0);
+        site.put("searchable", 1);
+        site.put("quickSearch", 1);
+        site.put("filterable", 0);
+
+        SubscriptionService.applyBuiltinSiteCapabilities("csp_PianDan", true, site);
+
+        assertThat(site)
+                .containsEntry("indexs", 1)
+                .containsEntry("searchable", 0)
+                .containsEntry("quickSearch", 0)
+                .containsEntry("filterable", 1);
+    }
 }

@@ -11,7 +11,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
-import org.hibernate.annotations.Where;
+import org.hibernate.annotations.SQLRestriction;
 
 import java.time.Instant;
 
@@ -21,15 +21,16 @@ import java.time.Instant;
 @RequiredArgsConstructor
 @Entity
 @TableGenerator(name = "tableGenerator", table = "id_generator", pkColumnName = "entity_name", valueColumnName = "next_id", allocationSize = 1)
-@Where(clause = "disabled = false")
+@SQLRestriction("disabled = false")
 public class Meta {
     @Id
     @GeneratedValue(strategy = GenerationType.TABLE, generator = "tableGenerator")
     private Integer id;
-    @Column(unique = true)
+    @Column(length = 1024, unique = true)
     private String path;
+    @Column(length = 512)
     private String name;
-    @Column(name = "`year`")
+    @Column(name = "\"year\"")
     private Integer year;
     private Integer score;
     @ManyToOne

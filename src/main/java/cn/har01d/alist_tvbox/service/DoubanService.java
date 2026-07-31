@@ -19,6 +19,7 @@ import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.util.Constants;
+import cn.har01d.alist_tvbox.util.H2SqlConverter;
 import cn.har01d.alist_tvbox.util.TextUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,7 +35,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.env.Environment;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -42,7 +43,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
@@ -70,12 +70,15 @@ import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
 @Slf4j
 @Service
 public class DoubanService {
+    private static final int BATCH_SIZE = 1000;
     private static final Pattern NUMBER = Pattern.compile("Season (\\d{1,2})");
     private static final Pattern NUMBER2 = Pattern.compile("SE(\\d{1,2})");
     private static final Pattern NUMBER3 = Pattern.compile("^S(\\d{1,2})$");
     private static final Pattern NUMBER1 = Pattern.compile("第(\\d{1,2})季");
     private static final Pattern YEAR_PATTERN = Pattern.compile("\\((\\d{4})\\)");
     private static final Pattern YEAR2_PATTERN = Pattern.compile("(\\d{4})");
+    // matches a whole string that is only a season marker (第一季, 第3季, Season 1, S01)
+    private static final Pattern SEASON_ONLY = Pattern.compile("^第[0-9一二三四五六七八九十百零两]+季$|^Season\\s+\\d{1,2}$|^S\\d{1,2}$|^SE\\d{1,2}$");
     private static final String DB_PREFIX = "https://movie.douban.com/subject/";
     private static final String[] tokens = new String[]{"导演:", "编剧:", "主演:", "类型:", "制片国家/地区:", "语言:", "上映日期:",
             "片长:", "又名:", "IMDb链接:", "官方网站:", "官方小站:", "首播:", "季数:", "集数:", "单集片长:"};
@@ -154,7 +157,7 @@ public class DoubanService {
                 }
 
                 log.debug("reset data.sql");
-                writeText("data.sql", "SELECT COUNT(*) FROM META;");
+                writeText("data.sql", "SELECT 1;");
             }
         }
 
@@ -210,7 +213,6 @@ public class DoubanService {
         return list.size();
     }
 
-    @Scheduled(cron = "0 0 20,22 * * ?")
     public void update() {
         getRemoteVersion(new Versions());
     }
@@ -289,13 +291,32 @@ public class DoubanService {
     private void upgradeSqlFile(Path file) {
         try {
             //jdbcTemplate.execute("RUNSCRIPT FROM '" + file.toString() + "'");
+            H2SqlConverter.Dialect dialect = H2SqlConverter.detect(environment);
             List<String> lines = Files.readAllLines(file);
-            for (String line : lines) {
-                try {
-                    jdbcTemplate.execute(line);
-                } catch (Exception e) {
-                    log.debug("execute sql failed: {}", e);
+            if (dialect == H2SqlConverter.Dialect.H2) {
+                for (String line : lines) {
+                    try {
+                        jdbcTemplate.execute(line);
+                    } catch (Exception e) {
+                        log.debug("execute sql failed: {}", e);
+                    }
                 }
+            } else {
+                // diff files are H2 dialect (U& escapes, "PUBLIC" identifiers) — convert
+                // each statement to the target dialect and apply in batches, falling back
+                // to per-statement execution so one bad line never aborts the whole file.
+                List<String> batch = new ArrayList<>(BATCH_SIZE);
+                for (String line : lines) {
+                    String sql = H2SqlConverter.convert(line, dialect);
+                    if (sql == null) {
+                        continue;
+                    }
+                    batch.add(sql);
+                    if (batch.size() >= BATCH_SIZE) {
+                        executeBatch(batch);
+                    }
+                }
+                executeBatch(batch);
             }
             String version = getVersion(file);
             settingRepository.save(new Setting(MOVIE_VERSION, version));
@@ -305,19 +326,30 @@ public class DoubanService {
         }
     }
 
+    private void executeBatch(List<String> batch) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        try {
+            jdbcTemplate.batchUpdate(batch.toArray(new String[0]));
+        } catch (Exception e) {
+            log.debug("batch update failed, falling back to per-statement execution", e);
+            for (String sql : batch) {
+                try {
+                    jdbcTemplate.execute(sql);
+                } catch (Exception ex) {
+                    log.debug("execute sql failed: {}", ex);
+                }
+            }
+        }
+        batch.clear();
+    }
+
     public String getAppRemoteVersion() {
-        if (environment.matchesProfiles("standalone")) {
-            try {
-                return restTemplate.getForObject("https://d.har01d.cn/app.version.txt", String.class);
-            } catch (Exception e) {
-                log.warn("", e);
-            }
-        } else {
-            try {
-                return restTemplate.getForObject("https://d.har01d.cn/app_version", String.class);
-            } catch (Exception e) {
-                log.warn("", e);
-            }
+        try {
+            return restTemplate.getForObject("https://d.har01d.cn/app.version.txt", String.class);
+        } catch (Exception e) {
+            log.warn("", e);
         }
         return "";
     }
@@ -391,6 +423,10 @@ public class DoubanService {
     }
 
     public Movie getByName(String name) {
+        return getByName(name, null);
+    }
+
+    public Movie getByName(String name, Integer year) {
         try {
             Alias alias = aliasRepository.findById(name).orElse(null);
             if (alias != null) {
@@ -398,7 +434,7 @@ public class DoubanService {
                 return alias.getMovie();
             }
 
-            name = TextUtils.fixName(name);
+            name = TextUtils.collapseCjkSpaces(TextUtils.fixName(name));
             if (name.isEmpty()) {
                 return null;
             }
@@ -409,9 +445,9 @@ public class DoubanService {
                 return alias.getMovie();
             }
 
-            List<Movie> movies = movieRepository.getByName(name);
-            if (movies != null && !movies.isEmpty()) {
-                return movies.get(0);
+            Movie movie = pickBest(movieRepository.getByName(name), year);
+            if (movie != null) {
+                return movie;
             }
 
             String newName = TextUtils.updateName(name);
@@ -425,15 +461,76 @@ public class DoubanService {
                     return alias.getMovie();
                 }
 
-                movies = movieRepository.getByName(name);
-                if (movies != null && !movies.isEmpty()) {
-                    return movies.get(0);
+                movie = pickBest(movieRepository.getByName(name), year);
+                if (movie != null) {
+                    return movie;
                 }
+            }
+
+            // no exact-name match: fall back to name-contains scoped by the extracted
+            // year, then pick the best-matching name (exact > shortest > first).
+            // Skip for a bare season token (第一季/Season 1/S01): it is not a title and
+            // the LIKE would match every season-N show of that year (wrong title).
+            if (year != null && !isSeasonOnly(name)) {
+                return pickBestName(movieRepository.findByYearAndNameContains(year, name, Pageable.ofSize(10)).getContent(), name);
             }
         } catch (Exception e) {
             log.warn("", e);
         }
         return null;
+    }
+
+    // among same-name candidates, pick the one whose year is closest to the target
+    // (null-year candidates are skipped; ties prefer the smaller year). With no
+    // target year or a single candidate, keep the previous first-match behavior.
+    static Movie pickBest(List<Movie> movies, Integer year) {
+        if (movies == null || movies.isEmpty()) {
+            return null;
+        }
+        if (year == null || movies.size() == 1) {
+            return movies.get(0);
+        }
+        Movie best = null;
+        int bestDelta = Integer.MAX_VALUE;
+        for (Movie m : movies) {
+            Integer y = m.getYear();
+            if (y == null) {
+                continue;
+            }
+            int delta = Math.abs(y - year);
+            if (best == null || delta < bestDelta || (delta == bestDelta && y < best.getYear())) {
+                bestDelta = delta;
+                best = m;
+            }
+        }
+        return best != null ? best : movies.get(0);
+    }
+
+    // true when the (already fixName'd) search key is only a season marker, i.e. not a
+    // discriminative title. Used to skip the year-scoped name-contains fallback.
+    static boolean isSeasonOnly(String name) {
+        return name != null && SEASON_ONLY.matcher(name).matches();
+    }
+
+    // among name-contains candidates, prefer an exact name, else the shortest name
+    static Movie pickBestName(List<Movie> movies, String name) {
+        if (movies == null || movies.isEmpty()) {
+            return null;
+        }
+        Movie best = null;
+        int bestLen = Integer.MAX_VALUE;
+        for (Movie m : movies) {
+            String n = m.getName();
+            if (name.equals(n)) {
+                return m;
+            }
+            int len = n == null ? Integer.MAX_VALUE : n.length();
+            if (best == null || len < bestLen) {
+                bestLen = len;
+                best = m;
+            }
+        }
+        return best;
     }
 
     public boolean updateMetaMovie(Integer id, MetaDto dto) {
@@ -786,6 +883,38 @@ public class DoubanService {
                     log.debug("find year {} from path {}", year, path);
                     return year;
                 }
+            }
+        }
+        return null;
+    }
+
+    // extract a release year from the title/path to disambiguate same-name titles;
+    // path takes precedence, then a parenthesized year in the title, then a bare year
+    public Integer getYear(String name, String path) {
+        Integer year = getYearFromPath(path);
+        if (year != null) {
+            return year;
+        }
+        return getYearFromText(name);
+    }
+
+    static Integer getYearFromText(String text) {
+        if (StringUtils.isBlank(text)) {
+            return null;
+        }
+        int max = LocalDate.now().getYear() + 3;
+        Matcher m = YEAR_PATTERN.matcher(text);
+        while (m.find()) {
+            int year = Integer.parseInt(m.group(1));
+            if (year > 1960 && year < max) {
+                return year;
+            }
+        }
+        m = YEAR2_PATTERN.matcher(text);
+        while (m.find()) {
+            int year = Integer.parseInt(m.group(1));
+            if (year > 1960 && year < max) {
+                return year;
             }
         }
         return null;

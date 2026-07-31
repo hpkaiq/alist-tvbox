@@ -1,0 +1,142 @@
+name: 'build PR'
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - 'config/**'
+      - 'doc/**'
+      - 'docs/**'
+      - '*.md'
+      - 'scripts/install.sh'
+      - 'scripts/install-service.sh'
+      - 'scripts/alist-tvbox.sh'
+      - '.github/ISSUE_TEMPLATE/**'
+
+jobs:
+  # Job 1: 构建基础资源
+  build-base:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ./web-ui
+
+      - name: Install npm
+        working-directory: ./web-ui
+        run: npm ci
+
+      - name: Build web UI
+        working-directory: ./web-ui
+        run: npm run build
+
+      - name: setup graalvm
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn -B package --file pom.xml
+
+      - name: Extract Spring Boot layers
+        working-directory: ./target
+        run: java -Djarmode=layertools -jar alist-tvbox-1.0.jar extract
+
+      - name: Set APP version
+        run: |
+          [ -d data ] || mkdir data
+          echo "PR-${{ github.event.pull_request.number }}" > data/version
+          cp data/version data/app_version
+          cat data/version
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-artifacts
+          path: |
+            target/
+            data/
+            src/
+            pom.xml
+            web-ui/dist/
+          retention-days: 1
+
+  # Job 2: 构建并测试镜像（并行）
+  build-and-test-images:
+    needs: build-base
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - name: xiaoya-tvbox
+            dockerfile: docker/Dockerfile-xiaoya
+            port: 4567
+          - name: alist-tvbox
+            dockerfile: docker/Dockerfile
+            port: 4568
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-artifacts
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.image.name }} (local only)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ matrix.image.name }}:pr-test
+          cache-from: type=gha,scope=pr-${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=pr-${{ matrix.image.name }}
+
+      - name: Test ${{ matrix.image.name }} container
+        run: |
+          docker run -d --name test-${{ matrix.image.name }} -p ${{ matrix.image.port }}:4567 ${{ matrix.image.name }}:pr-test
+
+          echo "Waiting for AList to start (max 60 seconds)..."
+          SUCCESS=false
+          for i in {1..30}; do
+            RESPONSE=$(curl -s http://localhost:${{ matrix.image.port }}/api/alist/status || echo "0")
+            echo "Attempt $i/30: status=$RESPONSE"
+
+            if [ "$RESPONSE" == "2" ]; then
+              echo "✅ AList is running (status=2)"
+              SUCCESS=true
+              break
+            elif [ "$RESPONSE" == "1" ]; then
+              echo "⏳ AList is starting, waiting..."
+            else
+              echo "❌ AList not responding, waiting..."
+            fi
+
+            sleep 2
+          done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Test failed: AList did not reach status 2 within 60 seconds"
+            docker logs test-${{ matrix.image.name }}
+            docker stop test-${{ matrix.image.name }}
+            docker rm test-${{ matrix.image.name }}
+            exit 1
+          fi
+
+          echo "✅ Test passed: AList status is 2 (running)"
+          docker stop test-${{ matrix.image.name }}
+          docker rm test-${{ matrix.image.name }}

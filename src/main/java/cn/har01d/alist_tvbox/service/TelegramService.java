@@ -27,6 +27,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
@@ -37,7 +38,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.Example;
 import org.springframework.data.domain.ExampleMatcher;
@@ -54,6 +55,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -99,6 +101,7 @@ public class TelegramService {
     private final Cache<String, MovieList> douban = Caffeine.newBuilder().expireAfterWrite(Duration.ofHours(1)).build();
     private final Cache<String, String> lastId = Caffeine.newBuilder().expireAfterWrite(Duration.ofHours(1)).build();
     private final Cache<String, MovieDetail> movies = Caffeine.newBuilder().maximumSize(200).expireAfterWrite(Duration.ofHours(2)).build();
+    private final Cache<String, String> videoName = Caffeine.newBuilder().maximumSize(200).expireAfterWrite(Duration.ofHours(2)).build();
     private final List<String> fields = new ArrayList<>(List.of("id", "name", "genre", "description", "language", "country", "directors", "editors", "actors", "cover", "dbScore", "year"));
     private final List<FilterValue> filters = Arrays.asList(
             new FilterValue("原始顺序", ""),
@@ -256,7 +259,7 @@ public class TelegramService {
         var chat = getChannelByName(channel.getUsername());
         if (chat != null) {
             chat.setEnabled(channel.isEnabled());
-            chat.setOrder(channel.getOrder());
+            chat.setSortOrder(channel.getSortOrder());
             chat.setType(channel.getType());
             validateWebAccess(chat);
             telegramChannelRepository.save(chat);
@@ -265,7 +268,7 @@ public class TelegramService {
     }
 
     public List<TelegramChannel> list() {
-        return telegramChannelRepository.findAll(Sort.by("order"));
+        return telegramChannelRepository.findAll(Sort.by("sortOrder"));
     }
 
     public ObjectNode getTgSearchHealth() {
@@ -300,6 +303,8 @@ public class TelegramService {
                 total += list.size();
                 result.add(channel + "$$$" + list.stream().filter(e -> e.getContent().contains("http")).map(Message::toZxString).collect(Collectors.joining("##")));
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Search interrupted for channel: {}", channel);
                 break;
             } catch (ExecutionException | TimeoutException e) {
                 log.warn("", e);
@@ -351,6 +356,25 @@ public class TelegramService {
     }
 
     public MovieList detail(String tid, String ac, String title) {
+        if (tid.startsWith("%2Fv%2F")) {
+            tid = StringUtils.trimToEmpty(URLDecoder.decode(tid, StandardCharsets.UTF_8));
+        }
+        if (tid.startsWith("/v/")) {
+            MovieList list = new MovieList();
+            MovieDetail detail = new MovieDetail();
+            detail.setVod_id(getVid(tid));
+            detail.setVod_name("视频");
+            String name = videoName.getIfPresent(getVid(tid));
+            if (name != null) {
+                detail.setVod_name(name);
+            }
+            detail.setVod_play_from("电报");
+            detail.setVod_play_url(resolveTgSearchMediaUrl(tid));
+            list.getList().add(detail);
+            log.debug("{}", list);
+            return list;
+        }
+
         ShareLink share = new ShareLink();
         share.setLink(tid);
         String path = shareService.add(share);
@@ -385,7 +409,7 @@ public class TelegramService {
 
         List<TelegramChannel> channels;
         if (web || (StringUtils.isBlank(appProperties.getTgSearch()))) {
-            channels = telegramChannelRepository.findByWebAccessTrue(Sort.by("order"));
+            channels = telegramChannelRepository.findByWebAccessTrue(Sort.by("sortOrder"));
         } else {
             channels = list();
         }
@@ -456,6 +480,8 @@ public class TelegramService {
             }
         }
 
+        log.debug("Search results: {}", list.subList(0, Math.min(list.size(), 30)));
+
         result.setList(list);
         result.setTotal(list.size());
         result.setLimit(list.size());
@@ -471,6 +497,8 @@ public class TelegramService {
         for (Message message : messages) {
             list.add(toMovieDetail(message));
         }
+
+        log.debug("Search results: {} {}", keyword, list.subList(0, Math.min(list.size(), 30)));
 
         result.setList(list);
         result.setTotal(list.size());
@@ -528,7 +556,18 @@ public class TelegramService {
         result.setTotal(searchResult.total());
         result.setLimit(safeSize);
         result.setPagecount(Math.max(1, (searchResult.total() + safeSize - 1) / safeSize));
+        if (log.isDebugEnabled()) {
+            log.debug("list result: {}", Utils.toJsonString(result));
+        }
         return result;
+    }
+
+    private String getVid(String link) {
+        int index = link.indexOf("?");
+        if (index != -1) {
+            return link.substring(0, index);
+        }
+        return link;
     }
 
     public CategoryList categoryDouban() {
@@ -976,6 +1015,7 @@ public class TelegramService {
             case "12" -> "光鸭";
             case "magnet" -> "磁力";
             case "ed2k" -> "ED2K";
+            case "video" -> "视频";
             default -> null;
         };
     }
@@ -1026,6 +1066,18 @@ public class TelegramService {
             movieDetail.setVod_time(message.getTime().toString());
         }
         applyMedia(message, movieDetail);
+        if ("video".equals(message.getType())) {
+            videoName.put(getVid(message.getLink()), movieDetail.getVod_name());
+            if (message.getSize() != null) {
+                movieDetail.setVod_remarks(Utils.byte2size(message.getSize()));
+            }
+        }
+        // cache every search result (not only media-bearing ones, which applyMedia
+        // handles) so detail() can backfill vod_name when the resolved storage
+        // folder name is an obfuscated share token instead of the real title.
+        if (StringUtils.isNotBlank(message.getLink())) {
+            movies.put(message.getLink(), movieDetail);
+        }
         return movieDetail;
     }
 
@@ -1036,13 +1088,13 @@ public class TelegramService {
         }
         Object title = media.get("title");
         if (title != null && StringUtils.isNotBlank(String.valueOf(title))) {
-            movieDetail.setVod_name(TextUtils.fixName(String.valueOf(title)));
+            movieDetail.setVod_name(TextUtils.fixName(TextUtils.stripLeadingNoise(String.valueOf(title))));
         }
         Object year = media.get("year");
         if (year != null && StringUtils.isNotBlank(String.valueOf(year))) {
             movieDetail.setVod_year(String.valueOf(year));
         }
-        List<String> remarks = Stream.of(media.get("episode"), media.get("quality"), media.get("size"))
+        List<String> remarks = Stream.of(movieDetail.getVod_remarks(), media.get("episode"), media.get("quality"), media.get("size"))
                 .filter(e -> e != null && StringUtils.isNotBlank(String.valueOf(e)))
                 .map(String::valueOf)
                 .toList();
@@ -1085,9 +1137,9 @@ public class TelegramService {
                         .toList();
                 searchedChannelCount = remoteSearchService.getSearchChannels(ids).size();
                 results = remoteSearchService.search(keyword, ids);
-            } else if (StringUtils.isNotBlank(appProperties.getTgSearch())) {
-                String search = channels.stream().map(TelegramChannel::getUsername).collect(Collectors.joining(","));
-                results = searchRemote(search, keyword, size);
+            }
+            if (results.isEmpty() && StringUtils.isNotBlank(appProperties.getTgSearch())) {
+                results = searchTgSearchApi(keyword, null, 1, size).messages();
             }
         }
 
@@ -1245,9 +1297,11 @@ public class TelegramService {
                 });
                 Map<String, Object> media = objectMapper.convertValue(link.path("media"), new TypeReference<>() {
                 });
+                Long size = link.path("size").asLong();
                 messages.add(new Message(
                         type,
                         url,
+                        size,
                         link.path("note").asText(""),
                         parseInstant(link.path("datetime").asText(null)),
                         images,
@@ -1299,6 +1353,7 @@ public class TelegramService {
             case "guangya" -> "12";
             case "magnet" -> "magnet";
             case "ed2k" -> "ed2k";
+            case "video" -> "video";
             default -> null;
         };
     }
@@ -1321,6 +1376,7 @@ public class TelegramService {
             case "12" -> "guangya";
             case "magnet" -> "magnet";
             case "ed2k" -> "ed2k";
+            case "video" -> "video";
             default -> null;
         };
     }
@@ -1341,7 +1397,11 @@ public class TelegramService {
                 results.addAll(result);
             } catch (TimeoutException e) {
                 incompleteFutures.add(future);
-            } catch (InterruptedException | ExecutionException e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while waiting for search results", e);
+                incompleteFutures.add(future);
+            } catch (ExecutionException e) {
                 log.warn("", e);
             }
         }
@@ -1353,7 +1413,10 @@ public class TelegramService {
                 try {
                     results.addAll(future.get());
                     iterator.remove();
-                } catch (InterruptedException | ExecutionException e) {
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.warn("Interrupted while retrieving completed future", e);
+                } catch (ExecutionException e) {
                     log.warn("", e);
                 }
             }
@@ -1454,7 +1517,9 @@ public class TelegramService {
 
         int total = 0;
         List<String> result = new ArrayList<>();
+        int index = 0;
         for (Future<List<String>> future : futures) {
+            String currentChannel = channels[index++];
             try {
                 List<String> list = future.get(appProperties.getTgTimeout(), TimeUnit.MILLISECONDS);
                 total += list.size();
@@ -1466,6 +1531,8 @@ public class TelegramService {
                     }
                 }
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Search interrupted for channel: {}", currentChannel);
                 break;
             } catch (ExecutionException | TimeoutException e) {
                 log.warn("", e);
@@ -1503,19 +1570,40 @@ public class TelegramService {
                 .addHeader("Referer", "https://t.me/")
                 .build();
 
+        // Use try-with-resources to ensure response is always closed
         Call call = httpClient.newCall(request);
-        Response response = call.execute();
-        String html = response.body().string();
-        response.close();
-
-        return html;
+        try (Response response = call.execute()) {
+            if (response.body() == null) {
+                throw new IOException("Response body is null for URL: " + url);
+            }
+            return response.body().string();
+        }
     }
 
     public List<TelegramChannel> updateAll(List<TelegramChannel> channels) {
         int order = 1;
         for (var channel : channels) {
-            channel.setOrder(order++);
+            channel.setSortOrder(order++);
         }
         return telegramChannelRepository.saveAll(channels);
+    }
+
+    @PreDestroy
+    public void cleanup() {
+        log.info("Shutting down TelegramService executor service");
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+                log.warn("Executor service did not terminate in time, forcing shutdown");
+                executorService.shutdownNow();
+                if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+                    log.error("Executor service did not terminate after forced shutdown");
+                }
+            }
+        } catch (InterruptedException e) {
+            log.warn("Interrupted while waiting for executor service to terminate", e);
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

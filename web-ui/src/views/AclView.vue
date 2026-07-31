@@ -1,13 +1,16 @@
 <template>
-  <div class="files">
-    <h1>AList访问控制</h1>
-    <el-row justify="end">
-      <el-button @click="load">刷新</el-button>
-      <el-button type="primary" @click="handleAdd">添加</el-button>
-    </el-row>
-    <div class="space"></div>
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">AList访问控制</h1>
+      <div class="page-actions">
+        <el-button @click="load">刷新</el-button>
+        <el-button type="primary" @click="handleAdd">添加</el-button>
+      </div>
+    </div>
 
-    <el-table :data="rules" border style="width: 100%">
+    <div class="page-card">
+    <div class="table-scroll-wrapper">
+    <el-table :data="rules" border style="width: 100%; min-width: 800px">
       <el-table-column prop="name" label="名称/Token"/>
       <el-table-column prop="url" label="默认订阅地址" sortable>
         <template #default="scope">
@@ -25,6 +28,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="divider"></div>
 
@@ -38,6 +42,8 @@
         <li>本功能对直接访问AList 5344无效</li>
       </ul>
     </div>
+    </div>
+  </div>
 
     <el-dialog v-model="formVisible" :title="dialogTitle">
       <el-form :model="form" label-width="120">
@@ -74,7 +80,6 @@
       </span>
       </template>
     </el-dialog>
-  </div>
 </template>
 
 <script setup lang="ts">

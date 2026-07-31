@@ -33,6 +33,9 @@ public class TextUtils {
     private static final Pattern RESOLUTION = Pattern.compile("\\.?(\\d{3,4}p|4K|2K|8K|UHD|FHD|QHD|SDR|HDR10|HDR|HD\\+?|Dolby\\s*Vision|DoVi)", Pattern.CASE_INSENSITIVE);
     // 新增：发布组和字幕组
     private static final Pattern RELEASE_GROUP = Pattern.compile("\\[([^]]+(字幕组|发布组|制作|Subs|Rip))]");
+    // 行首装饰性符号：空白、间隔号(U+00B7/U+0387/U+30FB)、不可见变体选择符(U+FE0F/U+FE0E)、
+    // ZWJ 以及 emoji/符号区段。Telegram 频道常用 ·✅✅✅ 之类前缀，由 stripLeadingNoise 统一剥离。
+    private static final Pattern LEADING_NOISE = Pattern.compile("^[\\s\\u00B7\\u0387\\u30FB\\uFE0F\\uFE0E\\u200D\\u2600-\\u27BF\\u1F300-\\u1FAFF]+");
 
     public static boolean isChineseChar(int c) {
         return c >= 0x4E00 && c <= 0x9FA5;
@@ -60,6 +63,15 @@ public class TextUtils {
 
     public static boolean isNumber(String text) {
         return NUMBER1.matcher(text).matches();
+    }
+
+    // 剥离行首装饰性前缀（emoji、间隔号、不可见变体选择符等），供调用方在 fixName 之前使用，
+    // 避免 fixName 把这些符号转成空格后仍残留前缀。例如 "·✅✅✅【万米危机】" -> "【万米危机】"。
+    public static String stripLeadingNoise(String name) {
+        if (name == null || name.isEmpty()) {
+            return name;
+        }
+        return LEADING_NOISE.matcher(name).replaceFirst("");
     }
 
     public static String fixName(String name) {
@@ -575,6 +587,18 @@ public class TextUtils {
             log.debug("name: {} -> {}", name, newName);
         }
         return newName;
+    }
+
+    // Uploaders often dot-separate CJK characters to evade detection ("百.花.杀").
+    // fixName turns those dots into spaces, so the key becomes "百 花 杀" and no longer
+    // matches the real title "百花杀" stored without spaces. Collapse whitespace between
+    // Han characters so such names resolve. Applied deliberately, not inside fixName:
+    // legitimate names like "重紫 第10季" rely on the separating space.
+    public static String collapseCjkSpaces(String name) {
+        if (name == null) {
+            return null;
+        }
+        return name.replaceAll("(?<=[\\u4e00-\\u9fa5])\\s+(?=[\\u4e00-\\u9fa5])", "");
     }
 
     public static String number2text(String text) {

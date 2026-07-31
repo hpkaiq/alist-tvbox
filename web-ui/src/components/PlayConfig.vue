@@ -40,12 +40,34 @@ const panSouPluginCount = ref(0)
 const panSouPlugins = ref([])
 const panSouLinkCheckEnabled = ref(false)
 const panSouLinkCheckMaxCount = ref(30)
+const panSouLinkCheckTypes = ref<string[]>([])
+const panSouLinkCheckTypeOptions = [
+  {label: '百度网盘', value: 'baidu'},
+  {label: '阿里云盘', value: 'aliyun'},
+  {label: '夸克网盘', value: 'quark'},
+  {label: '天翼云盘', value: 'tianyi'},
+  {label: 'UC网盘', value: 'uc'},
+  {label: '移动云盘', value: 'mobile'},
+  {label: '115网盘', value: '115'},
+  {label: '迅雷网盘', value: 'xunlei'},
+  {label: '123网盘', value: '123'},
+]
+const panSouConc = ref<number | null>(null)
+const panSouRefresh = ref(false)
+const panSouRes = ref('merge')
+const panSouFilterInclude = ref('')
+const panSouFilterExclude = ref('')
+const resOptions = [
+  {label: '聚合', value: 'merge'},
+  {label: '仅结果', value: 'results'},
+  {label: '全部', value: 'all'},
+]
 const plugins = ref([])
 const tgSortField = ref('time')
 const tgTimeout = ref(3000)
 const channels = ref<Channel[]>([])
 const activeRows = ref<Channel[]>([])
-const defaultDriverOrder = '9,10,5,7,8,3,2,0,6,1,12,magnet,ed2k'.split(',')
+const defaultDriverOrder = '9,10,5,7,8,3,2,0,6,1,12,magnet,ed2k,video'.split(',')
 const tgDrivers = ref([...defaultDriverOrder])
 const tgDriverOrder = ref([...defaultDriverOrder])
 const formVisible = ref(false)
@@ -78,6 +100,7 @@ const options = [
   {label: '光鸭', value: '12'},
   {label: '磁力', value: 'magnet'},
   {label: 'ED2K', value: 'ed2k'},
+  {label: '视频', value: 'video'},
 ]
 
 const options2 = [
@@ -224,6 +247,7 @@ const updatePanSouAuth = () => {
 
 const updatePanSouLinkCheck = () => {
   axios.post('/api/settings', {name: 'pan_sou_link_check_enabled', value: panSouLinkCheckEnabled.value}).then()
+  axios.post('/api/settings', {name: 'pan_sou_link_check_types', value: panSouLinkCheckTypes.value.join(',')}).then()
   axios.post('/api/settings', {name: 'pan_sou_link_check_max_count', value: panSouLinkCheckMaxCount.value}).then(() => {
     ElMessage.success('更新成功')
   })
@@ -250,6 +274,16 @@ const updatePlugins = () => {
   const value = panSouPlugins.value.join(',')
   axios.post('/api/settings', {name: 'panSouPlugins', value: value}).then(({data}) => {
     panSouPlugins.value = data.value.split(',')
+    ElMessage.success('更新成功')
+  })
+}
+
+const updatePanSouSearch = () => {
+  axios.post('/api/settings', {name: 'pan_sou_conc', value: panSouConc.value || ''}).then()
+  axios.post('/api/settings', {name: 'pan_sou_refresh', value: panSouRefresh.value}).then()
+  axios.post('/api/settings', {name: 'pan_sou_res', value: panSouRes.value}).then()
+  axios.post('/api/settings', {name: 'pan_sou_filter_include', value: panSouFilterInclude.value}).then()
+  axios.post('/api/settings', {name: 'pan_sou_filter_exclude', value: panSouFilterExclude.value}).then(() => {
     ElMessage.success('更新成功')
   })
 }
@@ -428,6 +462,12 @@ onMounted(() => {
     panSouChannels.value = data.pan_sou_channels || 'custom'
     panSouLinkCheckEnabled.value = data.pan_sou_link_check_enabled === 'true'
     panSouLinkCheckMaxCount.value = +(data.pan_sou_link_check_max_count || 30)
+    panSouLinkCheckTypes.value = data.pan_sou_link_check_types ? data.pan_sou_link_check_types.split(',') : []
+    panSouConc.value = data.pan_sou_conc ? +data.pan_sou_conc : null
+    panSouRefresh.value = data.pan_sou_refresh === 'true'
+    panSouRes.value = data.pan_sou_res || 'merge'
+    panSouFilterInclude.value = data.pan_sou_filter_include || ''
+    panSouFilterExclude.value = data.pan_sou_filter_exclude || ''
     tgSortField.value = data.tg_sort_field || 'time'
     tgDriverOrder.value = normalizeDriverOrder(data.tgDriverOrder || '')
     if (data.tg_drivers && data.tg_drivers.length) {
@@ -465,6 +505,55 @@ onUnmounted(() => {
           <span class="hint" v-if="tgSearchVersion">版本：{{ tgSearchVersion }}</span>
           <span class="hint error" v-if="tgSearchHealthError">{{ tgSearchHealthError }}</span>
         </el-form-item>
+        <el-form-item label="链接检测" v-if="panSouUrl">
+          <el-switch v-model="panSouLinkCheckEnabled"/>
+          <span class="hint">自动检查盘搜搜索结果的有效性</span>
+        </el-form-item>
+        <el-form-item label="检测网盘类型" v-if="panSouUrl">
+          <el-checkbox-group v-model="panSouLinkCheckTypes">
+            <el-checkbox v-for="t in panSouLinkCheckTypeOptions" :key="t.value" :label="t.label" :value="t.value"/>
+          </el-checkbox-group>
+          <span class="hint">留空=检测全部9种</span>
+        </el-form-item>
+        <el-form-item label="检测数量上限" v-if="panSouUrl">
+          <el-input-number v-model="panSouLinkCheckMaxCount" :min="0" :max="500"/>
+          <span class="hint">仅当网盘结果数量小于等于该值时检查，磁力和ED2K不计算数量</span>
+        </el-form-item>
+        <el-form-item v-if="panSouUrl">
+          <el-button type="primary" @click="updatePanSouLinkCheck">更新</el-button>
+        </el-form-item>
+        <el-form-item label="网盘顺序">
+          <el-checkbox-group v-model="tgDrivers">
+            <VueDraggable ref="el" v-model="tgDriverOrder">
+              <el-checkbox v-for="item in tgDriverOrder" :label="item.name" :value="item.id" :key="item.id">
+              </el-checkbox>
+            </VueDraggable>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="updateDrivers">更新</el-button>
+          <span class="hint">拖动网盘设置顺序</span>
+        </el-form-item>
+        <el-form-item label="排序字段">
+          <el-radio-group v-model="tgSortField" class="ml-4">
+            <el-radio size="large" v-for="item in orders" :key="item.value" :value="item.value">
+              {{ item.label }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="updateOrder">更新</el-button>
+        </el-form-item>
+        <el-form-item label="默认视频壁纸">
+          <el-input v-model="cover"/>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="updateCover">更新</el-button>
+        </el-form-item>
+      </el-form>
+    </el-tab-pane>
+    <el-tab-pane label="盘搜配置" name="pansou">
+      <el-form label-width="140">
         <el-form-item label="PanSou地址">
           <el-input v-model="panSouUrl" placeholder="http://IP:8888"/>
         </el-form-item>
@@ -512,44 +601,28 @@ onUnmounted(() => {
           <span class="hint">已启用插件 {{ panSouPluginCount }} 个</span>
           <span class="hint">留空使用全部插件搜索</span>
         </el-form-item>
-        <el-form-item label="链接检测" v-if="panSouUrl">
-          <el-switch v-model="panSouLinkCheckEnabled"/>
-          <span class="hint">自动检查盘搜搜索结果的有效性</span>
+        <el-form-item label="并发数" v-if="panSouUrl">
+          <el-input-number v-model="panSouConc" :min="0" placeholder="自动"/>
+          <span class="hint">留空或 0 使用上游自动并发（频道数+插件数+10）</span>
         </el-form-item>
-        <el-form-item label="检测数量上限" v-if="panSouUrl">
-          <el-input-number v-model="panSouLinkCheckMaxCount" :min="0" :max="500"/>
-          <span class="hint">仅当网盘结果数量小于等于该值时检查，磁力和ED2K不计算数量</span>
+        <el-form-item label="强制刷新" v-if="panSouUrl">
+          <el-switch v-model="panSouRefresh"/>
+          <span class="hint">跳过缓存，获取最新数据</span>
+        </el-form-item>
+<!--        <el-form-item label="结果类型" v-if="panSouUrl">-->
+<!--          <el-select v-model="panSouRes" style="width: 160px">-->
+<!--            <el-option v-for="item in resOptions" :key="item.value" :label="item.label" :value="item.value"/>-->
+<!--          </el-select>-->
+<!--        </el-form-item>-->
+        <el-form-item label="包含词" v-if="panSouUrl">
+          <el-input v-model="panSouFilterInclude" placeholder="多个用逗号分隔，如 1080,4K"/>
+        </el-form-item>
+        <el-form-item label="排除词" v-if="panSouUrl">
+          <el-input v-model="panSouFilterExclude" placeholder="多个用逗号分隔，如 枪版,广告"/>
         </el-form-item>
         <el-form-item v-if="panSouUrl">
-          <el-button type="primary" @click="updatePanSouLinkCheck">更新</el-button>
-        </el-form-item>
-        <el-form-item label="网盘顺序">
-          <el-checkbox-group v-model="tgDrivers">
-            <VueDraggable ref="el" v-model="tgDriverOrder">
-              <el-checkbox v-for="item in tgDriverOrder" :label="item.name" :value="item.id" :key="item.id">
-              </el-checkbox>
-            </VueDraggable>
-          </el-checkbox-group>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="updateDrivers">更新</el-button>
-          <span class="hint">拖动网盘设置顺序</span>
-        </el-form-item>
-        <el-form-item label="排序字段">
-          <el-radio-group v-model="tgSortField" class="ml-4">
-            <el-radio size="large" v-for="item in orders" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="updateOrder">更新</el-button>
-        </el-form-item>
-        <el-form-item label="默认视频壁纸">
-          <el-input v-model="cover"/>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="updateCover">更新</el-button>
+          <el-button type="primary" @click="updatePanSouSearch">更新</el-button>
+          <span class="hint">并发数/强制刷新/结果类型/包含词/排除词</span>
         </el-form-item>
       </el-form>
     </el-tab-pane>

@@ -1,5 +1,6 @@
 package cn.har01d.alist_tvbox.entity;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -25,15 +26,16 @@ public class Navigation {
     @GeneratedValue(strategy = GenerationType.TABLE, generator = "tableGenerator")
     private Integer id;
     private String name;
-    @Column(name = "`value`")
+    @Column(name = "\"value\"")
     private String value;
     private int type;
     @Column(name = "visible", columnDefinition = "boolean default true")
     private boolean show;
     @Column(columnDefinition = "boolean default false")
     private boolean reserved;
-    @Column(name = "`order`")
-    private int order;
+    @Column(name = "sort_order")
+    @JsonProperty("order")
+    private Integer sortOrder;
     private int parentId;
 
     public Navigation(String name, String value, int type, boolean show, boolean reserved, int order) {
@@ -42,7 +44,7 @@ public class Navigation {
         this.type = type;
         this.show = show;
         this.reserved = reserved;
-        this.order = order;
+        this.sortOrder = order;
     }
 
     public Navigation(int id, String name, String value, int type, boolean show, boolean reserved, int order) {
@@ -52,7 +54,7 @@ public class Navigation {
         this.type = type;
         this.show = show;
         this.reserved = reserved;
-        this.order = order;
+        this.sortOrder = order;
     }
 
     public Navigation(String name, String value, int type, boolean show, boolean reserved, int order, int parentId) {
@@ -61,7 +63,7 @@ public class Navigation {
         this.type = type;
         this.show = show;
         this.reserved = reserved;
-        this.order = order;
+        this.sortOrder = order;
         this.parentId = parentId;
     }
 

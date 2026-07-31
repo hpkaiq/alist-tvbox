@@ -3,6 +3,10 @@
 init_version=$(head -n 1 "/opt/alist/data/.init" 2>/dev/null || echo "")
 
 restore_database() {
+  if [ -f "/data/database-json.zip" ]; then
+    echo "=== skip sql restore because json restore package exists ==="
+    return
+  fi
   if [ -f "/data/database.zip" ]; then
     echo "=== restore database ==="
     rm -f /data/atv.mv.db /data/atv.trace.db
@@ -36,10 +40,38 @@ init() {
   /opt/alist/alist admin
   cd /www/
 
-  gh_proxy=$(head -n 1 "/data/github_proxy.txt" 2>/dev/null || echo "")
-  wget -T 30 -t 2 ${gh_proxy}https://raw.githubusercontent.com/xiaoyaliu00/data/main/tvbox.zip -O tvbox.zip || \
-  wget -t 3 http://har01d.org/tvbox.zip -O tvbox.zip || \
-  cp /tvbox.zip ./
+  downloaded=false
+  if [ -f "/data/github_proxy.txt" ]; then
+    proxy_count=0
+    while IFS= read -r proxy || [ -n "$proxy" ]; do
+      proxy_count=$((proxy_count + 1))
+      [ "$proxy_count" -gt 5 ] && break
+      if [ -n "$proxy" ]; then
+        candidate="${proxy}https://raw.githubusercontent.com/xiaoyaliu00/data/main/tvbox.zip"
+        echo "尝试使用代理: $proxy"
+      else
+        candidate="https://raw.githubusercontent.com/xiaoyaliu00/data/main/tvbox.zip"
+        echo "尝试直连"
+      fi
+      if wget -T 30 -t 1 "${candidate}" -O tvbox.zip 2>/dev/null; then
+        if [ -n "$proxy" ]; then
+          echo "下载成功（代理: $proxy）"
+        else
+          echo "下载成功（直连）"
+        fi
+        downloaded=true
+        break
+      fi
+    done < "/data/github_proxy.txt"
+  fi
+
+  # 所有代理失败，尝试直连
+  if [ "$downloaded" = false ]; then
+    echo "所有代理失败，尝试直连"
+    wget -T 30 -t 2 https://raw.githubusercontent.com/xiaoyaliu00/data/main/tvbox.zip -O tvbox.zip || \
+    wget -t 3 https://d.har01d.cn/tvbox.zip -O tvbox.zip || \
+    cp /tvbox.zip ./
+  fi
 
   unzip -q -o tvbox.zip
 

@@ -1,18 +1,24 @@
 <template>
-  <div class="subscriptions">
-    <h1>订阅列表</h1>
-    <el-row justify="end">
-      <el-button @click="load">刷新</el-button>
-      <el-button @click="showGlobalConfig">全局配置</el-button>
-      <el-button @click="showPlugins">订阅源管理</el-button>
-      <el-button @click="showPluginFilters">过滤器管理</el-button>
-      <el-button @click="showScan">同步影视</el-button>
-      <el-button @click="showPush" v-if="devices.length">推送配置</el-button>
-      <el-button type="primary" @click="handleAdd">添加</el-button>
-    </el-row>
-    <div class="space"></div>
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">订阅管理</h1>
+      <div class="page-actions">
+        <el-select v-if="enabledToken && tokens.length > 1" v-model="selectedToken" placeholder="选择安全Token" style="width: 120px; margin-right: 8px">
+          <el-option v-for="item in tokens" :key="item" :label="item" :value="item"/>
+        </el-select>
+        <el-button @click="load">刷新</el-button>
+        <el-button @click="showGlobalConfig">全局配置</el-button>
+        <el-button @click="showPlugins">订阅源管理</el-button>
+        <el-button @click="showPluginFilters">过滤器管理</el-button>
+        <el-button @click="showScan">同步影视</el-button>
+        <el-button @click="showPush" v-if="devices.length">推送配置</el-button>
+        <el-button type="primary" @click="handleAdd">添加</el-button>
+      </div>
+    </div>
 
-    <el-table :data="subscriptions" border style="width: 100%">
+    <div class="page-card">
+    <div class="table-scroll-wrapper">
+      <el-table :data="subscriptions" v-loading="loading" border style="width: 100%; min-width: 800px">
       <!--      <el-table-column prop="id" label="ID" sortable width="70"/>-->
       <el-table-column prop="sid" label="订阅ID" sortable width="180"/>
       <el-table-column prop="name" label="名称" sortable width="180"/>
@@ -49,26 +55,17 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-row>
       猫影视配置接口：
-      <a
-        :href="currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')+'/open'+token"
-        target="_blank">
-        {{
-          currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')
-        }}/open{{ token }}
-      </a>
+      <a :href="openUrl" target="_blank">{{ openUrl }}</a>
+      <el-button size="small" style="margin-left: 8px" @click="copyUrl(openUrl)">复制</el-button>
     </el-row>
     <el-row>
       猫影视node配置接口：
-      <a
-        :href="currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')+'/node'+(token ? token : '/-')+'/index.config.js'"
-        target="_blank">
-        {{
-          currentUrl.replace('http://', 'http://alist:alist@').replace('https://', 'https://alist:alist@')
-        }}/node{{ token ? token : '/-' }}/index.js.md5
-      </a>
+      <a :href="nodeUrl" target="_blank">{{ nodeUrl2 }}</a>
+      <el-button size="small" style="margin-left: 8px" @click="copyUrl(nodeUrl2)">复制</el-button>
     </el-row>
     <el-row>
       PG包本地： {{ pgLocal }}
@@ -94,8 +91,17 @@
       <span v-else><el-icon color="orange"><Warning/></el-icon></span>
     </el-row>
     <el-row>
+      潇洒包本地： {{ xsLocal }}
+      &nbsp;&nbsp;
+      潇洒包远程： {{ xsRemote }}
+      <span class="hint"></span>
+      <span v-if="xsLocal==xsRemote"><el-icon color="green"><Check/></el-icon></span>
+      <span v-else><el-icon color="orange"><Warning/></el-icon></span>
+    </el-row>
+    <el-row>
       <el-button @click="syncCat">同步文件</el-button>
     </el-row>
+    </div>
 
     <el-dialog v-model="formVisible" :title="dialogTitle">
       <el-form :model="form">
@@ -113,6 +119,7 @@
 <!--        </el-form-item>-->
         <el-form-item label="定制" label-width="140">
           <el-button @click="openEditor(false)">🎨 可视化编辑</el-button>
+          <el-button @click="openRawJsonEditor">JSON编辑</el-button>
           <span class="hint">{{ form.override ? '已配置' : '未配置' }}</span>
         </el-form-item>
       </el-form>
@@ -220,7 +227,8 @@
         </el-col>
       </el-row>
 
-      <el-table :data="devices" border style="width: 100%">
+      <div class="table-scroll-wrapper">
+        <el-table :data="devices" v-loading="loadingDevices" border style="width: 100%; min-width: 800px">
         <el-table-column prop="name" label="名称" sortable width="180"/>
         <el-table-column prop="uuid" label="ID" sortable width="180"/>
         <el-table-column prop="ip" label="URL地址" sortable>
@@ -228,13 +236,14 @@
             <a :href="scope.row.ip" target="_blank">{{ scope.row.ip }}</a>
           </template>
         </el-table-column>
-        <el-table-column fixed="right" label="操作" width="100">
+        <el-table-column fixed="right" label="操作" width="140">
           <template #default="scope">
             <el-button link type="primary" size="small" @click="syncHistory(scope.row.id)">同步</el-button>
             <el-button link type="danger" size="small" @click="showDelete(scope.row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </el-dialog>
 
     <el-dialog v-model="confirm" title="删除影视设备" width="30%">
@@ -306,10 +315,10 @@
     <el-dialog v-model="pluginVisible" title="订阅源管理" fullscreen>
       <el-form :inline="true" :model="pluginForm">
         <el-form-item label="插件地址" required>
-          <el-input v-model="pluginForm.url" style="width: 460px" placeholder="https://example.com/plugin.txt"/>
+          <el-input v-model="pluginForm.url" style="width: 460px" placeholder="https://example.com/plugin.txt 或 plugin.py"/>
         </el-form-item>
         <el-form-item label="名称">
-          <el-input v-model="pluginForm.name" style="width: 180px" placeholder="留空用文件名"/>
+          <el-input v-model="pluginForm.name" style="width: 180px" placeholder="留空用默认"/>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="addPlugin">添加插件</el-button>
@@ -339,13 +348,6 @@
             <el-option v-for="item in pluginRunModeOptions" :key="item.value" :label="item.label" :value="item.value"/>
           </el-select>
         </el-form-item>
-        <el-form-item label="GitHub代理">
-          <el-input
-            v-model="pluginSettingsForm.githubProxy"
-            style="width: 460px"
-            placeholder="https://gh.llkk.cc/"
-          />
-        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="savePluginSettings">保存设置</el-button>
         </el-form-item>
@@ -356,9 +358,165 @@
         </el-form-item>
       </el-form>
 
+      <!-- GitHub 代理列表管理 -->
+      <el-collapse v-model="githubProxyCollapseActive" style="margin-top: 20px">
+        <el-collapse-item name="github-proxy">
+          <template #title>
+            <div style="display: flex; align-items: center; width: 100%;">
+              <el-icon style="margin-right: 8px; transition: transform 0.3s;" :style="{ transform: githubProxyCollapseActive.includes('github-proxy') ? 'rotate(90deg)' : 'rotate(0deg)' }">
+                <ArrowRight />
+              </el-icon>
+              <span style="font-weight: 500">GitHub 代理配置（多个，自动 fallback，最多 5 个）</span>
+            </div>
+          </template>
+
+          <div style="margin-bottom: 10px">
+            <el-tooltip content="从预设节点中选择或输入自定义代理地址" placement="top">
+              <el-button @click="showAddProxyDialog">添加代理</el-button>
+            </el-tooltip>
+
+            <el-tooltip content="测速当前列表中的所有代理节点" placement="top">
+              <el-button @click="benchmarkAllProxies" :loading="benchmarking">
+                {{ benchmarking ? '测速中...' : '批量测速' }}
+              </el-button>
+            </el-tooltip>
+
+            <el-tooltip content="测速所有预设节点并自动选择最快的 5 个" placement="top">
+              <el-button type="success" @click="autoSelectFastest" :loading="benchmarking">
+                智能选择
+              </el-button>
+            </el-tooltip>
+
+            <el-tooltip content="保存代理列表到 /data/github_proxy.txt" placement="top">
+              <el-button type="primary" @click="saveGitHubProxyList">保存</el-button>
+            </el-tooltip>
+          </div>
+
+          <el-table :data="githubProxyList" border style="width: 100%; margin-bottom: 20px">
+            <el-table-column label="优先级" width="80" align="center">
+              <template #default="scope">
+                {{ scope.$index + 1 }}
+              </template>
+            </el-table-column>
+            <el-table-column label="代理地址" min-width="300">
+              <template #default="scope">
+                <span v-if="!scope.row">无代理（直连）</span>
+                <span v-else>{{ scope.row }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="测速结果" width="120">
+              <template #default="scope">
+                <span v-if="benchmarkResults.get(scope.row)">
+                  {{ formatBenchmarkResult(benchmarkResults.get(scope.row)) }}
+                </span>
+                <span v-else style="color: #909399">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="180" align="center">
+              <template #default="scope">
+                <el-tooltip content="提高优先级" placement="top">
+                  <el-button link type="primary" @click="moveProxyUp(scope.$index)" :disabled="scope.$index === 0">
+                    上移
+                  </el-button>
+                </el-tooltip>
+                <el-tooltip content="降低优先级" placement="top">
+                  <el-button link type="primary" @click="moveProxyDown(scope.$index)" :disabled="scope.$index === githubProxyList.length - 1">
+                    下移
+                  </el-button>
+                </el-tooltip>
+                <el-tooltip content="从列表中移除" placement="top">
+                  <el-button link type="danger" @click="removeProxy(scope.$index)">
+                    删除
+                  </el-button>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
+
+      <!-- 智能选择对话框 -->
+      <el-dialog
+        v-model="smartSelectDialogVisible"
+        title="智能选择 GitHub 代理"
+        width="900px"
+        :close-on-click-modal="false">
+        <div style="margin-bottom: 16px;">
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon>
+            <template #title>
+              <span v-if="benchmarking">正在测速所有预设节点，请稍候...</span>
+              <span v-else>测速完成，已自动选择最快的 5 个节点（可手动调整）</span>
+            </template>
+          </el-alert>
+        </div>
+
+        <el-table
+          ref="proxyTableRef"
+          :data="sortedProxyNodes"
+          border
+          max-height="500"
+          style="width: 100%"
+          @selection-change="handleProxySelectionChange"
+          :row-key="(row: any) => row.url">
+          <el-table-column
+            type="selection"
+            width="55"
+            :selectable="(row: any) => !benchmarking"
+            reserve-selection />
+          <el-table-column label="排名" width="80" align="center">
+            <template #default="scope">
+              <span v-if="getNodeRank(scope.row.url) > 0" style="color: #67C23A; font-weight: bold; font-size: 16px;">
+                #{{ getNodeRank(scope.row.url) }}
+              </span>
+              <span v-else style="color: #909399">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="节点" min-width="150">
+            <template #default="scope">
+              {{ scope.row.label || scope.row.host || '直连' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="地址" min-width="250" show-overflow-tooltip>
+            <template #default="scope">
+              <span v-if="!scope.row.url">无代理（直连）</span>
+              <span v-else>{{ scope.row.url }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="测速结果" width="120" align="center">
+            <template #default="scope">
+              <span v-if="benchmarkResults.get(scope.row.url)">
+                {{ formatBenchmarkResult(benchmarkResults.get(scope.row.url)) }}
+              </span>
+              <span v-else style="color: #909399">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <template #footer>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #909399; font-size: 14px;">
+              已选择 {{ selectedProxies.length }} / 5 个节点
+            </span>
+            <div>
+              <el-button @click="smartSelectDialogVisible = false">取消</el-button>
+              <el-button
+                type="primary"
+                @click="confirmProxySelection"
+                :disabled="selectedProxies.length === 0 || benchmarking">
+                确认选择
+              </el-button>
+            </div>
+          </div>
+        </template>
+      </el-dialog>
+
       <el-input v-model="sourceFilter" placeholder="搜索插件名称或地址" clearable style="width: 280px; margin-bottom: 10px"/>
 
-      <el-table :data="filteredManagedSources" row-key="id" id="plugins-table" border style="width: 100%" @selection-change="onPluginSelectionChange">
+      <div class="table-scroll-wrapper">
+        <el-table :data="filteredManagedSources" row-key="id" id="plugins-table" border style="width: 100%; min-width: 1200px" @selection-change="onPluginSelectionChange">
         <el-table-column type="selection" width="55" :selectable="isSourceDeletable"/>
         <el-table-column label="顺序" width="100">
           <template #default="scope">
@@ -407,13 +565,14 @@
         </el-table-column>
         <el-table-column label="操作" width="160">
           <template #default="scope">
-            <el-button v-if="scope.row.extendable" link type="primary" @click="openSourceExtendDialog(scope.row)">配置</el-button>
+            <el-button v-if="scope.row.extendable" link type="primary" @click="openSourceConfig(scope.row)">配置</el-button>
             <el-button v-if="scope.row.refreshable" link type="primary" @click="refreshPlugin(scope.row.pluginId)">刷新</el-button>
             <el-button v-if="scope.row.deletable" link type="danger" @click="deletePlugin(scope.row.pluginId)">删除</el-button>
             <span v-if="!scope.row.extendable && !scope.row.refreshable && !scope.row.deletable">-</span>
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </el-dialog>
 
     <el-dialog v-model="sourceExtendVisible" title="扩展配置" width="720px">
@@ -421,12 +580,36 @@
         v-model="sourceExtendText"
         type="textarea"
         :rows="18"
-        placeholder="输入扩展配置文本"
+        :placeholder="extHint"
       />
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="sourceExtendVisible = false">取消</el-button>
           <el-button type="primary" @click="saveSourceExtend">保存配置</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="pianDanHomeVisible" :title="pianDanHomeTitle" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="首页分类">
+          <el-select v-model="pianDanHomeValue" style="width: 100%">
+            <el-option v-for="item in pianDanHomeOptions" :key="item.value" :label="item.label" :value="item.value"/>
+          </el-select>
+          <div class="ext-tip">首页豆瓣展示块使用的分类，TMDB 趋势块不受影响。</div>
+        </el-form-item>
+        <el-form-item label="分类模式">
+          <el-select v-model="pianDanMode" style="width: 100%">
+            <el-option label="全部分类" value="all"/>
+            <el-option label="精简分类" value="lite"/>
+          </el-select>
+          <div class="ext-tip">精简模式合并子分类，通过筛选条件下钻；全部模式返回所有分类。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="pianDanHomeVisible = false">取消</el-button>
+          <el-button type="primary" @click="savePianDanHome">保存</el-button>
         </span>
       </template>
     </el-dialog>
@@ -475,13 +658,14 @@
         </el-form-item>
       </el-form>
 
-      <el-table
-        :data="pluginFilters"
-        row-key="id"
-        id="plugin-filters-table"
-        border
-        style="width: 100%"
-        @selection-change="onPluginFilterSelectionChange"
+      <div class="table-scroll-wrapper">
+        <el-table
+          :data="pluginFilters"
+          row-key="id"
+          id="plugin-filters-table"
+          border
+          style="width: 100%; min-width: 1400px"
+          @selection-change="onPluginFilterSelectionChange"
       >
         <el-table-column type="selection" width="55"/>
         <el-table-column label="顺序" width="80">
@@ -560,6 +744,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </el-dialog>
 
     <el-dialog v-model="pluginFilterConfigVisible" title="过滤器配置" width="860px" destroy-on-close>
@@ -669,14 +854,59 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="rawJsonEditorVisible" title="JSON 编辑" width="700px">
+      <el-input
+        v-model="rawJsonEditorText"
+        type="textarea"
+        :rows="20"
+        placeholder="输入 JSON 格式的订阅定制配置"
+      />
+      <template #footer>
+        <el-button @click="rawJsonEditorVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveRawJson">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="addProxyDialogVisible" title="添加自定义 GitHub 代理" width="700px">
+      <el-form label-width="120px">
+        <el-form-item label="代理地址">
+          <el-input
+            v-model="customProxyUrls"
+            type="textarea"
+            :rows="8"
+            placeholder="每行一个代理地址，例如：&#10;https://gh.llkk.cc/&#10;https://github.starrlzy.cn/&#10;gh.tryxd.cn&#10;&#10;支持自动补全协议和斜杠"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-alert type="info" :closable="false">
+            <template #title>
+              <span style="font-size: 13px;">
+                • 每行一个代理地址<br/>
+                • 自动添加 https:// 协议（如果缺少）<br/>
+                • 自动添加末尾斜杠（如果缺少）<br/>
+                • 空行和重复地址会自动过滤
+              </span>
+            </template>
+          </el-alert>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addProxyDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="addCustomProxiesToList">添加并测速</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup lang="ts">
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue'
 import axios from "axios"
+import clipBorad from "vue-clipboard3";
+import api from "@/utils/api"
 import {ElMessage} from "element-plus";
-import {Link} from "@element-plus/icons-vue";
+import {Link, ArrowRight} from "@element-plus/icons-vue";
 import Sortable from "sortablejs";
 import type {Device} from "@/model/Device";
 import PluginFilterConfigFieldEditor from "@/components/PluginFilterConfigFieldEditor.vue";
@@ -790,19 +1020,45 @@ const tgCode = ref('')
 const tgPassword = ref('')
 const tgAuthType = ref('qr')
 const base64QrCode = ref('')
-const token = ref('')
+const enabledToken = ref(false)
+const selectedToken = ref('')
+const token = computed(() => enabledToken.value && selectedToken.value ? '/' + selectedToken.value : '')
+const basicAuthUser = ref('')
+const basicAuthPass = ref('')
+function withBasicAuth(base: string) {
+  if (!basicAuthUser.value && !basicAuthPass.value) return base
+  const prefix = basicAuthUser.value + ':' + basicAuthPass.value + '@'
+  return base.replace('http://', 'http://' + prefix).replace('https://', 'https://' + prefix)
+}
+const openUrl = computed(() => withBasicAuth(currentUrl) + '/open' + token.value)
+const nodeUrl = computed(() => withBasicAuth(currentUrl) + '/node' + (token.value ? token.value : '/-') + '/index.config.js')
+const nodeUrl2 = computed(() => withBasicAuth(currentUrl) + '/node' + (token.value ? token.value : '/-') + '/index.js.md5')
+
+let {toClipboard} = clipBorad();
+
+function copyUrl(text: string) {
+  toClipboard(text).then(() => {
+    ElMessage.success('已复制')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
 const pgLocal = ref('')
 const pgRemote = ref('')
 const zxLocal = ref('')
 const zxRemote = ref('')
 const zxLocal2 = ref('')
 const zxRemote2 = ref('')
+const xsLocal = ref('')
+const xsRemote = ref('')
 const updateAction = ref(false)
 const dialogTitle = ref('')
 const jsonData = ref({})
 const subscriptions = ref<Sub[]>([])
+const loading = ref(false)
 const tokens = ref([])
 const devices = ref<Device[]>([])
+const loadingDevices = ref(false)
 const detailVisible = ref(false)
 const detailTab = ref('json')
 const rawJsonData = computed(() => JSON.stringify(jsonData.value, null, 2))
@@ -857,6 +1113,8 @@ const editorVisible = ref(false)
 const editorRef = ref<any>(null)
 const editorTargetIsGlobal = ref(false)
 const globalReferenceSid = ref('')
+const rawJsonEditorVisible = ref(false)
+const rawJsonEditorText = ref('')
 const plugins = ref<Plugin[]>([])
 const managedSources = ref<ManagedSource[]>([])
 const sourceFilter = ref('')
@@ -868,6 +1126,51 @@ const filteredManagedSources = computed(() => {
     (item.url && item.url.toLowerCase().includes(keyword))
   )
 })
+
+const isBenchmarkPending = (result: any) => result?.success === null || result?.pending
+
+// 计算按测速结果排序的代理节点列表
+const getSortedProxyNodes = () => {
+  const nodes = [...githubProxyNodes.value]
+
+  return nodes.sort((a, b) => {
+    const resultA = benchmarkResults.value.get(a.url)
+    const resultB = benchmarkResults.value.get(b.url)
+    const pendingA = isBenchmarkPending(resultA)
+    const pendingB = isBenchmarkPending(resultB)
+
+    // 都没有结果，保持原顺序
+    if (!resultA && !resultB) return 0
+    if (!resultA) return 1
+    if (!resultB) return -1
+
+    // 失败的排在最后
+    if (!resultA.success && !pendingA && resultB.success) return 1
+    if (resultA.success && !resultB.success && !pendingB) return -1
+
+    // 测速中的排在中间（成功之后，失败之前）
+    if (pendingA && !pendingB) {
+      return resultB.success ? 1 : -1  // 如果B成功，A排后面；如果B失败，A排前面
+    }
+    if (!pendingA && pendingB) {
+      return resultA.success ? -1 : 1  // 如果A成功，A排前面；如果A失败，A排后面
+    }
+    if (pendingA && pendingB) return 0
+
+    // 都成功，按延迟排序
+    if (resultA.success && resultB.success) {
+      return (resultA.latency || 0) - (resultB.latency || 0)
+    }
+
+    // 都失败，保持原顺序
+    return 0
+  })
+}
+
+// 排序后的代理节点列表（按测速结果排序）
+const sortedProxyNodes = computed(() => getSortedProxyNodes())
+
+const extHint = '输入扩展配置文本，比如：\n{"cookie": "xxx"}'
 const pluginFilters = ref<PluginFilter[]>([])
 const pluginForm = ref<Plugin>({
   id: 0,
@@ -888,9 +1191,45 @@ const pluginSettingsForm = ref({
   githubProxy: '',
   pluginRunMode: 'java'
 })
+const githubProxyNodes = ref<any[]>([])
+const githubProxyList = ref<string[]>([])
+const githubProxyCollapseActive = ref<string[]>([]) // 默认折叠
+const benchmarking = ref(false)
+const smartSelectDialogVisible = ref(false)
+const selectedProxies = ref<string[]>([])
+const proxyTableRef = ref()
+const benchmarkResults = ref<Map<string, any>>(new Map())
+const addProxyDialogVisible = ref(false)
+const newProxyUrl = ref('')
+const customProxyUrls = ref('')
 const selectedPluginIds = ref<number[]>([])
 const sourceExtendTarget = ref<ManagedSource | null>(null)
 const sourceExtendText = ref('')
+const pianDanHomeVisible = ref(false)
+const pianDanHomeTarget = ref<ManagedSource | null>(null)
+const pianDanHomeValue = ref('hot_movie')
+const pianDanMode = ref('all')
+const pianDanHomeTitle = computed(() => (pianDanHomeTarget.value?.name || '片单导航') + ' · 设置')
+const pianDanHomeOptions = [
+  {label: '热门电影', value: 'hot_movie'},
+  {label: '热门电视剧', value: 'hot_tv'},
+  {label: '国产剧', value: 'tv_domestic'},
+  {label: '欧美剧', value: 'tv_american'},
+  {label: '动漫', value: 'tv_animation'},
+  {label: '综艺', value: 'tv_variety_show'},
+  {label: '韩剧', value: 'tv_korean'},
+  {label: '日剧', value: 'tv_japanese'},
+  {label: '电影推荐', value: 'suggestion_movie'},
+  {label: '电视剧推荐', value: 'suggestion_tv'},
+  {label: '电影Top250', value: 'movie_top250'},
+  {label: '实时热门电影', value: 'movie_real_time_hotest'},
+  {label: '一周口碑电影榜', value: 'movie_weekly_best'},
+  {label: '实时热门电视', value: 'tv_real_time_hotest'},
+  {label: '华语口碑剧集榜', value: 'tv_chinese_best_weekly'},
+  {label: '全球口碑剧集榜', value: 'tv_global_best_weekly'},
+  {label: '国内口碑综艺榜', value: 'show_chinese_best_weekly'}
+]
+const pianDanHomeValues = new Set(pianDanHomeOptions.map(item => item.value))
 const pluginFilterForm = ref<PluginFilter>({
   id: 0,
   name: '',
@@ -1520,12 +1859,508 @@ const loadPluginFilters = () => {
 }
 
 const loadPluginSettings = () => {
-  axios.get('/api/settings/github_proxy').then(({data}) => {
-    pluginSettingsForm.value.githubProxy = data?.value || ''
-  })
   axios.get('/api/settings/plugin_run_mode').then(({data}) => {
     pluginSettingsForm.value.pluginRunMode = data?.value || 'java'
   })
+  loadGitHubProxyNodes()
+  loadGitHubProxyList()
+}
+
+const loadGitHubProxyNodes = () => {
+  // 加载预设节点
+  axios.get('/api/settings/github-proxy/nodes').then(({data}) => {
+    const defaultNodes = data || []
+
+    // 加载自定义节点
+    axios.get('/api/settings/github-proxy/custom-nodes').then(({data: customUrls}) => {
+      const customNodes = (customUrls || []).map((url: string) => {
+        try {
+          const urlObj = new URL(url)
+          return {
+            label: '自定义节点',
+            url: url,
+            host: urlObj.host
+          }
+        } catch (e) {
+          console.error('Invalid custom URL:', url, e)
+          return null
+        }
+      }).filter((node: any) => node !== null)
+
+      // 合并节点列表：预设节点 + 自定义节点
+      githubProxyNodes.value = [...defaultNodes, ...customNodes]
+    }).catch(() => {
+      // 如果加载自定义节点失败，只使用预设节点
+      githubProxyNodes.value = defaultNodes
+    })
+  })
+}
+
+const loadGitHubProxyList = () => {
+  axios.get('/api/settings/github-proxy/list').then(({data}) => {
+    githubProxyList.value = data || []
+  })
+}
+
+const showAddProxyDialog = () => {
+  customProxyUrls.value = ''
+  addProxyDialogVisible.value = true
+}
+
+// 规范化 URL
+const normalizeProxyUrl = (url: string): string => {
+  let normalized = url.trim()
+  if (!normalized) return ''
+
+  // 添加协议
+  if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+    normalized = 'https://' + normalized
+  }
+
+  // 添加末尾斜杠
+  if (!normalized.endsWith('/')) {
+    normalized += '/'
+  }
+
+  return normalized
+}
+
+// 添加自定义代理到测速列表
+const addCustomProxiesToList = () => {
+  const lines = customProxyUrls.value.split('\n')
+  const newUrls: string[] = []
+  const existingUrls = new Set(githubProxyNodes.value.map(node => node.url))
+
+  for (const line of lines) {
+    const normalized = normalizeProxyUrl(line)
+    if (!normalized) continue
+
+    // 检查是否已存在
+    if (existingUrls.has(normalized)) {
+      continue
+    }
+
+    // 检查是否重复
+    if (newUrls.includes(normalized)) {
+      continue
+    }
+
+    newUrls.push(normalized)
+    existingUrls.add(normalized)
+  }
+
+  if (newUrls.length === 0) {
+    ElMessage.warning('没有有效的代理地址或所有地址已存在')
+    return
+  }
+
+  // 获取现有的自定义节点URL列表
+  axios.get('/api/settings/github-proxy/custom-nodes').then(({data}) => {
+    const existingCustomUrls = data || []
+    const allCustomUrls = [...existingCustomUrls, ...newUrls]
+
+    // 保存到 settings
+    axios.post('/api/settings/github-proxy/custom-nodes', allCustomUrls)
+      .then(() => {
+        // 添加到 githubProxyNodes
+        newUrls.forEach(url => {
+          try {
+            const urlObj = new URL(url)
+            githubProxyNodes.value.push({
+              label: '自定义节点',
+              url: url,
+              host: urlObj.host
+            })
+          } catch (e) {
+            console.error('Invalid URL:', url, e)
+          }
+        })
+
+        addProxyDialogVisible.value = false
+        ElMessage.success(`已添加 ${newUrls.length} 个自定义节点并保存`)
+
+        // 自动开始测速
+        benchmarkCustomProxies(newUrls)
+      })
+      .catch(() => {
+        ElMessage.error('保存自定义节点失败')
+      })
+  })
+}
+
+// 测速自定义代理
+const benchmarkCustomProxies = (urls: string[]) => {
+  if (benchmarking.value) {
+    ElMessage.warning('正在测速中，请稍候')
+    return
+  }
+
+  benchmarking.value = true
+
+  // 为新添加的节点设置"测速中"状态
+  urls.forEach(url => {
+    benchmarkResults.value.set(url, { pending: true })
+  })
+
+  ElMessage.info(`开始测速 ${urls.length} 个自定义节点...`)
+
+  // 启动异步测速
+  axios.post('/api/settings/github-proxy/benchmark/start', { urls })
+    .then(() => {
+      // 轮询获取结果
+      pollCustomProxiesResults(urls)
+    })
+    .catch(() => {
+      ElMessage.error('启动测速失败')
+      benchmarking.value = false
+      urls.forEach(url => {
+        benchmarkResults.value.delete(url)
+      })
+    })
+}
+
+// 轮询自定义节点测速结果
+const pollCustomProxiesResults = (urls: string[]) => {
+  const poll = () => {
+    axios.get('/api/settings/github-proxy/benchmark/results')
+      .then(({data}) => {
+        // 更新结果
+        const results = data.results || {}
+        Object.keys(results).forEach((url: string) => {
+          benchmarkResults.value.set(url, results[url])
+        })
+
+        // 检查是否还在运行
+        if (data.isRunning) {
+          setTimeout(poll, 500)
+        } else {
+          benchmarking.value = false
+
+          // 统计成功的节点
+          const successCount = urls.filter(url => {
+            const result = benchmarkResults.value.get(url)
+            return result && result.success
+          }).length
+
+          if (successCount > 0) {
+            ElMessage.success(`测速完成！${successCount}/${urls.length} 个节点可用`)
+          } else {
+            ElMessage.warning('测速完成，但没有可用节点')
+          }
+        }
+      })
+      .catch(() => {
+        benchmarking.value = false
+        ElMessage.error('获取测速结果失败')
+      })
+  }
+
+  poll()
+}
+
+const addProxyToList = () => {
+  if (githubProxyList.value.length >= 5) {
+    ElMessage.warning('最多只能配置 5 个代理节点')
+    return
+  }
+
+  const url = newProxyUrl.value.trim()
+  if (githubProxyList.value.includes(url)) {
+    ElMessage.warning('该代理已存在')
+    return
+  }
+
+  githubProxyList.value.push(url)
+  addProxyDialogVisible.value = false
+  ElMessage.success('已添加到列表，请点击"保存代理列表"生效')
+}
+
+const removeProxy = (index: number) => {
+  githubProxyList.value.splice(index, 1)
+  ElMessage.success('已从列表移除，请点击"保存代理列表"生效')
+}
+
+const moveProxyUp = (index: number) => {
+  if (index === 0) return
+  const temp = githubProxyList.value[index]
+  githubProxyList.value[index] = githubProxyList.value[index - 1]
+  githubProxyList.value[index - 1] = temp
+}
+
+const moveProxyDown = (index: number) => {
+  if (index === githubProxyList.value.length - 1) return
+  const temp = githubProxyList.value[index]
+  githubProxyList.value[index] = githubProxyList.value[index + 1]
+  githubProxyList.value[index + 1] = temp
+}
+
+const benchmarkAllProxies = () => {
+  if (benchmarking.value) return
+  if (githubProxyList.value.length === 0) {
+    ElMessage.warning('请先添加代理节点')
+    return
+  }
+
+  benchmarking.value = true
+  benchmarkResults.value.clear()
+
+  // 为所有待测节点设置"测速中"状态
+  githubProxyList.value.forEach(url => {
+    benchmarkResults.value.set(url, { pending: true })
+  })
+
+  // 启动异步测速任务
+  axios.post('/api/settings/github-proxy/benchmark/start', { urls: githubProxyList.value })
+    .then(() => {
+      // 开始轮询获取结果
+      pollBenchmarkResults()
+    })
+    .catch(() => {
+      ElMessage.error('启动测速失败')
+      benchmarking.value = false
+      benchmarkResults.value.clear()
+    })
+}
+
+const pollBenchmarkResults = () => {
+  const poll = () => {
+    axios.get('/api/settings/github-proxy/benchmark/results')
+      .then(({data}) => {
+        // 更新结果
+        const results = data.results || {}
+        Object.keys(results).forEach((url: string) => {
+          benchmarkResults.value.set(url, results[url])
+        })
+
+        // 检查是否还在运行
+        if (data.isRunning) {
+          // 继续轮询（500ms 间隔）
+          setTimeout(poll, 500)
+        } else {
+          // 测速完成
+          benchmarking.value = false
+          ElMessage.success('测速完成')
+        }
+      })
+      .catch(() => {
+        benchmarking.value = false
+        ElMessage.error('获取测速结果失败')
+      })
+  }
+
+  poll()
+}
+
+const saveGitHubProxyList = () => {
+  axios.post('/api/settings/github-proxy/list', githubProxyList.value)
+    .then(({data}) => {
+      ElMessage.success(`已保存 ${data.count} 个代理节点到 /data/github_proxy.txt`)
+    })
+    .catch(() => {
+      ElMessage.error('保存失败')
+    })
+}
+
+const autoSelectFastest = () => {
+  if (benchmarking.value) return
+
+  benchmarking.value = true
+  benchmarkResults.value.clear()
+  selectedProxies.value = []
+
+  // 获取所有预设节点
+  const allUrls = githubProxyNodes.value.map(node => node.url)
+
+  // 为所有待测节点设置"测速中"状态
+  allUrls.forEach(url => {
+    benchmarkResults.value.set(url, { pending: true })
+  })
+
+  // 打开对话框
+  smartSelectDialogVisible.value = true
+  ElMessage.info('开始测速所有预设节点...')
+
+  // 启动异步测速
+  axios.post('/api/settings/github-proxy/benchmark/start', { urls: allUrls })
+    .then(() => {
+      // 轮询获取结果并自动选择最快的 5 个
+      pollAndSelectFastest()
+    })
+    .catch(() => {
+      ElMessage.error('启动测速失败')
+      benchmarking.value = false
+      benchmarkResults.value.clear()
+      smartSelectDialogVisible.value = false
+    })
+}
+
+const pollAndSelectFastest = () => {
+  const poll = () => {
+    axios.get('/api/settings/github-proxy/benchmark/results')
+      .then(({data}) => {
+        // 更新结果
+        const results = data.results || {}
+        Object.keys(results).forEach((url: string) => {
+          benchmarkResults.value.set(url, results[url])
+        })
+
+        // 实时选择最快的 5 个节点并更新到列表（仅用于预览）
+        const successNodes = Array.from(benchmarkResults.value.entries())
+          .filter(([url, result]) => result.success && result.latency != null)
+          .sort((a, b) => a[1].latency - b[1].latency)
+          .slice(0, 5)
+          .map(([url]) => url)
+
+        // 检查是否还在运行
+        if (data.isRunning) {
+          // 继续轮询
+          setTimeout(poll, 500)
+        } else {
+          // 测速完成
+          benchmarking.value = false
+          if (successNodes.length === 0) {
+            ElMessage.warning('没有测速成功的节点')
+          } else {
+            // 自动勾选最快的 5 个节点
+            selectedProxies.value = successNodes
+
+            // 使用 nextTick 确保表格已经渲染完成
+            nextTick(() => {
+              if (proxyTableRef.value) {
+                // 先清空所有选择
+                proxyTableRef.value.clearSelection()
+
+                // 勾选最快的 5 个节点
+                const nodesToSelect = githubProxyNodes.value.filter(node =>
+                  successNodes.includes(node.url)
+                )
+                nodesToSelect.forEach(node => {
+                  proxyTableRef.value.toggleRowSelection(node, true)
+                })
+              }
+            })
+
+            ElMessage.success(`已自动选择最快的 ${successNodes.length} 个节点，请确认后点击"确认选择"`)
+          }
+        }
+      })
+      .catch(() => {
+        benchmarking.value = false
+        ElMessage.error('获取测速结果失败')
+      })
+  }
+
+  poll()
+}
+
+const selectFastestNodes = () => {
+  // 过滤成功的节点并按延迟排序
+  const successNodes = Array.from(benchmarkResults.value.entries())
+    .filter(([url, result]) => result.success && result.latency != null)
+    .sort((a, b) => a[1].latency - b[1].latency)
+    .slice(0, 5)
+    .map(([url]) => url)
+
+  if (successNodes.length === 0) {
+    ElMessage.warning('没有测速成功的节点')
+    return
+  }
+
+  // 更新代理列表
+  githubProxyList.value = successNodes
+  ElMessage.success(`已自动选择最快的 ${successNodes.length} 个节点，请点击"保存代理列表"生效`)
+}
+
+const benchmarkGitHubProxy = () => {
+  if (benchmarking.value) return
+
+  benchmarking.value = true
+  benchmarkResults.value.clear()
+
+  const urls = githubProxyNodes.value.map(node => node.url)
+
+  axios.post('/api/settings/github-proxy/benchmark', { urls })
+    .then(({data}) => {
+      data.forEach((result: any) => {
+        benchmarkResults.value.set(result.url, result)
+      })
+      ElMessage.success('测速完成')
+    })
+    .catch(() => {
+      ElMessage.error('测速失败')
+    })
+    .finally(() => {
+      benchmarking.value = false
+    })
+}
+
+const formatNodeLabel = (node: any) => {
+  if (!node.url) {
+    return '无代理（直连）'
+  }
+  return `${node.label} (${node.host || node.url})`
+}
+
+const formatBenchmarkResult = (result: any) => {
+  if (!result) return ''
+  if (isBenchmarkPending(result)) {
+    return '测速中...'
+  }
+  // 如果有明确的 success 字段，说明测速已完成，优先显示结果
+  if (result.success !== undefined && result.success !== null) {
+    if (!result.success) {
+      return '失败'
+    }
+    return `${result.latency}ms`
+  }
+  return ''
+}
+
+// 处理代理节点选择变化
+const handleProxySelectionChange = (selection: any[]) => {
+  if (selection.length > 5) {
+    ElMessage.warning('最多只能选择 5 个节点')
+    // 只保留前5个选择
+    nextTick(() => {
+      if (proxyTableRef.value) {
+        proxyTableRef.value.clearSelection()
+        selection.slice(0, 5).forEach((node: any) => {
+          proxyTableRef.value.toggleRowSelection(node, true)
+        })
+      }
+    })
+    return
+  }
+  selectedProxies.value = selection.map((node: any) => node.url)
+}
+
+// 确认选择代理节点
+const confirmProxySelection = () => {
+  if (selectedProxies.value.length === 0) {
+    ElMessage.warning('请至少选择一个节点')
+    return
+  }
+
+  githubProxyList.value = selectedProxies.value
+  smartSelectDialogVisible.value = false
+  ElMessage.success(`已选择 ${selectedProxies.value.length} 个节点，请点击"保存代理列表"生效`)
+}
+
+// 获取节点延迟排名
+const getNodeRank = (url: string) => {
+  const result = benchmarkResults.value.get(url)
+  if (!result || !result.success || result.latency == null) {
+    return 0
+  }
+
+  // 获取所有成功的节点并按延迟排序
+  const successNodes = Array.from(benchmarkResults.value.entries())
+    .filter(([_, r]) => r.success && r.latency != null)
+    .sort((a, b) => a[1].latency - b[1].latency)
+
+  // 找到当前节点的排名
+  const rank = successNodes.findIndex(([u]) => u === url)
+  return rank >= 0 ? rank + 1 : 0
 }
 
 const showGlobalConfig = () => {
@@ -1545,6 +2380,29 @@ const openEditor = (isGlobal: boolean) => {
     loadGlobalConfig()
   }
   editorVisible.value = true
+}
+
+const openRawJsonEditor = () => {
+  rawJsonEditorText.value = form.value.override || ''
+  rawJsonEditorVisible.value = true
+}
+
+const saveRawJson = () => {
+  const text = rawJsonEditorText.value.trim()
+  if (!text) {
+    form.value.override = ''
+    rawJsonEditorVisible.value = false
+    ElMessage.success('已清空定制配置')
+    return
+  }
+  try {
+    JSON.parse(text)
+    form.value.override = text
+    rawJsonEditorVisible.value = false
+    ElMessage.success('保存成功')
+  } catch (e) {
+    ElMessage.error('JSON 格式错误: ' + (e as Error).message)
+  }
 }
 
 const saveEditor = () => {
@@ -1636,17 +2494,11 @@ const importPlugins = async () => {
 }
 
 const savePluginSettings = () => {
-  Promise.all([
-    axios.post('/api/settings', {
-      name: 'github_proxy',
-      value: pluginSettingsForm.value.githubProxy
-    }),
-    axios.post('/api/settings', {
-      name: 'plugin_run_mode',
-      value: pluginSettingsForm.value.pluginRunMode
-    })
-  ]).then(() => {
-    ElMessage.success('订阅源设置已保存')
+  axios.post('/api/settings', {
+    name: 'plugin_run_mode',
+    value: pluginSettingsForm.value.pluginRunMode
+  }).then(() => {
+    ElMessage.success('插件运行模式已保存')
   })
 }
 
@@ -1708,6 +2560,45 @@ const saveSourceExtend = () => {
   sourceExtendTarget.value.extend = sourceExtendText.value
   updateSource(sourceExtendTarget.value)
   sourceExtendVisible.value = false
+}
+
+const openSourceConfig = (source: ManagedSource) => {
+  if (source.builtin && source.key === 'csp_PianDan') {
+    openPianDanHomeDialog(source)
+  } else {
+    openSourceExtendDialog(source)
+  }
+}
+
+const openPianDanHomeDialog = (source: ManagedSource) => {
+  pianDanHomeTarget.value = source
+  let home = 'hot_movie'
+  let mode = 'all'
+  try {
+    const parsed = source.extend ? JSON.parse(source.extend) : null
+    if (parsed && typeof parsed === 'object') {
+      if (pianDanHomeValues.has(parsed.home)) {
+        home = parsed.home
+      }
+      if (parsed.mode === 'lite') {
+        mode = 'lite'
+      }
+    }
+  } catch {
+    home = 'hot_movie'
+  }
+  pianDanHomeValue.value = home
+  pianDanMode.value = mode
+  pianDanHomeVisible.value = true
+}
+
+const savePianDanHome = () => {
+  if (!pianDanHomeTarget.value) {
+    return
+  }
+  pianDanHomeTarget.value.extend = JSON.stringify({home: pianDanHomeValue.value, mode: pianDanMode.value})
+  updateSource(pianDanHomeTarget.value)
+  pianDanHomeVisible.value = false
 }
 
 const updatePluginFilter = (filter: PluginFilter) => {
@@ -1801,8 +2692,16 @@ const handleCancel = () => {
 }
 
 const loadDevices = () => {
+  console.log('📱 开始加载设备列表')
+  loadingDevices.value = true
+
   axios.get('/api/devices').then(({data}) => {
+    console.log('✅ 设备加载成功:', data.length, '个')
     devices.value = data
+  }).catch((error) => {
+    console.error('❌ 设备加载失败:', error)
+  }).finally(() => {
+    loadingDevices.value = false
   })
 }
 
@@ -1912,8 +2811,28 @@ const syncCat = () => {
 }
 
 const load = () => {
+  console.log('📋 开始加载订阅列表')
+  console.time('load-subscriptions')
+  loading.value = true
+
   axios.get('/api/subscriptions').then(({data}) => {
+    console.log('✅ 订阅加载成功:', data.length, '条')
+
+    // 检查数据大小
+    const dataSize = JSON.stringify(data).length
+    console.log('📊 数据大小:', (dataSize / 1024).toFixed(2), 'KB')
+
+    if (dataSize > 1024 * 1024) {
+      console.error('⚠️ 数据过大！超过 1MB')
+      ElMessage.warning('订阅数据较大，加载可能较慢')
+    }
+
     subscriptions.value = data
+    console.timeEnd('load-subscriptions')
+  }).catch((error) => {
+    console.error('❌ 订阅加载失败:', error)
+  }).finally(() => {
+    loading.value = false
   })
 }
 
@@ -1928,6 +2847,10 @@ const loadVersion = () => {
     zxLocal2.value = data.local2
     zxRemote2.value = data.remote2
   })
+  axios.get("/xs/version").then(({data}) => {
+    xsLocal.value = data.local
+    xsRemote.value = data.remote
+  })
 }
 
 watch(() => pluginImportForm.value.url, (value) => {
@@ -1937,7 +2860,8 @@ watch(() => pluginImportForm.value.url, (value) => {
 onMounted(() => {
   axios.get('/api/token').then(({data}) => {
     tokens.value =  data.token ? data.token.split(",") : ['-']
-    token.value = data.enabledToken ? "/" + data.token.split(",")[0] : ""
+    enabledToken.value = data.enabledToken
+    selectedToken.value = data.token ? data.token.split(",")[0] : ""
     load()
     loadVersion()
     axios.get('/api/settings/tg_phase').then(({data}) => {
@@ -1945,6 +2869,10 @@ onMounted(() => {
     })
   })
   loadDevices()
+  axios.get('/api/basic-auth-credentials').then(({data}) => {
+    basicAuthUser.value = data.username
+    basicAuthPass.value = data.password
+  }).catch(() => {})
 })
 
 onUnmounted(() => {
@@ -1961,6 +2889,13 @@ onUnmounted(() => {
 
 .hint {
   margin-left: 16px;
+}
+
+.ext-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+  margin-top: 4px;
 }
 
 .pointer {

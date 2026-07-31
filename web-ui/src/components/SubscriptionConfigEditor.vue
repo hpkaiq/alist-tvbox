@@ -365,8 +365,10 @@
     </el-tabs>
 
     <!-- 自定义站点表单 -->
-    <el-dialog v-model="siteFormVisible" title="自定义站点" width="640px" append-to-body destroy-on-close>
-      <el-form :model="siteForm" label-width="120" style="max-height: 60vh; overflow-y: auto">
+    <el-dialog v-model="siteFormVisible" title="自定义站点" append-to-body destroy-on-close>
+      <el-tabs v-model="siteFormActiveTab">
+        <el-tab-pane label="表单输入" name="form">
+          <el-form :model="siteForm" label-width="120" style="max-height: 60vh; overflow-y: auto">
         <el-form-item label="标识 key" required><el-input v-model="siteForm.key" placeholder="唯一标识, 不可重复" /></el-form-item>
         <el-form-item label="名称"><el-input v-model="siteForm.name" placeholder="显示名称" /></el-form-item>
         <el-form-item label="类型 type">
@@ -377,6 +379,7 @@
         <el-form-item label="接口 api"><el-input v-model="siteForm.api" placeholder="API 端点 URL 或爬虫类名 (如 csp_MySource)" /></el-form-item>
         <el-form-item label="扩展 ext"><el-input v-model="siteForm.ext" type="textarea" :rows="3" placeholder="传给爬虫的扩展数据, 可为字符串或 JSON" /></el-form-item>
         <el-form-item label="Spider jar"><el-input v-model="siteForm.jar" placeholder="Spider JAR 路径或 URL, 覆盖全局 spider" /></el-form-item>
+        <el-form-item label="首页 homePage"><el-input v-model="siteForm.homePage" placeholder="站点首页 / 推荐页 URL" /></el-form-item>
         <el-form-item label="搜索 searchable">
           <el-select v-model="siteForm.searchable">
             <el-option :value="0" label="不可搜索(0)" />
@@ -430,6 +433,23 @@
           </div>
         </el-form-item>
       </el-form>
+        </el-tab-pane>
+        <el-tab-pane label="JSON输入" name="json">
+          <el-input
+            v-model="siteFormJson"
+            type="textarea"
+            :rows="20"
+            placeholder='输入 JSON 格式的站点配置，例如:
+{
+  "key": "Nostr",
+  "name": "Nostr推荐",
+  "type": 3,
+  "api": "csp_Nostr",
+  "homePage": "https://example.com/"
+}'
+          />
+        </el-tab-pane>
+      </el-tabs>
       <template #footer>
         <el-button @click="siteFormVisible = false">取消</el-button>
         <el-button type="primary" @click="confirmSiteForm">确定</el-button>
@@ -443,7 +463,18 @@
         <span style="margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px">{{ siteAdvancedRow?.key }}</span>
       </template>
       <el-form :model="siteAdvancedForm" label-width="120" style="max-height: 60vh; overflow-y: auto">
+        <template v-if="siteAdvancedRow?.isCustom">
+          <el-form-item label="标识 key" required><el-input v-model="siteAdvancedForm.key" placeholder="唯一标识, 不可重复" /></el-form-item>
+          <el-form-item label="名称"><el-input v-model="siteAdvancedForm.name" placeholder="显示名称" /></el-form-item>
+          <el-form-item label="类型 type">
+            <el-select v-model="siteAdvancedForm.type">
+              <el-option v-for="o in siteTypeOptions" :key="o.value" :label="o.label" :value="o.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="接口 api"><el-input v-model="siteAdvancedForm.api" placeholder="API 端点 URL 或爬虫类名 (如 csp_MySource)" /></el-form-item>
+        </template>
         <el-form-item label="扩展 ext"><el-input v-model="siteAdvancedForm.ext" type="textarea" :rows="3" placeholder="传给爬虫的扩展数据, 可为字符串或 JSON" /></el-form-item>
+        <el-form-item v-if="siteAdvancedRow?.isCustom" label="Spider jar"><el-input v-model="siteAdvancedForm.jar" placeholder="Spider JAR 路径或 URL, 覆盖全局 spider" /></el-form-item>
         <el-form-item label="搜索 searchable">
           <el-select v-model="siteAdvancedForm.searchable">
             <el-option :value="0" label="不可搜索(0)" />
@@ -474,6 +505,7 @@
         </el-form-item>
         <el-form-item label="播放前缀 playUrl"><el-input v-model="siteAdvancedForm.playUrl" placeholder="播放 URL 前缀或转换规则" /></el-form-item>
         <el-form-item label="点击拦截 click"><el-input v-model="siteAdvancedForm.click" placeholder="点击拦截处理 URL 或规则" /></el-form-item>
+        <el-form-item label="首页 homePage"><el-input v-model="siteAdvancedForm.homePage" placeholder="站点首页 / 推荐页 URL" /></el-form-item>
         <el-form-item label="分类白名单">
           <el-select v-model="siteAdvancedForm.categories" multiple filterable allow-create default-first-option
             placeholder="仅显示这些分类, 留空显示全部" style="width: 100%" />
@@ -504,7 +536,7 @@
     </el-dialog>
 
     <!-- 自定义解析表单 -->
-    <el-dialog v-model="parseFormVisible" title="自定义解析" width="560px" append-to-body destroy-on-close>
+    <el-dialog v-model="parseFormVisible" title="自定义解析" append-to-body destroy-on-close>
       <el-form :model="parseForm" label-width="100">
         <el-form-item label="名称" required><el-input v-model="parseForm.name" /></el-form-item>
         <el-form-item label="类型">
@@ -579,6 +611,7 @@ import {
   siteOverrideMap,
   serialize,
   stringify,
+  pickExtra,
   buildHeaderRows,
   buildLiveRows,
   buildDohRows,
@@ -616,6 +649,8 @@ const catalogError = ref('')
 const jsonText = ref('')
 const jsonError = ref('')
 const siteFormVisible = ref(false)
+const siteFormActiveTab = ref('form')
+const siteFormJson = ref('')
 const siteAdvancedVisible = ref(false)
 const parseFormVisible = ref(false)
 const channelFormVisible = ref(false)
@@ -671,7 +706,7 @@ function resetSiteForm() {
     key: '', name: '', type: 3, api: '', ext: '', jar: '',
     searchable: 1, quickSearch: 1, filterable: 1, changeable: 0,
     styleType: '', styleRatio: '', order: '',
-    timeout: '', indexs: 0, playUrl: '', click: '',
+    timeout: '', indexs: 0, playUrl: '', click: '', homePage: '',
     categories: [], headerPairs: [],
   })
 }
@@ -724,7 +759,7 @@ function buildRows(config: Record<string, any>, catalog: any) {
 
   const ADVANCED_KEYS = [
     'ext', 'searchable', 'quickSearch', 'filterable', 'changeable',
-    'style', 'timeout', 'indexs', 'playUrl', 'click', 'categories', 'header',
+    'style', 'timeout', 'indexs', 'playUrl', 'click', 'categories', 'header', 'homePage',
   ]
   function applyAdvancedOverride(row: any, ov: any) {
     let hasAdvanced = false
@@ -752,6 +787,7 @@ function buildRows(config: Record<string, any>, catalog: any) {
       order: ov.order != null ? ov.order : '',
     }
     applyAdvancedOverride(row, ov)
+    row._extra = pickExtra(ov, [...ADVANCED_KEYS, 'name', 'order'])
     rows.push(row)
   }
   // catalog 缺失但被禁用/白名单引用的 key -> 合成行
@@ -766,6 +802,7 @@ function buildRows(config: Record<string, any>, catalog: any) {
         order: ov.order != null ? ov.order : '',
       }
       applyAdvancedOverride(row, ov)
+      row._extra = pickExtra(ov, [...ADVANCED_KEYS, 'name', 'order'])
       rows.push(row)
       known.add(key)
     }
@@ -799,6 +836,7 @@ function buildRows(config: Record<string, any>, catalog: any) {
         prows.push({
           name: p.name, isCustom: true, enabled: true, type: p.type ?? 0,
           url: p.url || '', flag: p.ext?.flag || [], header: p.ext?.header || {},
+          _extra: pickExtra(p, ['name', 'type', 'url', 'ext']),
         })
       }
     }
@@ -809,9 +847,42 @@ function buildRows(config: Record<string, any>, catalog: any) {
 
 function openSiteForm() {
   resetSiteForm()
+  siteFormActiveTab.value = 'form'
+  siteFormJson.value = ''
   siteFormVisible.value = true
 }
 function confirmSiteForm() {
+  // JSON 模式
+  if (siteFormActiveTab.value === 'json') {
+    const text = siteFormJson.value.trim()
+    if (!text) {
+      ElMessage.warning('请输入 JSON')
+      return
+    }
+    let parsed: any
+    try {
+      parsed = JSON.parse(text)
+    } catch (e) {
+      ElMessage.error('JSON 格式错误: ' + (e as Error).message)
+      return
+    }
+    if (!parsed.key) {
+      ElMessage.warning('JSON 中必须包含 key 字段')
+      return
+    }
+    const row: any = {
+      ...parsed,
+      origin: 'custom',
+      isCustom: true,
+      enabled: true,
+    }
+    siteRows.value.push(row)
+    state.sites = siteRows.value
+    siteFormVisible.value = false
+    return
+  }
+
+  // 表单模式
   if (!siteForm.key) {
     ElMessage.warning('请输入 key')
     return
@@ -829,6 +900,7 @@ function confirmSiteForm() {
     indexs: siteForm.indexs || undefined,
     playUrl: siteForm.playUrl || undefined,
     click: siteForm.click || undefined,
+    homePage: siteForm.homePage || undefined,
     categories: siteForm.categories.length ? [...siteForm.categories] : undefined,
     header: Object.keys(headerObj).length ? headerObj : undefined,
   }
@@ -859,8 +931,10 @@ function resetSiteToDefault(row: any) {
   row.indexs = undefined
   row.playUrl = undefined
   row.click = undefined
+  row.homePage = undefined
   row.categories = undefined
   row.header = undefined
+  row._extra = undefined
   row.hasAdvancedOverride = false
 }
 
@@ -870,7 +944,12 @@ function openSiteAdvanced(row: any) {
     ? Object.entries(row.header).map(([name, value]) => ({ name, value: String(value) }))
     : []
   Object.assign(siteAdvancedForm, {
-    ext: row.ext ?? '',
+    key: row.key ?? '',
+    name: row.name ?? '',
+    type: row.type ?? 3,
+    api: row.api ?? '',
+    jar: row.jar ?? '',
+    ext: typeof row.ext === 'object' && row.ext !== null ? JSON.stringify(row.ext, null, 2) : (row.ext ?? ''),
     searchable: row.searchable ?? 1,
     quickSearch: row.quickSearch ?? 1,
     filterable: row.filterable ?? 1,
@@ -882,6 +961,7 @@ function openSiteAdvanced(row: any) {
     indexs: row.indexs ?? 0,
     playUrl: row.playUrl ?? '',
     click: row.click ?? '',
+    homePage: row.homePage ?? '',
     categories: Array.isArray(row.categories) ? [...row.categories] : [],
     headerPairs,
   })
@@ -891,11 +971,26 @@ function openSiteAdvanced(row: any) {
 function confirmSiteAdvanced() {
   const row = siteAdvancedRow.value
   if (!row) return
+  if (row.isCustom) {
+    if (!siteAdvancedForm.key) {
+      ElMessage.warning('请输入 key')
+      return
+    }
+    row.key = siteAdvancedForm.key
+    row.name = siteAdvancedForm.name
+    row.type = siteAdvancedForm.type
+    row.api = siteAdvancedForm.api
+    row.jar = siteAdvancedForm.jar || undefined
+  }
   const headerObj: any = {}
   for (const p of siteAdvancedForm.headerPairs || []) {
     if (p.name) headerObj[p.name] = p.value || ''
   }
-  row.ext = siteAdvancedForm.ext || undefined
+  let ext = siteAdvancedForm.ext || undefined
+  if (typeof ext === 'string' && ext.trim().startsWith('{')) {
+    try { ext = JSON.parse(ext) } catch { /* keep string */ }
+  }
+  row.ext = ext
   row.searchable = siteAdvancedForm.searchable
   row.quickSearch = siteAdvancedForm.quickSearch
   row.filterable = siteAdvancedForm.filterable
@@ -910,6 +1005,7 @@ function confirmSiteAdvanced() {
   row.indexs = siteAdvancedForm.indexs || undefined
   row.playUrl = siteAdvancedForm.playUrl || undefined
   row.click = siteAdvancedForm.click || undefined
+  row.homePage = siteAdvancedForm.homePage || undefined
   row.categories = siteAdvancedForm.categories.length ? [...siteAdvancedForm.categories] : undefined
   row.header = Object.keys(headerObj).length ? headerObj : undefined
   row.hasAdvancedOverride = true

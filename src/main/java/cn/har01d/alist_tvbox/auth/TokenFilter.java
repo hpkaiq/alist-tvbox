@@ -5,6 +5,7 @@ import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.exception.UserUnauthorizedException;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
+import cn.har01d.alist_tvbox.util.Constants;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,6 +24,9 @@ import org.springframework.util.StreamUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
 import java.util.Set;
 
 @Slf4j
@@ -34,14 +38,33 @@ public class TokenFilter extends OncePerRequestFilter {
     @Autowired(required = false)
     private SubscriptionService subscriptionService;
     private volatile String apiKey;
+    private volatile String basicAuthCredentials;
 
     public TokenFilter(TokenService tokenService, SettingRepository settingRepository) {
         this.tokenService = tokenService;
         apiKey = settingRepository.findById("api_key").map(Setting::getValue).orElse("");
+        basicAuthCredentials = loadBasicAuthCredentials(settingRepository);
     }
 
     public void setApiKey(String apiKey) {
         this.apiKey = apiKey;
+    }
+
+    public void setBasicAuthCredentials(String basicAuthCredentials) {
+        this.basicAuthCredentials = basicAuthCredentials;
+    }
+
+    private static String loadBasicAuthCredentials(SettingRepository settingRepository) {
+        String username = settingRepository.findById(Constants.BASIC_AUTH_USERNAME).map(Setting::getValue).orElse("");
+        String password = settingRepository.findById(Constants.BASIC_AUTH_PASSWORD).map(Setting::getValue).orElse("");
+        if (username.isEmpty() || password.isEmpty()) {
+            return null;
+        }
+        return encodeBasic(username, password);
+    }
+
+    static String encodeBasic(String username, String password) {
+        return "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
     }
 
     @Override
@@ -49,7 +72,7 @@ public class TokenFilter extends OncePerRequestFilter {
         try {
             if (StringUtils.isNotBlank(apiKey)) {
                 String key = request.getHeader("X-API-KEY");
-                if (apiKey.equals(key)) {
+                if (key != null && MessageDigest.isEqual(apiKey.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8))) {
                     Authentication authentication = new UsernamePasswordAuthenticationToken("client", key, Set.of(new SimpleGrantedAuthority(Role.CLIENT.name())));
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                     filterChain.doFilter(request, response);
@@ -57,19 +80,24 @@ public class TokenFilter extends OncePerRequestFilter {
                 }
             }
 
-            if (request.getRequestURI().startsWith("/open") || request.getRequestURI().startsWith("/node") || request.getRequestURI().startsWith("/cat")) {
+            String uri = request.getRequestURI();
+            if (uri.startsWith("/open") || uri.startsWith("/node") || uri.startsWith("/cat")) {
                 String auth = request.getHeader("Authorization");
-                if (StringUtils.isBlank(auth) || !"Basic YWxpc3Q6YWxpc3Q=".equals(auth)) {
+                boolean ok = basicAuthCredentials != null && auth != null
+                        && MessageDigest.isEqual(basicAuthCredentials.getBytes(StandardCharsets.UTF_8), auth.getBytes(StandardCharsets.UTF_8));
+                if (!ok) {
                     response.setHeader("Www-Authenticate", "Basic realm=\"alist\"");
                     response.sendError(401);
                     return;
                 }
-            } else {
-                String token = getToken(request);
-                if (StringUtils.isNotBlank(token)) {
-                    Authentication authentication = buildAuthentication(token);
-                    SecurityContextHolder.getContext().setAuthentication(authentication);
-                }
+                filterChain.doFilter(request, response);
+                return;
+            }
+
+            String token = getToken(request);
+            if (StringUtils.isNotBlank(token)) {
+                Authentication authentication = buildAuthentication(token);
+                SecurityContextHolder.getContext().setAuthentication(authentication);
             }
             filterChain.doFilter(request, response);
         } catch (UserUnauthorizedException e) {
@@ -93,9 +121,17 @@ public class TokenFilter extends OncePerRequestFilter {
         }
     }
 
+    // 仅这些 GET 下载端点允许 query token(浏览器 window.location.href 无法设置 Authorization 头)
+    private static final Set<String> TOKEN_QUERY_DOWNLOAD_PATHS = Set.of(
+            "/api/settings/export", "/api/settings/export-json",
+            "/api/export-shares", "/api/logs/download", "/api/index-files/download",
+            "/api/static-files/download");
+
     private String getToken(HttpServletRequest request) {
-        var token = request.getHeader("Authorization");
-        if (token == null || token.isEmpty()) {
+        String token = request.getHeader("Authorization");
+        if (StringUtils.isBlank(token)
+                && "GET".equalsIgnoreCase(request.getMethod())
+                && TOKEN_QUERY_DOWNLOAD_PATHS.stream().anyMatch(p -> request.getRequestURI().startsWith(p))) {
             token = request.getParameter("X-ACCESS-TOKEN");
         }
         return token;

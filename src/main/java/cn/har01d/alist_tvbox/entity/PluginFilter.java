@@ -1,14 +1,7 @@
 package cn.har01d.alist_tvbox.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import jakarta.persistence.TableGenerator;
-import jakarta.persistence.Transient;
+import jakarta.persistence.*;
 import cn.har01d.alist_tvbox.model.PluginFilterConfigSchema;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -22,7 +15,9 @@ import java.time.OffsetDateTime;
 @ToString
 @RequiredArgsConstructor
 @Entity
-@Table(name = "plugin_filter")
+@Table(name = "plugin_filter", indexes = {
+    @Index(name = "idx_plugin_filter_url", columnList = "url")
+})
 @TableGenerator(name = "tableGenerator", table = "id_generator", pkColumnName = "entity_name", valueColumnName = "next_id", allocationSize = 1)
 public class PluginFilter {
     @Id
@@ -37,11 +32,11 @@ public class PluginFilter {
     private boolean enabled = true;
 
     @Column(name = "sort_order")
-    private int sortOrder;
+    private Integer sortOrder;
 
     private String stages = "";
 
-    @Column(name = "`extend`", columnDefinition = "TEXT")
+    @Column(name = "\"extend\"", columnDefinition = "TEXT")
     private String extend;
 
     @Column(name = "error_strategy")
@@ -62,7 +57,7 @@ public class PluginFilter {
     @Column(columnDefinition = "TEXT")
     private String content;
 
-    @Column(name = "`version`")
+    @Column(name = "\"version\"")
     private Integer version;
 
     @Column(name = "last_checked_at")

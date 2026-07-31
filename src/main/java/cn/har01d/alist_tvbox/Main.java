@@ -25,7 +25,8 @@ public class Main {
             "com.zaxxer.hikari.HikariConfig",
             "org.sqlite.JDBC",
             "org.sqlite.SQLiteConfig",
-            "org.sqlite.SQLiteConnection"
+            "org.sqlite.SQLiteConnection",
+            "org.hibernate.bytecode.internal.none.BytecodeProviderImpl"
     );
 
     public static void main(String[] args) throws IOException, ClassNotFoundException {
@@ -34,12 +35,15 @@ public class Main {
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.dto.emby"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.dto.tg"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.dto.pansou"));
+        classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.dto.sync"));
+        classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.dto.backup"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.tvbox"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.domain"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.entity"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.model"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.storage"));
         classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.live.model"));
+        classes.addAll(findAllClassesUsingClassLoader("db.migration.current"));
         //classes.addAll(findAllClassesUsingClassLoader("cn.har01d.alist_tvbox.play.model"));
         List<Map<String, Object>> result = new ArrayList<>();
         for (Class clazz : classes) {

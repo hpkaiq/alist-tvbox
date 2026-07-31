@@ -1,14 +1,22 @@
 <template>
-  <div class="list">
-    <h1>网盘账号列表</h1>
-    <el-row justify="end">
+  <div :class="embedded ? '' : 'page-container'">
+    <div class="page-header" v-if="!embedded">
+      <h1 class="page-title">网盘账号列表</h1>
+      <div class="page-actions">
+        <el-button @click="load">刷新</el-button>
+        <el-button @click="openConfig">配置</el-button>
+        <el-button type="primary" @click="handleAdd">添加</el-button>
+      </div>
+    </div>
+    <div v-else class="page-actions" style="margin-bottom: 16px; display: flex; justify-content: flex-end; gap: 12px;">
       <el-button @click="load">刷新</el-button>
       <el-button @click="openConfig">配置</el-button>
       <el-button type="primary" @click="handleAdd">添加</el-button>
-    </el-row>
-    <div class="space"></div>
+    </div>
 
-    <el-table :data="accounts" border style="width: 100%">
+    <div class="page-card">
+    <div class="table-scroll-wrapper">
+    <el-table :data="accounts" border style="width: 100%; min-width: 1200px">
       <el-table-column prop="id" label="ID" sortable width="70">
         <template #default="scope">
           {{ scope.row.id + 4000 }}
@@ -26,6 +34,7 @@
           <span v-else-if="scope.row.type=='CLOUD189'">天翼云盘</span>
           <span v-else-if="scope.row.type=='PAN139'">移动云盘</span>
           <span v-else-if="scope.row.type=='PAN123'">123网盘</span>
+          <span v-else-if="scope.row.type=='OPEN123'">123 Open</span>
           <span v-else-if="scope.row.type=='BAIDU'">百度网盘</span>
           <span v-else-if="scope.row.type=='GUANGYA'">光鸭云盘</span>
         </template>
@@ -76,6 +85,9 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
+    </div>
+  </div>
 
     <el-dialog v-model="formVisible" :title="dialogTitle" width="60%">
       <el-form :model="form" label-width="120">
@@ -93,6 +105,7 @@
             <el-radio label="CLOUD189" size="large">天翼云盘</el-radio>
             <el-radio label="PAN139" size="large">移动云盘</el-radio>
             <el-radio label="PAN123" size="large">123网盘</el-radio>
+            <el-radio label="OPEN123" size="large">123 Open</el-radio>
             <el-radio label="BAIDU" size="large">百度网盘</el-radio>
             <el-radio label="GUANGYA" size="large">光鸭云盘</el-radio>
           </el-radio-group>
@@ -150,6 +163,15 @@
           <a href="https://www.guangyapan.com/" target="_blank">光鸭云盘</a>
           <el-button type="primary" @click="showQrCode">扫码获取</el-button>
           <el-button class="hint" type="primary" @click="getTokenInfo" v-if="form.token">校验Token</el-button>
+        </el-form-item>
+        <el-form-item label="Token" v-if="form.type=='OPEN123'" required>
+          <el-input v-model="form.token" type="textarea" :rows="3"/>
+          <el-button type="primary" @click="showQrCode">授权获取</el-button>
+          <span class="hint">123 开放平台授权(无需 client_id),点击后在新标签页登录授权,再点「我已授权」自动填入</span>
+        </el-form-item>
+        <el-form-item label="Refresh Token" v-if="form.type=='OPEN123'">
+          <el-input v-model="form.addition.refresh_token" type="textarea" :rows="2"/>
+          <span class="hint">授权后自动填入;用于自动刷新,留空则 Access Token 过期需手动更新</span>
         </el-form-item>
         <el-form-item label="认证令牌" v-if="form.type=='BAIDU'">
           <el-input v-model="form.addition.access_token" @change="fixBaiduToken"/>
@@ -227,7 +249,7 @@
           />
           <span class="hint">主账号用来观看分享</span>
         </el-form-item>
-        <el-form-item label="自动签到" v-if="form.type=='CLOUD189'">
+        <el-form-item label="自动签到" v-if="form.type=='CLOUD189'||form.type=='BAIDU'">
           <el-switch
             v-model="form.addition.auto_checkin"
             inline-prompt
@@ -355,13 +377,18 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="qrModel" title="扫码登陆" width="40%">
-      <img alt="qr" :src="'data:image/jpeg;base64,' + qr.qr_data"/>
+    <el-dialog v-model="qrModel" :title="qr.auth_url ? '浏览器授权' : '扫码登陆'" width="40%">
+      <div v-if="qr.auth_url">
+        <p>已在新标签页打开 123 官方授权页面。若未打开，请点击下面的链接：</p>
+        <p><a :href="qr.auth_url" target="_blank" rel="noopener">打开 123 授权页面</a></p>
+        <p class="hint">在该页面登录并同意授权后，回到这里点「我已授权」。</p>
+      </div>
+      <img v-else alt="qr" :src="'data:image/jpeg;base64,' + qr.qr_data"/>
       <template #footer>
       <span class="dialog-footer">
         <el-button @click="qrModel=false">取消</el-button>
-        <el-button @click="showQrCode">刷新二维码</el-button>
-        <el-button type="primary" @click="getRefreshToken">我已扫码</el-button>
+        <el-button @click="showQrCode">{{ qr.auth_url ? '重新授权' : '刷新二维码' }}</el-button>
+        <el-button type="primary" @click="getRefreshToken">{{ qr.auth_url ? '我已授权' : '我已扫码' }}</el-button>
       </span>
       </template>
     </el-dialog>
@@ -387,8 +414,6 @@
       </span>
       </template>
     </el-dialog>
-
-  </div>
 </template>
 
 <script setup lang="ts">
@@ -399,6 +424,10 @@ import {ElMessage} from "element-plus";
 import clipBorad from "vue-clipboard3";
 
 let {toClipboard} = clipBorad();
+
+const props = defineProps<{
+  embedded?: boolean
+}>()
 
 type CloudDriveType = 'ALI' | 'QUARK' | 'UC' | 'PAN115' | 'PAN123' | 'PAN139' | 'BAIDU' | 'GUANGYA'
 
@@ -481,6 +510,7 @@ const form = ref({
 const qr = ref({
   qr_data: '',
   query_token: '',
+  auth_url: '',
 })
 const qrType = ref('')
 const defaultLocalProxyConfig = (): LocalProxyConfig => ({
@@ -772,6 +802,9 @@ const getTypeName = (type: string) => {
   if (type == 'PAN123') {
     return '123网盘'
   }
+  if (type == 'OPEN123') {
+    return '123 Open'
+  }
   if (type == 'BAIDU') {
     return '百度网盘'
   }
@@ -806,6 +839,8 @@ const fullPath = (share: any) => {
     return '/我的移动云盘/' + path
   } else if (share.type == 'PAN123') {
     return '/我的123网盘/' + path
+  } else if (share.type == 'OPEN123') {
+    return '/我的123Open/' + path
   } else if (share.type == 'BAIDU') {
     return '/我的百度网盘/' + path
   } else if (share.type == 'GUANGYA') {
@@ -857,6 +892,10 @@ const showQrCode = () => {
   axios.post('/api/pan/accounts/-/qr?type=' + form.value.type).then(({data}) => {
     qr.value = data
     qrModel.value = true
+    // 123 Open 走浏览器授权(litepan 代理内置 client_id),不是扫码:直接开新标签页。
+    if (data.auth_url) {
+      window.open(data.auth_url, '_blank', 'noopener')
+    }
   })
 }
 
@@ -942,6 +981,9 @@ const getRefreshToken = () => {
       form.value.addition.access_token = data.addition.access_token || data.token || ''
       form.value.addition.refresh_token = data.addition.refresh_token || ''
       form.value.addition.device_id = data.addition.device_id || ''
+    }
+    if (qrType.value == 'OPEN123' && data.addition) {
+      form.value.addition.refresh_token = data.addition.refresh_token || ''
     }
     if (!form.value.name) {
       form.value.name = data.name

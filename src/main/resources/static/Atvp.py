@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import re
+import sys
 import types
 from abc import ABCMeta, abstractmethod
 from importlib.machinery import SourceFileLoader
@@ -162,6 +163,7 @@ class Spider(HostSpider):
     PUBLIC_KEY_XOR = 23
     MASTER_SECRET_XOR = 41
     DETAIL_PREFIX = "atvp_detail:"
+    GROUP_PREFIX = "atvp_group:"
     PUSH_PREFIX = "push://"
     _LEADING_XML_DECL_RE = re.compile(r"<\?xml[^>]*\?>", re.I)
     _LEADING_HTML_TRIM_CHARS = "\ufeff" + "".join(chr(index) for index in range(33))
@@ -199,7 +201,7 @@ class Spider(HostSpider):
         self._vod_token = self._resolve_vod_token(payload)
         self._localProxyConfig = payload.get("local_proxy_config") if isinstance(payload, dict) else {}
         package_text = self._load_source(source)
-        source_text = self._decrypt_secspider_source(package_text)
+        source_text = package_text if self._is_raw_source(payload) else self._decrypt_secspider_source(package_text)
         spider_cls = self._load_inner_spider_class(source_text)
         self._inner = spider_cls()
         result = self._inner.init(inner_extend)
@@ -239,6 +241,9 @@ class Spider(HostSpider):
         if not isinstance(payload, dict):
             return None
         return payload if payload.get("source") or payload.get("api") else None
+
+    def _is_raw_source(self, payload):
+        return isinstance(payload, dict) and payload.get("raw") is True
 
     def _compose_inner_extend(self, payload):
         data_value = payload.get("data")
@@ -510,6 +515,13 @@ class Spider(HostSpider):
                 except etree.XMLSyntaxError as exc:
                     if "encoding not supported" not in str(exc):
                         raise
+                    # original_html 即 etree.HTML(str)，走 lxml 的 _parseUnicodeDoc 路径；
+                    # 部分 Chaquopy/libxml2 构建上会对含编码声明的 unicode 串误报
+                    # "encoding not supported"（如 "USC4 little endian"）。原来的兜底再次
+                    # 用同样的 str 调 etree.HTML，必然重蹈覆辙。这里改用 utf-8 字节走
+                    # _parseMemoryDocument 路径（libxml2 自带 BOM/meta charset 检测）重试。
+                    print("[ATVP] html bytes-retry head=%r" % sanitized[:80], file=sys.stderr)
+                    return HostSpider.html(instance, sanitized.encode("utf-8"))
             return HostSpider.html(instance, sanitized)
 
         spider_cls.html = _wrapped_html
@@ -679,13 +691,71 @@ class Spider(HostSpider):
 
     def _decode_parse(self, vod_id):
         value = str(vod_id or "").strip()
+        if value.startswith(self.PUSH_PREFIX):
+            value = value[len(self.PUSH_PREFIX):].strip()
         if (value.startswith("http://") or value.startswith("https://")
                 or value.startswith("magnet:") or value.startswith("ed2k:")):
             return value
         return None
 
+    def _resolve_deferred_share_url(self, source_id, share_url):
+        original = str(share_url or "").strip()
+        context = self._lookup_play_context(source_id)
+        play_id = str(context.get("play_id") or "").strip()
+        if not play_id.startswith(self.PUSH_PREFIX):
+            return original
+
+        player = getattr(self._require_inner(), "playerContent", None)
+        if not callable(player):
+            return original
+        try:
+            result = player(str(context.get("play_from") or ""), play_id, [])
+        except Exception as exc:
+            self.log(f"Atvp deferred share resolve failed: {exc}")
+            return original
+
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return original
+        if not isinstance(result, dict):
+            return original
+
+        resolved = str(result.get("url") or "").strip()
+        if resolved.startswith(self.PUSH_PREFIX):
+            resolved = resolved[len(self.PUSH_PREFIX):].strip()
+        return self._decode_parse(resolved) or original
+
     def _encode_category_id(self, vod_id):
         return self.DETAIL_PREFIX + vod_id
+
+    def _encode_group_id(self, source_id, group_index):
+        payload = json.dumps(
+            {"id": str(source_id or ""), "group": int(group_index)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        return self.GROUP_PREFIX + encoded
+
+    def _decode_group_id(self, category_id):
+        value = str(category_id or "").strip()
+        if not value.startswith(self.GROUP_PREFIX):
+            return None
+        try:
+            encoded = value[len(self.GROUP_PREFIX):]
+            encoded += "=" * (-len(encoded) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(
+                encoded.encode("ascii")
+            ).decode("utf-8"))
+            source_id = str(payload.get("id") or "")
+            group_index = int(payload.get("group"))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not source_id or group_index < 0:
+            return None
+        return source_id, group_index
 
     def _parse(self, share_url):
         api = self._build_backend_endpoint("parse")
@@ -865,18 +935,95 @@ class Spider(HostSpider):
             "total": 0,
         }
 
-    def _split_detail_to_vods(self, source_id):
+    def _category_result(self, items):
+        return {
+            "list": items,
+            "page": 1,
+            "pagecount": 1,
+            "limit": len(items),
+            "total": len(items),
+        }
+
+    def _load_category_detail_vod(self, source_id):
         detail_result = self._require_inner().detailContent([source_id])
         detail_result = self._run_filters("detail", detail_result, {"ids": [source_id], "source": "category"})
         self._cache_detail_result(detail_result)
         self._cache_play_context(detail_result)
         vod_list = detail_result.get("list") if isinstance(detail_result, dict) else None
         if not isinstance(vod_list, list) or len(vod_list) != 1:
-            return self._empty_category_result()
+            return None
 
         vod = vod_list[0]
         if not isinstance(vod, dict):
+            return None
+        return vod
+
+    def _group_folder_items(self, source_id, vod):
+        groups = vod.get("group")
+        if not isinstance(groups, list):
+            return []
+
+        items = []
+        for group_index, group in enumerate(groups):
+            if not isinstance(group, dict):
+                continue
+            media = group.get("media")
+            if not isinstance(media, list) or not media:
+                continue
+            resource_count = sum(
+                1 for item in media
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            )
+            if not resource_count:
+                continue
+            group_name = str(group.get("name") or "资源").strip() or "资源"
+            items.append({
+                "vod_id": self._encode_group_id(source_id, group_index),
+                "vod_name": f"{group_name} ({resource_count})",
+                "vod_pic": vod.get("vod_pic", ""),
+                "vod_remarks": vod.get("vod_remarks", ""),
+                "vod_tag": "folder",
+            })
+        return items
+
+    def _split_group_to_vods(self, source_id, group_index):
+        vod = self._load_category_detail_vod(source_id)
+        if vod is None:
             return self._empty_category_result()
+
+        groups = vod.get("group")
+        if not isinstance(groups, list) or group_index >= len(groups):
+            return self._empty_category_result()
+        group = groups[group_index]
+        if not isinstance(group, dict) or not isinstance(group.get("media"), list):
+            return self._empty_category_result()
+
+        items = []
+        for media in group["media"]:
+            if not isinstance(media, dict):
+                continue
+            target = str(media.get("url") or "").strip()
+            if not target:
+                continue
+            if target.startswith(self.PUSH_PREFIX):
+                target = target[len(self.PUSH_PREFIX):]
+            items.append({
+                "vod_id": target,
+                "vod_name": str(media.get("name") or group.get("name") or "资源").strip() or "资源",
+                "vod_pic": vod.get("vod_pic", ""),
+                "vod_remarks": vod.get("vod_remarks", ""),
+                "vod_tag": "file",
+            })
+        return self._category_result(items)
+
+    def _split_detail_to_vods(self, source_id):
+        vod = self._load_category_detail_vod(source_id)
+        if vod is None:
+            return self._empty_category_result()
+
+        group_items = self._group_folder_items(source_id, vod)
+        if group_items:
+            return self._category_result(group_items)
 
         play_from_value = str(vod.get("vod_play_from") or "")
         play_url_value = str(vod.get("vod_play_url") or "")
@@ -902,14 +1049,7 @@ class Spider(HostSpider):
                 "vod_tag": "file",
             }
             items.append(item)
-        vod = {
-            "list": items,
-            "page": 1,
-            "pagecount": 1,
-            "limit": len(items),
-            "total": len(items),
-        }
-        return vod
+        return self._category_result(items)
 
     def _normalize_category_content(self, result):
         if not isinstance(result, dict):
@@ -950,6 +1090,9 @@ class Spider(HostSpider):
         print('categoryContent', tid, pg, filter, extend)
         if not self._category_mode_enabled():
             return self._require_inner().categoryContent(tid, pg, filter, extend)
+        group_target = self._decode_group_id(tid)
+        if group_target is not None:
+            return self._split_group_to_vods(*group_target)
         if tid.startswith(self.DETAIL_PREFIX):
             tid = tid[len(self.DETAIL_PREFIX):]
             return self._split_detail_to_vods(tid)
@@ -959,9 +1102,13 @@ class Spider(HostSpider):
     def detailContent(self, ids):
         print('detailContent', ids)
         if isinstance(ids, (list, tuple)) and len(ids) == 1:
-            share_url = self._decode_parse(ids[0])
+            raw_id = str(ids[0] or "").strip()
+            share_url = self._decode_parse(raw_id)
             if share_url is not None:
-                return self._parse(share_url)
+                resolved_url = self._resolve_deferred_share_url(raw_id, share_url)
+                if resolved_url != share_url and share_url in self._detail_result_cache:
+                    self._detail_result_cache[resolved_url] = self._detail_result_cache[share_url]
+                return self._parse(resolved_url)
         result = self._require_inner().detailContent(ids)
         result = self._run_filters("detail", result, {"ids": ids})
         self._cache_detail_result(result)

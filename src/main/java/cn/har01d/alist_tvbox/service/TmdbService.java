@@ -24,7 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -304,6 +304,7 @@ public class TmdbService {
 
     @Async
     public void scrape(Integer siteId, String indexName, boolean force) throws IOException {
+        Utils.requireSafePathSegment(indexName);
         Path path = Utils.getIndexPath(String.valueOf(siteId), indexName + ".txt");
         if (!Files.exists(path)) {
             throw new BadRequestException("索引文件不存在");

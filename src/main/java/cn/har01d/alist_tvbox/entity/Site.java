@@ -1,11 +1,7 @@
 package cn.har01d.alist_tvbox.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.TableGenerator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
@@ -16,10 +12,13 @@ import java.util.Objects;
 
 @Getter
 @Setter
-@ToString
+@ToString(exclude = {"password", "token"})
 @RequiredArgsConstructor
 @Entity
 @TableGenerator(name = "tableGenerator", table = "id_generator", pkColumnName = "entity_name", valueColumnName = "next_id", allocationSize = 1)
+@Table(indexes = {
+    @Index(name = "idx_site_url", columnList = "url")
+})
 public class Site {
     @Id
     @GeneratedValue(strategy = GenerationType.TABLE, generator = "tableGenerator")
@@ -29,16 +28,18 @@ public class Site {
     private String url;
     private String password = "";
     private String token = "";
-    private String indexFile;
+    private String indexFile = "";
     private String folder = "";
     private boolean searchable;
     private boolean disabled;
     @Column(columnDefinition = "boolean default false")
     private boolean xiaoya;
-    @Column(name = "`order`")
-    private int order;
-    @Column(name = "`version`")
-    private Integer version;
+    @Column(name = "sort_order")
+    @JsonProperty("order")
+    private Integer sortOrder;
+    @Column(name = "storage_version")
+    @JsonProperty("version")
+    private Integer storageVersion;
 
     @Override
     public boolean equals(Object o) {

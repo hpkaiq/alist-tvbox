@@ -7,11 +7,15 @@ import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.domain.Role;
 import cn.har01d.alist_tvbox.dto.SearchSetting;
+import cn.har01d.alist_tvbox.dto.backup.BackupRestoreMode;
+import cn.har01d.alist_tvbox.dto.backup.BackupRestoreResponse;
 import cn.har01d.alist_tvbox.entity.DriverAccountRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
+import cn.har01d.alist_tvbox.service.backup.DatabaseBackupService;
 import cn.har01d.alist_tvbox.util.Constants;
+import cn.har01d.alist_tvbox.util.IdUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,16 +34,22 @@ import org.springframework.util.CollectionUtils;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipOutputStream;
 
@@ -55,6 +65,8 @@ public class SettingService {
     private final SettingRepository settingRepository;
     private final DriverAccountRepository driverAccountRepository;
     private final ObjectMapper objectMapper;
+    private final GitHubProxyService gitHubProxyService;
+    private final DatabaseBackupService databaseBackupService;
 
     public SettingService(JdbcTemplate jdbcTemplate,
                           Environment environment,
@@ -64,7 +76,9 @@ public class SettingService {
                           TokenFilter tokenFilter,
                           SettingRepository settingRepository,
                           DriverAccountRepository driverAccountRepository,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          GitHubProxyService gitHubProxyService,
+                          DatabaseBackupService databaseBackupService) {
         this.jdbcTemplate = jdbcTemplate;
         this.environment = environment;
         this.appProperties = appProperties;
@@ -74,6 +88,8 @@ public class SettingService {
         this.settingRepository = settingRepository;
         this.driverAccountRepository = driverAccountRepository;
         this.objectMapper = objectMapper;
+        this.gitHubProxyService = gitHubProxyService;
+        this.databaseBackupService = databaseBackupService;
     }
 
     @PostConstruct
@@ -97,6 +113,13 @@ public class SettingService {
         appProperties.setPanSouPassword(settingRepository.findById("pan_sou_password").map(Setting::getValue).orElse(""));
         appProperties.setPanSouLinkCheckEnabled(settingRepository.findById("pan_sou_link_check_enabled").map(Setting::getValue).orElse("").equals("true"));
         appProperties.setPanSouLinkCheckMaxCount(settingRepository.findById("pan_sou_link_check_max_count").map(Setting::getValue).map(Integer::parseInt).orElse(30));
+        appProperties.setPanSouLinkCheckTypes(parseList(settingRepository.findById("pan_sou_link_check_types").map(Setting::getValue).orElse("")));
+        appProperties.setPanSouConc(settingRepository.findById("pan_sou_conc").map(Setting::getValue)
+                .filter(StringUtils::isNotBlank).map(v -> Integer.parseInt(v.trim())).orElse(null));
+        appProperties.setPanSouRefresh(settingRepository.findById("pan_sou_refresh").map(Setting::getValue).orElse("").equals("true"));
+        appProperties.setPanSouRes(settingRepository.findById("pan_sou_res").map(Setting::getValue).filter(StringUtils::isNotBlank).orElse("merge"));
+        appProperties.setPanSouFilterInclude(parseList(settingRepository.findById("pan_sou_filter_include").map(Setting::getValue).orElse("")));
+        appProperties.setPanSouFilterExclude(parseList(settingRepository.findById("pan_sou_filter_exclude").map(Setting::getValue).orElse("")));
         appProperties.setTgSortField(settingRepository.findById("tg_sort_field").map(Setting::getValue).orElse("time"));
         appProperties.setTempShareExpiration(settingRepository.findById("temp_share_expiration").map(Setting::getValue).map(Integer::parseInt).orElse(72));
         appProperties.setValidateSharesInterval(settingRepository.findById("validateSharesInterval").map(Setting::getValue).map(Integer::parseInt).orElse(4));
@@ -145,16 +168,57 @@ public class SettingService {
         if (!settingRepository.existsById("api_key")) {
             generateApiKey();
         }
+        initBasicAuthCredentials();
         appProperties.setSystemId(value);
         log.info("system id: {}", value);
     }
 
+    private List<String> parseList(String value) {
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        return Arrays.stream(value.split(",")).map(String::trim).filter(StringUtils::isNotBlank).toList();
+    }
+
     public String generateApiKey() {
         String apiKey = UUID.randomUUID().toString().replace("-", "");
-        log.debug("generate api key: {}", apiKey);
+        log.debug("generate api key: {}", Utils.mask(apiKey));
         settingRepository.save(new Setting("api_key", apiKey));
         tokenFilter.setApiKey(apiKey);
         return apiKey;
+    }
+
+    public void initBasicAuthCredentials() {
+        String username = settingRepository.findById(Constants.BASIC_AUTH_USERNAME).map(Setting::getValue).orElse("");
+        String password = settingRepository.findById(Constants.BASIC_AUTH_PASSWORD).map(Setting::getValue).orElse("");
+        if (username.isEmpty() || password.isEmpty()) {
+            username = IdUtils.generate(8);
+            password = IdUtils.generate(16);
+            settingRepository.save(new Setting(Constants.BASIC_AUTH_USERNAME, username));
+            settingRepository.save(new Setting(Constants.BASIC_AUTH_PASSWORD, password));
+            log.info("generated basic auth credentials (username={})", username);
+        }
+        tokenFilter.setBasicAuthCredentials(encodeBasicAuthHeader(username, password));
+    }
+
+    public Map<String, String> getBasicAuthCredentials() {
+        String username = settingRepository.findById(Constants.BASIC_AUTH_USERNAME).map(Setting::getValue).orElse("");
+        String password = settingRepository.findById(Constants.BASIC_AUTH_PASSWORD).map(Setting::getValue).orElse("");
+        return Map.of("username", username, "password", password);
+    }
+
+    public Map<String, String> regenerateBasicAuthCredentials() {
+        String username = IdUtils.generate(8);
+        String password = IdUtils.generate(16);
+        settingRepository.save(new Setting(Constants.BASIC_AUTH_USERNAME, username));
+        settingRepository.save(new Setting(Constants.BASIC_AUTH_PASSWORD, password));
+        tokenFilter.setBasicAuthCredentials(encodeBasicAuthHeader(username, password));
+        log.info("regenerated basic auth credentials (username={})", username);
+        return Map.of("username", username, "password", password);
+    }
+
+    private static String encodeBasicAuthHeader(String username, String password) {
+        return "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
     }
 
     public FileSystemResource exportDatabase() throws IOException {
@@ -165,27 +229,115 @@ public class SettingService {
         return new FileSystemResource(out);
     }
 
+    public FileSystemResource exportJsonDatabase() throws Exception {
+        return new FileSystemResource(databaseBackupService.exportBackupZip());
+    }
+
+    public BackupRestoreResponse importJsonDatabase(org.springframework.web.multipart.MultipartFile file,
+                                                    BackupRestoreMode mode) throws Exception {
+        Path temp = Files.createTempFile("database-json-upload-", ".zip");
+        try {
+            file.transferTo(temp);
+            return databaseBackupService.restoreBackupZip(temp.toFile(), mode);
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
     @Scheduled(cron = "0 0 6 * * *")
     public File backupDatabase() {
         if (environment.matchesProfiles("mysql")) {
             return null;
         }
 
+        Set<String> blacklist = Set.of(
+                "FLYWAY_SCHEMA_HISTORY",
+                "META",
+                "MOVIE",
+                "ALIAS",
+                "INFORMATION_SCHEMA"
+        );
+
         try {
-            jdbcTemplate.execute("SCRIPT TO '/tmp/script.sql' TABLE ACCOUNT, ALIST_ALIAS, CONFIG_FILE, ID_GENERATOR, INDEX_TEMPLATE, NAVIGATION, PIK_PAK_ACCOUNT, SETTING, SHARE, SITE, SUBSCRIPTION, TASK, x_user, TMDB, TMDB_META, DEVICE, DRIVER_ACCOUNT, EMBY, HISTORY, JELLYFIN, PLAY_URL, TENANT, SESSION");
-            File out = Utils.getDataPath("backup", "database-" + LocalDate.now() + ".zip").toFile();
-            out.createNewFile();
+            List<String> tables = listTables();
+            log.debug("tables: {}  blacklist: {}", tables, blacklist);
+
+            String tableList = tables.stream()
+                    .filter(t -> blacklist.stream().noneMatch(b -> b.equalsIgnoreCase(t)))
+                    .collect(Collectors.joining(", "));
+
+            log.info("backup database tables: {}", tableList);
+            File dir = new File("/tmp");
+            File sqlFile = new File(dir, "script.sql");
+
+            jdbcTemplate.execute("SCRIPT TO '" + sqlFile.getAbsolutePath() + "' TABLE " + tableList);
+
+            File out = Utils.getDataPath(
+                    "backup",
+                    backupFilename("database-")
+            ).toFile();
+
             try (FileOutputStream fos = new FileOutputStream(out);
                  ZipOutputStream zipOut = new ZipOutputStream(fos)) {
-                File fileToZip = new File("/tmp/script.sql");
-                Utils.zipFile(fileToZip, fileToZip.getName(), zipOut);
+                Utils.zipFile(sqlFile, sqlFile.getName(), zipOut);
             }
             cleanBackups();
             return out;
         } catch (Exception e) {
             log.warn("backup database failed", e);
         }
+
         return null;
+    }
+
+    /**
+     * Daily repository-based (database-independent) JSON backup, scheduled alongside the SQL backup.
+     * Unlike {@link #backupDatabase()} this works on MySQL too – it exports through JPA repositories,
+     * not H2's {@code SCRIPT TO}. Archive is written to {@code backup/database-json-<date>.zip} and
+     * pruned by {@link #cleanBackups()}.
+     */
+    @Scheduled(cron = "0 30 6 * * *")
+    public File backupJsonDatabase() {
+        return backupJsonDatabase(false);
+    }
+
+    /**
+     * On-demand JSON backup. {@code includeDouban=true} also exports the large movie/meta/alias tables
+     * — used by the DB migration path so the target instance receives douban data. The daily scheduled
+     * backup omits them to stay small.
+     */
+    public File backupJsonDatabase(boolean includeDouban) {
+        try {
+            File exported = databaseBackupService.exportBackupZip(includeDouban);
+            File out = Utils.getDataPath("backup", backupFilename("database-json-")).toFile();
+            Files.copy(exported.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            if (!exported.delete()) {
+                exported.deleteOnExit();
+            }
+            log.info("JSON database backup saved to {}", out.getAbsolutePath());
+            cleanBackups();
+            return out;
+        } catch (Exception e) {
+            log.warn("JSON database backup failed", e);
+        }
+        return null;
+    }
+
+    private List<String> listTables() {
+        return jdbcTemplate.query(
+                "SHOW TABLES",
+                (rs, rowNum) -> rs.getString(1)
+        );
+    }
+
+    private static final Pattern DATE_TIME = Pattern.compile("\\d{4}-\\d{2}-\\d{2}-\\d{6}");
+
+    /** 备份文件名时间戳：database[-json]-yyyy-MM-dd-HHmmss.zip。用 LocalDateTime.now() 取单一原子时刻，
+     *  一天内多次备份（定时 + 立即）互不覆盖；cleanBackups 仍按日期保留 7 天。 */
+    private static final DateTimeFormatter BACKUP_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss");
+
+    private static String backupFilename(String prefix) {
+        return prefix + LocalDateTime.now().format(BACKUP_FMT) + ".zip";
     }
 
     private void cleanBackups() {
@@ -193,7 +345,10 @@ public class SettingService {
         for (File file : Utils.listFiles(Utils.getDataPath("backup"), "zip")) {
             if (file.getName().startsWith("database-")) {
                 try {
-                    String name = file.getName().replace("database-", "").replace(".zip", "");
+                    String name = file.getName().replace("database-", "").replace(".zip", "").replace("json-", "");
+                    if (DATE_TIME.matcher(name).matches()) {
+                        name = name.substring(0, "2026-06-16".length());
+                    }
                     LocalDate date = LocalDate.parse(name);
                     if (date.isBefore(day)) {
                         file.delete();
@@ -222,11 +377,48 @@ public class SettingService {
             settings.put("token", SecurityContextHolder.getContext().getAuthentication().getPrincipal().toString());
             return settings;
         }
+        // 非 ADMIN(如 CLIENT)一律脱敏密钥类配置,避免泄漏 api_key、各 *_token/password/secret/cookie
+        if (!isAdmin()) {
+            map.keySet().removeIf(SettingService::isSecretKey);
+        }
         return map;
     }
 
     public Setting get(String name) {
-        return settingRepository.findById(name).orElse(null);
+        Setting setting = settingRepository.findById(name).orElse(null);
+        if (setting != null && isSecretKey(name)) {
+            var auth = SecurityContextHolder.getContext().getAuthentication();
+            // 仅在"已认证但非 ADMIN"时拒绝(防 CLIENT 经 /api/settings/{name} 绕过 findAll 脱敏);内部调用(无认证上下文)放行
+            if (auth != null && !isAdmin()) {
+                throw new BadRequestException("无权访问该配置");
+            }
+        }
+        return setting;
+    }
+
+    private static boolean isAdmin() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> Role.ADMIN.name().equals(a.getAuthority()));
+    }
+
+    private static final Set<String> SECRET_SUFFIXES =
+            Set.of("password", "secret", "api_key", "apikey", "token", "cookie", "refresh_token");
+
+    private static boolean isSecretKey(String name) {
+        if (name == null) {
+            return false;
+        }
+        String n = name.toLowerCase();
+        if (n.equals("api_key") || n.equals("token")) {
+            return true;
+        }
+        for (String s : SECRET_SUFFIXES) {
+            if (n.endsWith(s)) {
+                return true;
+            }
+        }
+        return n.contains("password") || n.contains("secret");
     }
 
     public Setting update(Setting setting) {
@@ -323,8 +515,30 @@ public class SettingService {
             setting.setValue(String.valueOf(value));
             appProperties.setPanSouLinkCheckMaxCount(value);
         }
+        if ("pan_sou_link_check_types".equals(setting.getName())) {
+            appProperties.setPanSouLinkCheckTypes(parseList(setting.getValue()));
+        }
         if ("panSouPlugins".equals(setting.getName())) {
             appProperties.setPanSouPlugins(Arrays.asList(setting.getValue().split(",")));
+        }
+        if ("pan_sou_conc".equals(setting.getName())) {
+            if (StringUtils.isBlank(setting.getValue())) {
+                appProperties.setPanSouConc(null);
+            } else {
+                appProperties.setPanSouConc(Math.max(0, Integer.parseInt(setting.getValue().trim())));
+            }
+        }
+        if ("pan_sou_refresh".equals(setting.getName())) {
+            appProperties.setPanSouRefresh("true".equals(setting.getValue()));
+        }
+        if ("pan_sou_res".equals(setting.getName())) {
+            appProperties.setPanSouRes(StringUtils.isBlank(setting.getValue()) ? "merge" : setting.getValue());
+        }
+        if ("pan_sou_filter_include".equals(setting.getName())) {
+            appProperties.setPanSouFilterInclude(parseList(setting.getValue()));
+        }
+        if ("pan_sou_filter_exclude".equals(setting.getName())) {
+            appProperties.setPanSouFilterExclude(parseList(setting.getValue()));
         }
         if ("tg_sort_field".equals(setting.getName())) {
             appProperties.setTgSortField(setting.getValue());
@@ -355,6 +569,39 @@ public class SettingService {
         }
         if ("ali_to_115".equals(setting.getName())) {
             aListLocalService.updateSetting("ali_to_115", setting.getValue(), "bool");
+        }
+        if ("ali_to_123".equals(setting.getName())) {
+            aListLocalService.updateSetting("ali_to_123", setting.getValue(), "bool");
+        }
+        if ("115_to_123".equals(setting.getName())) {
+            aListLocalService.updateSetting("115_to_123", setting.getValue(), "bool");
+        }
+        if ("quark_to_123".equals(setting.getName())) {
+            aListLocalService.updateSetting("quark_to_123", setting.getValue(), "bool");
+        }
+        if ("uc_to_123".equals(setting.getName())) {
+            aListLocalService.updateSetting("uc_to_123", setting.getValue(), "bool");
+        }
+        if ("guangya_to_123".equals(setting.getName())) {
+            aListLocalService.updateSetting("guangya_to_123", setting.getValue(), "bool");
+        }
+        if ("github_proxy".equals(setting.getName())) {
+            try {
+                gitHubProxyService.saveToFile(setting.getValue());
+            } catch (IOException e) {
+                log.error("保存 GitHub 代理到文件失败", e);
+            }
+        }
+        if ("github_proxy_list".equals(setting.getName())) {
+            try {
+                // 解析 JSON 数组
+                List<String> proxyList = objectMapper.readValue(setting.getValue(),
+                        new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {
+                        });
+                gitHubProxyService.saveProxyListToFile(proxyList);
+            } catch (IOException e) {
+                log.error("保存 GitHub 代理列表到文件失败", e);
+            }
         }
         return settingRepository.save(setting);
     }
@@ -449,12 +696,12 @@ public class SettingService {
                 sources.add("index.video.txt");
             }
 
-            if (driverAccountRepository.countByType(DriverType.PAN115) > 0) {
-                Path index115 = Utils.getIndexPath("index.115.txt");
-                if (Files.exists(index115)) {
-                    sources.add("index.115.txt");
-                }
-            }
+//            if (driverAccountRepository.countByType(DriverType.PAN115) > 0) {
+//                Path index115 = Utils.getIndexPath("index.115.txt");
+//                if (Files.exists(index115)) {
+//                    sources.add("index.115.txt");
+//                }
+//            }
         } else {
             for (int i = 0; i < sources.size(); i++) {
                 String source = sources.get(i);

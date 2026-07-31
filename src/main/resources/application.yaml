@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   main:
     allow-bean-definition-overriding: true
   servlet:
@@ -10,7 +13,7 @@ spring:
     username: sa
     password: password
     driverClassName: org.h2.Driver
-  jackson:
+  jackson2:
     default-property-inclusion: non_null
     serialization:
       INDENT_OUTPUT: true
@@ -20,14 +23,16 @@ spring:
   jpa:
     hibernate:
       # possible values: validate | update | create | create-drop
-      ddl-auto: update
+      ddl-auto: validate
     database-platform: org.hibernate.dialect.H2Dialect
-    defer-datasource-initialization: true
     open-in-view: false
-    properties:
-      hibernate:
-        hbm2ddl:
-          auto: update
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    # {vendor} = per-DB SQL V1; common = portable SQL V4/V5; current = Java V2/V3
+    # (package db.migration.current; no SQL lives there). All three needed so the Java
+    # migrations are discovered via package scan in JVM mode.
+    locations: classpath:db/migration/{vendor},classpath:db/migration/common,classpath:db/migration/current
   sql:
     init:
       mode: always
@@ -105,5 +110,5 @@ app:
   sites:
     - name: 本地
       url: ${ALIST_URL:http://127.0.0.1:5244}
-      version: 3
+      version: 4
       searchable: true

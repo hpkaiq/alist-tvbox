@@ -14,7 +14,7 @@ import lombok.ToString;
 
 @Getter
 @Setter
-@ToString
+@ToString(exclude = "token")
 @RequiredArgsConstructor
 @Entity
 public class Session {
@@ -30,6 +30,12 @@ public class Session {
     private String username;
 
     private String role;
+
+    @Column(name = "login_ip")
+    private String loginIp;
+
+    @Column(name = "user_agent")
+    private String userAgent;
 
     private Instant expireTime;
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 脚本版本
+SCRIPT_VERSION="4.0.0"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -10,29 +13,61 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
 
-# 版本定义
+# 镜像定义
 declare -A VERSIONS=(
-  ["1"]="haroldli/alist-tvbox              - 纯净版（推荐）"
-  ["2"]="haroldli/alist-tvbox:native       - 纯净原生版"
-  ["3"]="haroldli/alist-tvbox:python       - 纯净版（Python运行环境）"
-  ["4"]="haroldli/xiaoya-tvbox             - 小雅集成版（推荐）"
-  ["5"]="haroldli/xiaoya-tvbox:native      - 小雅原生版"
-  ["6"]="haroldli/xiaoya-tvbox:native-host - 小雅原生主机版"
-  ["7"]="haroldli/xiaoya-tvbox:host        - 小雅主机模式版"
-  ["8"]="haroldli/xiaoya-tvbox:python      - 小雅版（Python运行环境）"
-  ["9"]="haroldli/xiaoya-tvbox:dev         - 开发测试版"
+  ["1"]="haroldli/alist-tvbox               - 纯净版（推荐）"
+  ["2"]="haroldli/alist-tvbox-native        - 纯净原生版"
+  ["3"]="haroldli/alist-tvbox-python        - 不再更新"
+  ["4"]="haroldli/xiaoya-tvbox              - 小雅集成版（推荐）"
+  ["5"]="haroldli/xiaoya-tvbox-native       - 小雅原生版"
+  ["6"]="haroldli/xiaoya-tvbox-native-host  - 小雅原生主机版"
+  ["7"]="haroldli/xiaoya-tvbox-host         - 小雅主机模式版"
+  ["8"]="haroldli/xiaoya-tvbox:hostmode-dev - 开发测试版host网络"
+  ["9"]="haroldli/xiaoya-tvbox:dev          - 开发测试版"
 )
 
 # 默认配置
 CONFIG_FILE="$HOME/.config/alist-tvbox/app.conf"
 
+detect_best_base_dir() {
+  local best_path="/opt/alist-tvbox"
+  local best_size=0
+
+  local candidates=(
+    "/volume1/docker/alist-tvbox"
+    "/volume2/docker/alist-tvbox"
+    "/volume3/docker/alist-tvbox"
+    "/share/CACHEDEV1_DATA/docker/alist-tvbox"
+    "/share/CACHEDEV2_DATA/docker/alist-tvbox"
+  )
+
+  for p in "${candidates[@]}"; do
+    local base
+    base="$(dirname "$p")"
+    if [[ -d "$base" ]]; then
+      local avail
+      avail="$(df -P "$base" 2>/dev/null | awk 'NR==2 {print $4}')"
+      if [[ -n "$avail" && "$avail" =~ ^[0-9]+$ && "$avail" -gt "$best_size" ]]; then
+        best_size="$avail"
+        best_path="$p"
+      fi
+    fi
+  done
+
+  echo "$best_path"
+}
+detect_base_dir() {
+    if [[ -f "/proc/sys/kernel/syno_hw_version" ]]; then
+        echo "/volume1/docker/alist-tvbox"
+    else
+        echo "/opt/alist-tvbox"
+    fi
+}
+
 # 初始化基础目录
-INITIAL_BASE_DIR="/etc/xiaoya"
-if [[ -d "$INITIAL_BASE_DIR" ]]; then
-    DEFAULT_BASE_DIR="$INITIAL_BASE_DIR"
-else
-    DEFAULT_BASE_DIR="$PWD/alist-tvbox"
-fi
+
+
+DEFAULT_BASE_DIR=$(detect_base_dir)
 
 declare -A DEFAULT_CONFIG=(
   ["MODE"]="docker"
@@ -165,6 +200,15 @@ check_existing_container() {
     fi
 }
 
+# 规整端口：去除空白/换行，仅保留纯数字；非法则回退默认值。
+# 防止从容器反推出的 HostPort 带异常字符（如换行）导致 docker run -p 解析失败。
+sanitize_port() {
+  local v="${1//[[:space:]]/}"
+  local default="$2"
+  [[ "$v" =~ ^[0-9]+$ ]] || v="$default"
+  printf '%s' "$v"
+}
+
 get_container_config() {
     local container_name="${1:-$(get_container_name)}"
 
@@ -179,10 +223,12 @@ get_container_config() {
 
     # 获取端口映射（非 host 网络时）
     if [[ "${CONFIG[NETWORK]}" != "host" ]]; then
-        CONFIG["PORT1"]=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "4567/tcp") 0).HostPort}}' "$container_name" 2>/dev/null || echo "4567")
-        local alist_port_key
+        local p1 p2 alist_port_key
+        p1="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "4567/tcp") 0).HostPort}}' "$container_name" 2>/dev/null || true)"
         alist_port_key="$(get_alist_container_port "${CONFIG[IMAGE_NAME]}")"
-        CONFIG["PORT2"]=$(docker inspect --format "{{(index (index .NetworkSettings.Ports \"$alist_port_key\") 0).HostPort}}" "$container_name" 2>/dev/null || echo "5344")
+        p2="$(docker inspect --format "{{(index (index .NetworkSettings.Ports \"$alist_port_key\") 0).HostPort}}" "$container_name" 2>/dev/null || true)"
+        CONFIG["PORT1"]="$(sanitize_port "$p1" 4567)"
+        CONFIG["PORT2"]="$(sanitize_port "$p2" 5344)"
     fi
 
     # 获取重启策略
@@ -195,13 +241,62 @@ get_container_config() {
     echo -e "${CYAN}已从现有容器加载配置${NC}"
 }
 
+# 从现存容器同步运行时配置（镜像/网络/端口/重启策略）到内存 CONFIG，
+# 用于显示真实状态——即使用户绕过脚本手动改动了容器（如切换镜像、host<->bridge）。
+# 故意不覆盖 BASE_DIR（以免影响 install/update 的迁移逻辑），也不写回 app.conf。
+sync_runtime_config() {
+  local name="" n
+  for n in "$(get_container_name)" "$(get_opposite_container_name)"; do
+    [[ -n "$n" ]] || continue
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${n}\$"; then
+      name="$n"
+      break
+    fi
+  done
+  [[ -n "$name" ]] || return 1
+
+  local saved_base="${CONFIG[BASE_DIR]:-}"
+  get_container_config "$name" >/dev/null
+  [[ -n "$saved_base" ]] && CONFIG["BASE_DIR"]="$saved_base"
+  return 0
+}
+
+# 从镜像名提取基础名（去除 :tag，正确处理 registry:port）
+get_image_base() {
+  local image="$1"
+  local name="${image##*/}"
+  if [[ "$name" == *:* ]]; then
+    echo "${image%:*}"
+  else
+    echo "$image"
+  fi
+}
+
+# 从镜像名提取 tag（无 tag 返回空，表示 latest）
+get_image_tag() {
+  local image="$1"
+  local name="${image##*/}"
+  if [[ "$name" == *:* ]]; then
+    echo "${name#*:}"
+  fi
+}
+
 get_image_id_from_name() {
   local image="$1"
   local key candidate
+  # Pass 1: 精确匹配（处理 :dev 等预定义 tag）
   for key in "${!VERSIONS[@]}"; do
     candidate="${VERSIONS[$key]%% - *}"
     candidate="${candidate//[[:space:]]/}"
-    if [[ "$candidate" == "$image" || "${candidate}:latest" == "$image" || "$candidate" == "${image%:latest}" ]]; then
+    [[ "$candidate" == "$image" ]] && { echo "$key"; return 0; }
+  done
+  # Pass 2: 按基础名匹配（处理 :1.9.0 等自定义 tag，仅匹配无预定义 tag 的 latest 型镜像）
+  local ibase
+  ibase="$(get_image_base "$image")"
+  for key in "${!VERSIONS[@]}"; do
+    candidate="${VERSIONS[$key]%% - *}"
+    candidate="${candidate//[[:space:]]/}"
+    if [[ "$(get_image_base "$candidate")" == "$ibase" && -z "$(get_image_tag "$candidate")" ]]; then
       echo "$key"
       return 0
     fi
@@ -270,6 +365,742 @@ save_config() {
   chmod 600 "$CONFIG_FILE"
 }
 
+# 数据库类型 -> JDBC 驱动类名
+db_driver_for() {
+  case "$1" in
+    mysql)      echo "com.mysql.cj.jdbc.Driver" ;;
+    postgresql) echo "org.postgresql.Driver" ;;
+  esac
+}
+
+# 数据库类型 -> Hibernate 方言
+db_dialect_for() {
+  case "$1" in
+    mysql)      echo "org.hibernate.dialect.MySQLDialect" ;;
+    postgresql) echo "org.hibernate.dialect.PostgreSQLDialect" ;;
+  esac
+}
+
+# 根据数据库类型拼装 JDBC URL。
+build_jdbc_url() {
+  local type="$1" host="$2" port="$3" db="$4"
+  case "$type" in
+    mysql)
+      echo "jdbc:mysql://${host}:${port}/${db}?allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8" ;;
+    postgresql)
+      echo "jdbc:postgresql://${host}:${port}/${db}?options=-c%20TimeZone=Asia/Shanghai" ;;
+  esac
+}
+
+default_db_host() {
+  local host
+  host="$(get_host_ip)"
+  if [[ -n "$host" ]]; then
+    echo "$host"
+  else
+    echo "localhost"
+  fi
+}
+
+normalize_jdbc_url() {
+  local type="$1" url="$2"
+  if [[ "$type" == "postgresql" && "$url" != *"options="* ]]; then
+    if [[ "$url" == *\?* ]]; then
+      printf '%s&options=-c%%20TimeZone=Asia/Shanghai\n' "$url"
+    else
+      printf '%s?options=-c%%20TimeZone=Asia/Shanghai\n' "$url"
+    fi
+  else
+    printf '%s\n' "$url"
+  fi
+}
+
+db_config_file() {
+  printf '%s/atv/config/application.yaml\n' "${CONFIG[BASE_DIR]}"
+}
+
+legacy_db_config_file() {
+  printf '%s/db/application.yaml\n' "${CONFIG[BASE_DIR]}"
+}
+
+# 清空主应用数据库覆盖配置（切回镜像内置 H2 默认）。只删除 application.yaml，
+# 保留 application.yaml.bak 快照（供回退）。同时清理旧版键名（DB_JDBC_URL 等）兼容历史 app.conf。
+clear_db_config() {
+  unset 'CONFIG[DB_TYPE]' 'CONFIG[DB_HOST]' 'CONFIG[DB_PORT]' 'CONFIG[DB_NAME]' 'CONFIG[DB_USER]' 'CONFIG[DB_PASSWORD]' \
+        'CONFIG[DB_JDBC_URL]' 'CONFIG[DB_USERNAME]' 'CONFIG[DB_DRIVER]' 'CONFIG[DB_DIALECT]' 'CONFIG[DB_RAW_URL]'
+  rm -f "$(db_config_file)" "$(legacy_db_config_file)"
+}
+
+# 在切换数据库前快照当前配置，供 rollback_db 一键回退。
+# 记录 DB_PREV_TYPE（迁移前的库类型）；若当前有覆盖文件则备份为 application.yaml.bak，
+# 否则（当前为 H2）清除残留旧 .bak，避免误回退到更早状态。
+snapshot_db_config() {
+  CONFIG[DB_PREV_TYPE]="${CONFIG[DB_TYPE]:-H2}"
+  local file bak legacy
+  file="$(db_config_file)"
+  bak="${file}.bak"
+  legacy="$(legacy_db_config_file)"
+  if [[ -f "$file" ]]; then
+    cp -f "$file" "$bak"
+  elif [[ -f "$legacy" ]]; then
+    mkdir -p "$(dirname "$file")"
+    cp -f "$legacy" "$bak"
+  else
+    rm -f "$bak" "${legacy}.bak"
+  fi
+}
+
+# 一键回退到上次切换前的数据库配置（恢复 .bak 或回 H2），并重建容器。
+rollback_db() {
+  local file bak
+  file="$(db_config_file)"
+  bak="${file}.bak"
+  local cur="${CONFIG[DB_TYPE]:-H2}"
+  local prev="${CONFIG[DB_PREV_TYPE]:-}"
+
+  if [[ ! -f "$bak" && -z "$prev" ]]; then
+    echo -e "${YELLOW}没有可回退的快照（尚未做过数据库切换）。${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return 1
+  fi
+
+  local target
+  if [[ -f "$bak" ]]; then target="${prev:-外部数据库}"; else target="H2（默认）"; fi
+  echo -e "${CYAN}当前: ${cur}   →   回退到: ${target}${NC}"
+  echo -e "${YELLOW}将用迁移前的配置重建容器（原库数据未被迁移改动，仍在原处）。${NC}"
+  read -p "确认回退? [y/N] " yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { echo "已取消"; read -n 1 -s -r -p "按任意键继续..."; return; }
+
+  if [[ -f "$bak" ]]; then
+    mkdir -p "$(dirname "$file")"
+    mv -f "$bak" "$file"
+    chmod 600 "$file"
+    CONFIG[DB_TYPE]="${prev:-}"
+  else
+    clear_db_config
+  fi
+  unset 'CONFIG[DB_PREV_TYPE]'
+  save_config
+  config_db_apply
+  echo -e "${GREEN}✓ 已回退到 ${target} 并重建容器。${NC}"
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# 写入 Spring 覆盖配置 <数据目录>/atv/config/application.yaml。容器启动参数通过
+# -Dspring.config.additional-location=file:/data/atv/config/ 加载该目录，按 key 合并覆盖
+# classpath application.yaml 的 H2 数据源/方言。
+# 其余配置（app.*/server.*/spring.jackson.* 等）原样来自 classpath，不受影响。
+# 数据库信息只存在此文件 + app.conf，绝不进入 docker run 启动参数。
+write_db_config_file() {
+  local url file dialect
+  # 若调用方提供了完整原始 URL（非交互 --jdbc-url），原样保留其自定义参数；否则按 host/port/db 拼装。
+  url="${CONFIG[DB_RAW_URL]:-$(build_jdbc_url "${CONFIG[DB_TYPE]}" "${CONFIG[DB_HOST]}" "${CONFIG[DB_PORT]}" "${CONFIG[DB_NAME]}")}"
+  url="$(normalize_jdbc_url "${CONFIG[DB_TYPE]}" "$url")"
+  file="$(db_config_file)"
+  dialect="$(db_dialect_for "${CONFIG[DB_TYPE]}")"
+  mkdir -p "$(dirname "$file")"
+  cat > "$file" <<EOF
+# 由 config-db / 迁移向导生成；容器通过 /data/atv/config/ 加载，覆盖 H2 默认数据源。
+# Spring 按 key 合并：只覆盖下面的数据源配置，其余配置沿用 classpath application.yaml。
+spring:
+  datasource:
+    jdbc-url: ${url}
+    username: ${CONFIG[DB_USER]}
+    password: ${CONFIG[DB_PASSWORD]}
+    driver-class-name: $(db_driver_for "${CONFIG[DB_TYPE]}")
+EOF
+  if [[ -n "$dialect" ]]; then
+    cat >> "$file" <<EOF
+  jpa:
+    database-platform: ${dialect}
+EOF
+  fi
+  cat >> "$file" <<EOF
+  sql:
+    init:
+      mode: never
+EOF
+  chmod 600 "$file"
+}
+
+ensure_external_db_sql_init_disabled() {
+  local file legacy
+  file="$(db_config_file)"
+  legacy="$(legacy_db_config_file)"
+  if [[ ! -f "$file" && -f "$legacy" ]]; then
+    mkdir -p "$(dirname "$file")"
+    mv -f "$legacy" "$file"
+  fi
+  [[ -f "$file" ]] || return 0
+  rm -f "$legacy"
+  if ! grep -Eq '^[[:space:]]+mode:[[:space:]]+never[[:space:]]*$' "$file"; then
+    {
+      printf '\n'
+      printf '  sql:\n'
+      printf '    init:\n'
+      printf '      mode: never\n'
+    } >> "$file"
+    chmod 600 "$file"
+  fi
+}
+
+prepare_h2_target_database() {
+  local base backup_dir moved file
+  base="${CONFIG[BASE_DIR]}"
+  moved=false
+  for file in "$base/atv.mv.db" "$base/atv.trace.db"; do
+    if [[ -e "$file" ]]; then
+      if [[ "$moved" == false ]]; then
+        backup_dir="$base/backup/h2-before-migrate-$(date +%Y%m%d%H%M%S)"
+        mkdir -p "$backup_dir"
+        moved=true
+      fi
+      mv -f "$file" "$backup_dir/"
+    fi
+  done
+  if [[ "$moved" == true ]]; then
+    echo -e "${YELLOW}已备份旧 H2 数据库文件到: $backup_dir${NC}"
+  fi
+}
+
+# 从容器视角测试 host:port 是否可达（用与 app 容器相同的网络模式，镜像内置 nc）。
+# 这比从宿主机测试更准确：bridge 容器里的 localhost ≠ 宿主机。返回 0=可达。
+test_db_connection() {
+  local host="$1" port="$2"
+  local net_arg=()
+  if [[ "${CONFIG[NETWORK]:-bridge}" == "host" ]]; then
+    net_arg=(--network host)
+  fi
+  docker run --rm --entrypoint sh "${net_arg[@]}" "${CONFIG[IMAGE_NAME]}" \
+    -c "nc -z -w3 $host $port" 2>/dev/null
+}
+
+# 真正的数据库连接测试：调用应用的 /api/local/db-test 端点，用其自带 JDBC 驱动真实登录
+# （SELECT 1），能抓住 TCP 测不出来的问题：主机未授权(Host not allowed)、账号密码错、库不存在，
+# 并打印数据库原始错误。无需拉取 client 镜像。容器未运行时退化为 TCP 可达测试；
+# 已有 JSON 的离线迁移可允许 TCP 检测不可用时继续，避免因源容器停止而阻塞迁移。
+test_db_full() {
+  local type="$1" host="$2" port="$3" db="$4" user="$5" pass="$6"
+  local allow_stopped_skip="${7:-false}"
+  local url="${CONFIG[DB_RAW_URL]:-$(build_jdbc_url "$type" "$host" "$port" "$db")}"
+  url="$(normalize_jdbc_url "$type" "$url")"
+  local container_name; container_name="$(get_container_name)"
+
+  if [[ "$(check_container_status)" != "running" ]]; then
+    echo -e "${YELLOW}容器未运行，无法调用应用 JDBC 校验，仅做 TCP 可达测试（无法验证账号/主机授权）。${NC}"
+    if ! test_db_connection "$host" "$port"; then
+      if [[ "$allow_stopped_skip" == "true" ]]; then
+        echo -e "${YELLOW}  ! TCP 测试失败或不可用；已找到可复用 JSON 备份，继续离线迁移。目标库如不可用，会在重建容器时失败。${NC}" >&2
+        return 0
+      fi
+      echo -e "${RED}  ✗ TCP 不可达。若数据库在宿主机且容器为 bridge 网络，localhost 不可达——用宿主机 IP / host 网络。${NC}" >&2
+      return 1
+    fi
+    echo -e "${GREEN}  ✓ TCP 可达${NC}"
+    return 0
+  fi
+
+  echo -e "${CYAN}测试连接（应用 JDBC 真实登录）${host}:${port}/${db} ...${NC}"
+  local token; token="$(generate_backup_token)"
+  write_backup_token "$container_name" "$token"
+  # JSON 转义用户名/密码里的 \ 和 "
+  local uesc="${user//\\/\\\\}"; uesc="${uesc//\"/\\\"}"
+  local pesc="${pass//\\/\\\\}"; pesc="${pesc//\"/\\\"}"
+  local resp
+  resp=$(docker exec "$container_name" sh -lc \
+    "curl -fsS -X POST -H 'X-BACKUP-TOKEN: $token' -H 'Content-Type: application/json' \
+     -d '{\"url\":\"$url\",\"username\":\"$uesc\",\"password\":\"$pesc\"}' \
+     'http://127.0.0.1:4567/api/local/db-test'" 2>&1)
+  if echo "$resp" | grep -qE '"success"[[:space:]]*:[[:space:]]*true'; then
+    echo -e "${GREEN}  ✓ 连接成功${NC}"
+    return 0
+  fi
+  echo -e "${RED}  ✗ 连接失败，数据库返回：${NC}" >&2
+  echo "$resp" | sed 's/^/      /' | tail -5 >&2
+  echo -e "${YELLOW}  常见：MySQL 'Host ... is not allowed'→给用户授权容器网段(atv@'172.17.0.0/16' 或 atv@'%'，并 FLUSH PRIVILEGES)；库不存在→先 CREATE DATABASE。${NC}" >&2
+  return 1
+}
+
+allow_stopped_db_test_for_migration() {
+  [[ "$(check_container_status)" != "running" ]] && find_existing_migration_export >/dev/null 2>&1
+}
+
+# 交互式收集连接信息：host/port/database/username 提供默认值（回车采用），password 必填。
+# 结果写入 CONFIG[DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD]。
+prompt_db_connection() {
+  local type="$1" d_host d_port d_db host port db user pass
+  d_host="$(default_db_host)"
+  case "$type" in
+    mysql)      d_port=3306; d_db=alist_tvbox ;;
+    postgresql) d_port=5432;  d_db=alist_tvbox ;;
+    *) return 1 ;;
+  esac
+  read -rp "数据库主机 [$d_host]: " host
+  read -rp "端口 [$d_port]: " port
+  read -rp "数据库名 [$d_db]: " db
+  read -rp "用户名 [atv]: " user
+  read -rsp "密码: " pass; echo
+  CONFIG[DB_HOST]="${host:-$d_host}"
+  CONFIG[DB_PORT]="${port:-$d_port}"
+  CONFIG[DB_NAME]="${db:-$d_db}"
+  CONFIG[DB_USER]="${user:-atv}"
+  CONFIG[DB_PASSWORD]="$pass"
+}
+
+# 配置主应用数据库（H2/MySQL/PostgreSQL）。写入 CONFIG_FILE，下次安装/重建容器时生效。
+config_db() {
+  echo -e "${CYAN}=== 配置主应用数据库 ===${NC}"
+  echo "当前: ${CONFIG[DB_TYPE]:-H2（默认）}"
+  echo "1) H2（内置默认，清空外部数据库配置）"
+  echo "2) MySQL"
+  echo "3) PostgreSQL"
+  read -rp "请选择 [1-3]: " db_choice
+
+  case "$db_choice" in
+    1)
+      snapshot_db_config
+      clear_db_config
+      save_config
+      echo -e "${GREEN}已切换回 H2 默认。重新安装/更新容器后生效。${NC}"
+      ;;
+    2|3)
+      CONFIG[DB_TYPE]="$([[ "$db_choice" == "2" ]] && echo mysql || echo postgresql)"
+      prompt_db_connection "${CONFIG[DB_TYPE]}" || { echo -e "${RED}已取消${NC}"; read -n 1 -s -r -p "按任意键继续..."; return 1; }
+      if ! test_db_full "${CONFIG[DB_TYPE]}" "${CONFIG[DB_HOST]}" "${CONFIG[DB_PORT]}" "${CONFIG[DB_NAME]}" "${CONFIG[DB_USER]}" "${CONFIG[DB_PASSWORD]}"; then
+        clear_db_config
+        read -n 1 -s -r -p "按任意键继续..."
+        return 1
+      fi
+      snapshot_db_config
+      write_db_config_file
+      save_config
+      echo -e "${GREEN}已保存 ${CONFIG[DB_TYPE]} 配置（$(db_config_file)）。执行安装/更新（菜单 1）或 '${0##*/} config-db apply' 重建容器后生效。${NC}"
+      ;;
+    *)
+      echo -e "${RED}无效选择${NC}"; read -n 1 -s -r -p "按任意键继续..."; return 1 ;;
+  esac
+}
+
+# 用当前 CONFIG 中的数据库配置重建容器（停止+删除+start_container）。
+config_db_apply() {
+  local container_name=$(get_container_name)
+  echo -e "${CYAN}使用新数据库配置重建容器 $container_name ...${NC}"
+  ensure_external_db_sql_init_disabled
+  docker stop "$container_name" 2>/dev/null || true
+  docker rm "$container_name" 2>/dev/null || true
+  start_container
+  show_access_info
+}
+
+# 从当前容器导出 JSON 备份（迁移第一步，DB 无关）。复用与“立即备份”相同的 token +
+# /api/local/backup?type=json 路径：每次生成一次性 token 写入容器，调用端点，产物落在
+# <数据目录>/backup/，再复制为稳定的 database-json.zip 供 migrate-db import 使用。
+migrate_db_export() {
+  local out="${2:-${CONFIG[BASE_DIR]}/database-json.zip}"
+  local container_name
+  container_name="$(get_container_name)"
+  local status
+  status="$(check_container_status)"
+  if [[ "$status" != "running" ]]; then
+    echo -e "${RED}容器未运行，无法导出。请先启动容器。${NC}" >&2
+    return 1
+  fi
+
+  mkdir -p "${CONFIG[BASE_DIR]}/backup" 2>/dev/null
+  local token file
+  token="$(generate_backup_token)"
+  write_backup_token "$container_name" "$token"
+  echo -e "${CYAN}从容器 $container_name 导出 JSON 备份（含豆瓣数据 movie/meta/alias）...${NC}"
+  if file="$(call_backup_api "$container_name" "$token" "json" "true")" && [[ -n "$file" ]]; then
+    cp -f "${CONFIG[BASE_DIR]}/backup/$file" "$out"
+    echo -e "${GREEN}已导出: $out${NC}"
+    echo -e "${YELLOW}下一步：在目标实例上执行 '${0##*/} migrate-db import $out'${NC}"
+  else
+    echo -e "${RED}导出失败。请查看容器日志: docker logs $container_name${NC}" >&2
+    return 1
+  fi
+}
+
+find_existing_migration_export() {
+  local base="${CONFIG[BASE_DIR]}"
+  local backup_dir="$base/backup"
+  local candidate first_old="" newest_today="" newest_old="" backup_date
+  local today
+  today="$(today_yyyymmdd)"
+
+  for candidate in "$base/migration-export.zip" "$base/database-json.zip"; do
+    [[ -s "$candidate" ]] || continue
+    backup_date="$(migration_export_date_yyyymmdd "$candidate")"
+    if [[ -n "$backup_date" && "$backup_date" == "$today" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    [[ -n "$first_old" ]] || first_old="$candidate"
+  done
+
+  if [[ -d "$backup_dir" ]]; then
+    local nullglob_was_set=0
+    shopt -q nullglob && nullglob_was_set=1
+    shopt -s nullglob
+    local files=("$backup_dir"/database-json*.zip)
+    (( nullglob_was_set )) || shopt -u nullglob
+
+    for candidate in "${files[@]}"; do
+      [[ -s "$candidate" ]] || continue
+      backup_date="$(migration_export_date_yyyymmdd "$candidate")"
+      if [[ -n "$backup_date" && "$backup_date" == "$today" ]]; then
+        if [[ -z "$newest_today" || "$candidate" -nt "$newest_today" ]]; then
+          newest_today="$candidate"
+        fi
+      elif [[ -z "$newest_old" || "$candidate" -nt "$newest_old" ]]; then
+        newest_old="$candidate"
+      fi
+    done
+  fi
+
+  if [[ -n "$newest_today" ]]; then
+    printf '%s\n' "$newest_today"
+    return 0
+  fi
+
+  if [[ -n "$first_old" ]]; then
+    printf '%s\n' "$first_old"
+    return 0
+  fi
+
+  if [[ -n "$newest_old" ]]; then
+    printf '%s\n' "$newest_old"
+    return 0
+  fi
+
+  return 1
+}
+
+today_yyyymmdd() {
+  date +%Y%m%d
+}
+
+migration_export_date_yyyymmdd() {
+  local file="$1"
+  local name="${file##*/}"
+
+  if [[ "$name" =~ ([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
+    printf '%s%s%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+
+  if [[ "$name" =~ ([0-9]{8}) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  date -r "$file" +%Y%m%d 2>/dev/null || true
+}
+
+confirm_migration_export_date() {
+  local source="$1"
+  local allow_confirm="${2:-false}"
+  local backup_date today
+
+  backup_date="$(migration_export_date_yyyymmdd "$source")"
+  today="$(today_yyyymmdd)"
+
+  if [[ -n "$backup_date" && "$backup_date" == "$today" ]]; then
+    return 0
+  fi
+
+  echo -e "${YELLOW}找到的 JSON 备份不是今天生成的: $source${NC}" >&2
+  [[ -n "$backup_date" ]] && echo -e "${YELLOW}备份日期: $backup_date，今天: $today${NC}" >&2
+
+  if [[ "$allow_confirm" == "true" ]]; then
+    local answer
+    read -rp "确认使用这份旧备份继续迁移? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] && return 0
+  fi
+
+  echo -e "${RED}旧 JSON 备份未经确认，迁移中止。${NC}" >&2
+  return 1
+}
+
+prepare_migration_export() {
+  local out="$1"
+  local allow_old_confirm="${2:-false}"
+  local status source
+  status="$(check_container_status)"
+
+  if [[ "$status" == "running" ]]; then
+    migrate_db_export "" "$out"
+    return
+  fi
+
+  if source="$(find_existing_migration_export)"; then
+    confirm_migration_export_date "$source" "$allow_old_confirm" || return 1
+    mkdir -p "$(dirname "$out")"
+    if [[ "$source" != "$out" ]]; then
+      cp -f "$source" "$out"
+    fi
+    echo -e "${YELLOW}容器未运行，复用已有 JSON 备份: $source${NC}"
+    echo -e "${GREEN}已准备迁移备份: $out${NC}"
+    return 0
+  fi
+
+  echo -e "${RED}容器未运行，且未找到已导出的 JSON 备份，迁移中止。${NC}" >&2
+  echo -e "${YELLOW}请先启动容器执行 '${0##*/} migrate-db export'，或把 database-json.zip 放到 ${CONFIG[BASE_DIR]}/。${NC}" >&2
+  return 1
+}
+
+# 把 JSON 备份放进容器启动恢复路径并重启；StartupJsonRestoreRunner 会在下次启动恢复。
+migrate_db_import() {
+  local zip="${2:-}"
+  if [[ -z "$zip" || ! -f "$zip" ]]; then
+    echo -e "${RED}用法: migrate-db import <database-json.zip>${NC}" >&2; return 1
+  fi
+  local container_name=$(get_container_name)
+  local base="${CONFIG[BASE_DIR]}"
+  echo -e "${CYAN}将 $zip 放入启动恢复路径并重启容器 $container_name ...${NC}"
+  mkdir -p "$base"
+  cp "$zip" "$base/database-json.zip"
+  docker restart "$container_name" || { echo -e "${RED}重启失败${NC}" >&2; return 1; }
+  echo -e "${GREEN}已触发恢复。观察 'docker logs -f $container_name'，应用恢复后会自动重启(exit 85)。${NC}"
+}
+
+# 执行迁移三步（快照→导出→切换重建→导入）。CONFIG[DB_*] 须已设置并通过连接测试。
+# 返回 0 成功，1 失败。供 migrate_wizard（交互）与 migrate-db --jdbc-url（非交互）复用；
+# 交互模式可确认使用旧 JSON 备份，非交互模式遇到旧备份会中止。
+do_migration_steps() {
+  local db_type="$1"
+  local allow_old_export_confirm="${2:-false}"
+  local export_zip="${CONFIG[BASE_DIR]}/migration-export.zip"
+  local container_name
+  container_name="$(get_container_name)"
+
+  snapshot_db_config
+  if [[ "$db_type" == "h2" ]]; then
+    clear_db_config
+  else
+    write_db_config_file
+  fi
+  save_config
+
+  echo -e "${CYAN}[1/3] 自动导出当前数据...${NC}"
+  prepare_migration_export "$export_zip" "$allow_old_export_confirm" || { echo -e "${RED}导出失败，迁移中止。${NC}" >&2; return 1; }
+
+  echo -e "${CYAN}[2/3] 切换到 $db_type 并重建容器（Flyway 建空表）...${NC}"
+  if [[ "$db_type" == "h2" ]]; then
+    prepare_h2_target_database
+  fi
+  config_db_apply || { echo -e "${RED}重建失败，迁移中止（备份已保留：$export_zip）。${NC}" >&2; return 1; }
+  echo "等待容器启动与 Flyway 建表..."
+  sleep 8
+
+  echo -e "${CYAN}[3/3] 自动导入恢复到 $db_type...${NC}"
+  migrate_db_import "" "$export_zip" || { echo -e "${RED}导入失败: docker logs $container_name${NC}" >&2; return 1; }
+
+  echo -e "${GREEN}✓ 迁移完成，应用恢复后会自动重启(exit 85)加载新数据。${NC}"
+  echo -e "${YELLOW}观察: docker logs -f $container_name${NC}"
+  return 0
+}
+
+# 从 JDBC URL 解析 host/port/database 到给定变量名（按引用赋值）。
+parse_jdbc_url() {
+  local url="$1"
+  local core="${url#*://}"        # host:port/db?params
+  local hp="${core%%/*}"          # host:port
+  local dbpart="${core#*/}"
+  [[ "$dbpart" == "$core" ]] && dbpart=""
+  PARSED_HOST="${hp%%:*}"
+  PARSED_PORT="${hp#*:}"
+  [[ "$PARSED_PORT" == "$hp" ]] && PARSED_PORT=""
+  PARSED_DB="${dbpart%%\?*}"
+}
+
+# 非交互一键迁移：从 --jdbc-url 自动识别类型（mysql/postgresql），解析 host/port 做连接预检，
+# 然后导出→切换→导入。用法见 migrate-db 分支。
+migrate_db_headless() {
+  shift  # 丢弃 "migrate-db"
+  local jdbc_url="" username="atv" password="" db_type=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --jdbc-url) jdbc_url="$2"; shift 2 ;;
+      --username) username="$2"; shift 2 ;;
+      --password) password="$2"; shift 2 ;;
+      --type)     db_type="$2"; shift 2 ;;
+      *) echo -e "${RED}未知参数: $1${NC}" >&2; return 1 ;;
+    esac
+  done
+
+  if [[ "$db_type" == "h2" ]]; then
+    CONFIG[DB_TYPE]="h2"
+    echo -e "${CYAN}目标: H2（内置默认）${NC}"
+    do_migration_steps "h2"
+    return
+  fi
+
+  if [[ -z "$jdbc_url" || -z "$password" ]]; then
+    echo "用法: $0 migrate-db --jdbc-url <url> --username <u> --password <p> [--type mysql|postgresql] 或 migrate-db --type h2" >&2
+    return 1
+  fi
+
+  # 自动识别类型
+  if [[ -z "$db_type" ]]; then
+    case "$jdbc_url" in
+      jdbc:mysql:*)      db_type="mysql" ;;
+      jdbc:postgresql:*) db_type="postgresql" ;;
+      *) echo -e "${RED}无法从 JDBC URL 识别数据库类型，请用 --type 指定${NC}" >&2; return 1 ;;
+    esac
+  fi
+
+  local PARSED_HOST PARSED_PORT PARSED_DB
+  parse_jdbc_url "$jdbc_url"
+  [[ -z "$PARSED_PORT" ]] && PARSED_PORT="$([[ "$db_type" == mysql ]] && echo 3306 || echo 5432)"
+
+  CONFIG[DB_TYPE]="$db_type"
+  CONFIG[DB_RAW_URL]="$(normalize_jdbc_url "$db_type" "$jdbc_url")"
+  CONFIG[DB_HOST]="$PARSED_HOST"
+  CONFIG[DB_PORT]="$PARSED_PORT"
+  CONFIG[DB_NAME]="$PARSED_DB"
+  CONFIG[DB_USER]="$username"
+  CONFIG[DB_PASSWORD]="$password"
+
+  echo -e "${CYAN}目标: $db_type  ${PARSED_HOST}:${PARSED_PORT}/${PARSED_DB}  用户=$username${NC}"
+  local allow_stopped_db_test=false
+  if allow_stopped_db_test_for_migration; then
+    allow_stopped_db_test=true
+  fi
+  test_db_full "$db_type" "$PARSED_HOST" "$PARSED_PORT" "$PARSED_DB" "$username" "$password" "$allow_stopped_db_test" || { clear_db_config; return 1; }
+  do_migration_steps "$db_type"
+}
+
+# 引导式迁移向导：用户只需提供目标数据库类型 + 连接信息，向导自动完成
+# 导出当前数据 → 切换数据库并重建容器 → 导入恢复。
+# 用独立文件名 migration-export.zip，避免与启动恢复路径 database-json.zip 重名而在步骤 2 重建时被误恢复。
+migrate_wizard() {
+  clear
+  echo -e "${CYAN}============== 数据库迁移向导 ==============${NC}"
+  echo -e "当前数据库: ${YELLOW}${CONFIG[DB_TYPE]:-H2（默认）}${NC}  →  目标: H2 / MySQL / PostgreSQL"
+  echo "支持 H2→MySQL、H2→PostgreSQL、MySQL↔PostgreSQL、外部数据库→H2"
+  echo "只需提供目标数据库类型与连接信息，向导自动完成："
+  echo "  导出当前数据 → 切换数据库并重建容器 → 导入恢复"
+  echo ""
+  echo -e "${YELLOW}注意：将重建容器并切换数据库；原 H2/MySQL 数据保留在磁盘可回退${NC}"
+  echo -e "${YELLOW}      （回退：重新运行 config-db 选 H2）。请先确认目标数据库已就绪。${NC}"
+  echo ""
+  echo "请选择目标数据库类型："
+  echo "  1) MySQL"
+  echo "  2) PostgreSQL"
+  echo "  3) H2（内置默认）"
+  read -rp "请选择 [1/2/3]: " tchoice
+
+  local db_type
+  case "$tchoice" in
+    1) db_type="mysql" ;;
+    2) db_type="postgresql" ;;
+    3) db_type="h2" ;;
+    *) echo -e "${RED}无效选择${NC}"; read -n 1 -s -r -p "按任意键继续..."; return ;;
+  esac
+  CONFIG[DB_TYPE]="$db_type"
+
+  if [[ "$db_type" != "h2" ]]; then
+    prompt_db_connection "$db_type" || { clear_db_config; echo -e "${RED}已取消${NC}"; read -n 1 -s -r -p "按任意键继续..."; return; }
+
+    local allow_stopped_db_test=false
+    if allow_stopped_db_test_for_migration; then
+      allow_stopped_db_test=true
+    fi
+    if ! test_db_full "${CONFIG[DB_TYPE]}" "${CONFIG[DB_HOST]}" "${CONFIG[DB_PORT]}" "${CONFIG[DB_NAME]}" "${CONFIG[DB_USER]}" "${CONFIG[DB_PASSWORD]}" "$allow_stopped_db_test"; then
+      clear_db_config
+      read -n 1 -s -r -p "按任意键继续..."
+      return
+    fi
+  fi
+
+  echo ""
+  echo -e "${CYAN}将自动执行：导出当前数据 → 切换到 $db_type 重建容器 → 导入恢复${NC}"
+  read -p "确认开始迁移? [y/N] " go
+  [[ "$go" =~ ^[Yy]$ ]] || { clear_db_config; echo "已取消（未保存任何配置）。"; read -n 1 -s -r -p "按任意键继续..."; return; }
+
+  do_migration_steps "$db_type" true
+  read -n 1 -s -r -p "按任意键返回..."
+}
+
+dispatch_migrate_db() {
+  if [[ "${2:-}" == --* ]]; then
+    migrate_db_headless "$@"
+  else
+    case "${2:-}" in
+      "")
+        migrate_wizard
+        ;;
+      export)
+        migrate_db_export "$@"
+        ;;
+      import)
+        migrate_db_import "$@"
+        ;;
+      *)
+        echo "用法:"
+        echo "  迁移(交互):   migrate-db"
+        echo "  迁移(非交互): migrate-db --jdbc-url <url> --username <u> --password <p> [--type mysql|postgresql]"
+        echo "  迁回 H2:      migrate-db --type h2"
+        echo "  导出/导入:    migrate-db <export|import> [zip]"
+        ;;
+    esac
+  fi
+}
+
+# 数据库迁移与配置子菜单（主菜单 m）。集中数据导出、切换数据库、导入迁移三个流程。
+show_migrate_menu() {
+  while true; do
+    clear
+    sync_runtime_config || true
+    local cur_db="${CONFIG[DB_TYPE]:-H2（默认）}"
+    echo -e "${CYAN}============== 数据库迁移与配置 ==============${NC}"
+    echo -e "${YELLOW} 当前主应用数据库: ${cur_db}${NC}"
+    echo -e "${YELLOW} 支持: H2→MySQL / H2→PostgreSQL / MySQL↔PostgreSQL${NC}"
+    echo -e "${CYAN}---------------------------------------------${NC}"
+    echo -e "${GREEN} 1. 迁移向导（自动备份+切换+恢复，推荐）${NC}"
+    echo -e "${GREEN} 2. 配置/切换主应用数据库 (H2/MySQL/PostgreSQL)${NC}"
+    echo -e "${GREEN} 3. 导出数据 (JSON 备份)${NC}"
+    echo -e "${GREEN} 4. 导入迁移 (恢复到当前实例)${NC}"
+    echo -e "${GREEN} 5. 回退到迁移前的数据库（一键还原上次切换）${NC}"
+    echo -e "${GREEN} 0. 返回主菜单${NC}"
+    echo -e "${CYAN}---------------------------------------------${NC}"
+    read -p "请输入选项 [0-5]: " mc
+    case "$mc" in
+      1)
+        migrate_wizard
+        ;;
+      5)
+        rollback_db
+        ;;
+      2)
+        if config_db; then
+          read -p "是否立即用新配置重建容器以应用? [y/N] " apply_yn
+          if [[ "$apply_yn" =~ ^[Yy]$ ]]; then
+            config_db_apply
+          fi
+        fi
+        read -n 1 -s -r -p "按任意键继续..."
+        ;;
+      3)
+        local default_out="${CONFIG[BASE_DIR]}/database-json.zip"
+        read -rp "导出路径 [${default_out}]: " mout
+        migrate_db_export "" "${mout:-$default_out}"
+        read -n 1 -s -r -p "按任意键继续..."
+        ;;
+      4)
+        local default_zip="${CONFIG[DB_TYPE]:+${CONFIG[BASE_DIR]}/database-json.zip}"
+        default_zip="${default_zip:-${CONFIG[BASE_DIR]}/database-json.zip}"
+        read -rp "要导入的备份 zip [${default_zip}]: " mzip
+        migrate_db_import "" "${mzip:-$default_zip}"
+        read -n 1 -s -r -p "按任意键继续..."
+        ;;
+      0) return ;;
+      *) echo -e "${RED}无效选项!${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 # Get container name
 get_container_name() {
   case "${CONFIG[IMAGE_NAME]}" in
@@ -333,7 +1164,52 @@ check_image_update() {
     echo -e "${GREEN}检测到新版本镜像${NC}"
     return 0
   else
+    local tag
+    tag="$(get_image_tag "$image")"
     echo -e "${YELLOW}当前已是最新版本${NC}"
+    # 版本被锁定（带固定 tag 且非 latest）时，该 tag 的镜像 digest 不会变，
+    # “更新”是空操作——明确指出升级路径，避免误以为已是最新发行版。
+    if [[ -n "$tag" && "$tag" != "latest" ]]; then
+      echo -e "${YELLOW}已锁定版本 ${tag}，该版本镜像未变化。如需升级请更换版本号：交互模式选菜单 7「选择镜像」，命令行运行 menu 或编辑配置中的 IMAGE_NAME。${NC}"
+    fi
+    return 1
+  fi
+}
+
+# 把旧的命名卷 tvbox-www-static 中的静态文件一次性迁移到绑定目录
+# ${CONFIG[BASE_DIR]}/www-static。仅在命名卷存在、目标为空时复制，幂等。
+migrate_www_static() {
+  local volume="tvbox-www-static"
+  local target="${CONFIG[BASE_DIR]}/www-static"
+  local marker="${CONFIG[BASE_DIR]}/.www-static-migrated"
+
+  mkdir -p "$target"
+
+  # 已迁移过则跳过
+  [[ -f "$marker" ]] && return 0
+
+  # 旧命名卷不存在，无需迁移
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    touch "$marker"
+    return 0
+  fi
+
+  # 目标已有数据则不覆盖，仅标记完成
+  if [[ -n "$(ls -A "$target" 2>/dev/null)" ]]; then
+    touch "$marker"
+    return 0
+  fi
+
+  echo -e "${YELLOW}正在迁移静态文件: 命名卷 $volume -> $target${NC}"
+  if docker run --rm \
+      -v "${volume}:/from:ro" \
+      -v "${target}:/to" \
+      --entrypoint sh \
+      "${CONFIG[IMAGE_NAME]}" -c "cp -a /from/. /to/" 2>/dev/null; then
+    touch "$marker"
+    echo -e "${GREEN}静态文件迁移完成${NC}"
+  else
+    echo -e "${RED}静态文件迁移失败：请手动从卷 $volume 复制到 $target${NC}"
     return 1
   fi
 }
@@ -342,25 +1218,41 @@ check_image_update() {
 start_container() {
   local image="${CONFIG[IMAGE_NAME]}"
   local container_name=$(get_container_name)
-  local -a network_args=()
-  local -a port_args=()
-  local -a volume_args=()
   local aList_port=80
 
   # 确保数据目录存在
   mkdir -p "${CONFIG[BASE_DIR]}"
+  migrate_www_static || true
 
-  [ "${CONFIG[GITHUB_PROXY]}" = "" ] || echo "${CONFIG[GITHUB_PROXY]}" > "${CONFIG[BASE_DIR]}/github_proxy.txt"
+  if [[ -n "${CONFIG[GITHUB_PROXY]}" ]]; then
+    # 支持多个代理，用逗号分隔，写入时每行一个
+    echo "${CONFIG[GITHUB_PROXY]}" | tr ',' '\n' | sed '/^[[:space:]]*$/d' > "${CONFIG[BASE_DIR]}/github_proxy.txt"
+  else
+    rm -f "${CONFIG[BASE_DIR]}/github_proxy.txt"
+  fi
+
+  # 统一构造 docker run 参数：用条件追加而非展开可能为空的数组，
+  # 避免在 set -u 下（NAS 常见的 bash 4.3 及更早版本）报 "unbound variable"
+  local -a run_args=(
+    -d
+    --name "$container_name"
+    -e ALIST_PORT="${CONFIG[PORT2]}"
+    -e MEM_OPT="-Xmx512M"
+    -e TZ="Asia/Shanghai"
+    -v "${CONFIG[BASE_DIR]}":/data
+    -v "${CONFIG[BASE_DIR]}/www-static":/www/static
+    --restart="${CONFIG[RESTART]}"
+  )
 
   if [[ "${CONFIG[IMAGE_NAME]}" == *"alist-tvbox"* ]]; then
     aList_port=5244
-    volume_args+=("-v" "${CONFIG[BASE_DIR]}/alist:/opt/alist/data")
+    run_args+=("-v" "${CONFIG[BASE_DIR]}/alist:/opt/alist/data")
   fi
 
   # 添加/www挂载选项
   if [[ "${CONFIG[MOUNT_WWW]}" == "true" ]]; then
-    volume_args+=("-v" "${CONFIG[BASE_DIR]}/www:/www")
     mkdir -p "${CONFIG[BASE_DIR]}/www"
+    run_args+=("-v" "${CONFIG[BASE_DIR]}/www:/www")
   fi
 
   # 添加自定义挂载
@@ -373,32 +1265,25 @@ start_container() {
         mkdir -p "$host_dir"
         echo -e "${YELLOW}已创建主机目录: $host_dir${NC}"
       fi
-      volume_args+=("-v" "$line")
+      run_args+=("-v" "$line")
     done < "${CONFIG[BASE_DIR]}/mounts.conf"
   fi
 
+  # host 模式直接使用主机网络不映射端口；否则按端口映射
   if [[ "${CONFIG[NETWORK]}" == "host" ]]; then
-    network_args=("--network" "host")
+    run_args+=("--network" "host")
     echo -e "${YELLOW}使用host网络模式${NC}"
   else
-    port_args=("-p" "${CONFIG[PORT1]}:4567" "-p" "${CONFIG[PORT2]}:${aList_port}")
+    run_args+=("-p" "${CONFIG[PORT1]}:4567" "-p" "${CONFIG[PORT2]}:${aList_port}")
   fi
 
-  docker run -d \
-    --name "$container_name" \
-    "${port_args[@]}" \
-    "${volume_args[@]}" \
-    -e ALIST_PORT="${CONFIG[PORT2]}" \
-    -e MEM_OPT="-Xmx512M" \
-    -v "${CONFIG[BASE_DIR]}":/data \
-    -v tvbox-www-static:/www/static \
-    --restart="${CONFIG[RESTART]}" \
-    "${network_args[@]}" \
-    "$image"
+  echo "docker run ${run_args[@]} $image"
+  docker run "${run_args[@]}" "$image"
 }
 
 # 显示访问信息
 show_access_info() {
+  sync_runtime_config || true
   local container_name=$(get_container_name)
   local ip=$(get_host_ip)
 
@@ -406,8 +1291,9 @@ show_access_info() {
   echo -e "容器名称: ${GREEN}${container_name}${NC}"
   if [[ "${CONFIG[NETWORK]}" == "host" ]]; then
     echo -e "管理界面: ${GREEN}http://${ip:-localhost}:4567/${NC}"
-    echo -e "AList界面: ${GREEN}http://${ip:-localhost}:5234/${NC}"
     echo -e "Nginx界面: ${GREEN}http://${ip:-localhost}:5678/${NC}"
+    echo -e "httpd服务: ${GREEN}http://${ip:-localhost}:5233/${NC}"
+    echo -e "AList界面: ${GREEN}http://${ip:-localhost}:5234/${NC}"
   else
     echo -e "管理界面: ${GREEN}http://${ip:-localhost}:${CONFIG[PORT1]}/${NC}"
     echo -e "AList界面: ${GREEN}http://${ip:-localhost}:${CONFIG[PORT2]}/${NC}"
@@ -423,6 +1309,7 @@ show_access_info() {
 # 显示交互式菜单
 show_menu() {
   clear
+  sync_runtime_config || true
   local status=$(check_container_status)
   local container_name=$(get_container_name)
   local sys=$(uname -mor)
@@ -431,7 +1318,7 @@ show_menu() {
   echo -e "${CYAN}==============================================${NC}"
   echo -e "${GREEN}          AList TvBox 安装升级配置管理          ${NC}"
   echo -e "${CYAN}==============================================${NC}"
-  echo -e "${YELLOW} 镜像版本: ${CONFIG[IMAGE_NAME]}${NC}"
+  echo -e "${YELLOW} 镜像名称: ${CONFIG[IMAGE_NAME]}${NC}"
   echo -e "${YELLOW} 容器名称: ${container_name}${NC}"
   echo -e "${YELLOW} 容器状态: $(
     case "$status" in
@@ -443,7 +1330,8 @@ show_menu() {
   echo -e "${YELLOW} 网络模式: ${CONFIG[NETWORK]}${NC}"
   echo -e "${YELLOW} 重启策略: ${CONFIG[RESTART]}${NC}"
   echo -e "${YELLOW} 系统信息: ${sys}${NC}"
-  echo -e "${YELLOW} Docker Server: ${docker_version}${NC}"
+  echo -e "${YELLOW} Docker: ${docker_version}${NC}"
+  echo -e "${YELLOW} 脚本版本: ${SCRIPT_VERSION}${NC}"
   echo -e "${CYAN}---------------------------------------------${NC}"
   echo -e "${GREEN} 1. 安装/更新${NC}"
 
@@ -459,14 +1347,17 @@ show_menu() {
 
   echo -e "${GREEN} 3. 重启容器${NC}"
   echo -e "${GREEN} 4. 查看状态${NC}"
-  echo -e "${GREEN} 5. 查看日志${NC}"
+  echo -e "${GREEN} 5. 日志管理${NC}"
   echo -e "${GREEN} 6. 卸载容器${NC}"
-  echo -e "${GREEN} 7. 选择版本${NC}"
+  echo -e "${GREEN} 7. 选择镜像${NC}"
   echo -e "${GREEN} 8. 配置管理${NC}"
-  echo -e "${GREEN} 9. 检查更新${NC}"
+  echo -e "${GREEN} 9. 自动修复${NC}"
+  echo -e "${GREEN} m. 数据库迁移${NC}"
+  echo -e "${GREEN} c. 清理资源${NC}"
+  echo -e "${GREEN} w. 打开Web界面${NC}"
   echo -e "${GREEN} 0. 退出${NC}"
   echo -e "${CYAN}---------------------------------------------${NC}"
-  read -p "请输入选项 [0-9]: " choice
+  read -p "请输入选项 [0-9/c/m/w]: " choice
 }
 
 # 检查系统架构支持
@@ -476,10 +1367,10 @@ check_architecture_support() {
   case "$arch" in
     x86_64)  return 0 ;;  # 支持 amd64
     aarch64)
-      # ARM64 平台，检查是否选择了不支持的版本
+      # ARM64 平台，检查是否选择了不支持的镜像
       if [[ "${CONFIG[IMAGE_ID]}" == "2" || "${CONFIG[IMAGE_ID]}" == "5" || "${CONFIG[IMAGE_ID]}" == "6" ]]; then
-        echo -e "${RED}错误: ARM64 不支持native版本${NC}"
-        echo -e "请选择其他版本（如 1、3、4、7、8）"
+        echo -e "${RED}错误: ARM64 不支持native镜像${NC}"
+        echo -e "请选择其他镜像（如 1、3、4、7、8）"
         return 1
       fi
       return 0 ;;  # 支持 arm64
@@ -494,21 +1385,168 @@ check_architecture_support() {
   esac
 }
 
+# 验证镜像与网络模式的兼容性
+validate_image_network_compatibility() {
+  local image="${CONFIG[IMAGE_NAME]}"
+  local network="${CONFIG[NETWORK]}"
+  # 以基础名（去除 :tag）判断 host 镜像，兼容带版本 tag 的 host 镜像
+  local base
+  base="$(get_image_base "$image")"
+
+  # host镜像必须使用host网络（匹配 :host 或 -host 后缀）
+  if [[ "$base" =~ (:|-)host$ && "$network" != "host" ]]; then
+    echo -e "${RED}错误: ${image} 必须使用 host 网络模式${NC}"
+    echo -e "${YELLOW}该镜像专为 host 网络优化，不支持端口映射${NC}"
+    return 1
+  fi
+
+  # host网络必须使用host镜像
+  if [[ "$network" == "host" && ! "$base" =~ (:|-)host ]]; then
+    echo -e "${YELLOW}host 网络模式建议使用 host 镜像${NC}"
+    echo -e "${YELLOW}普通镜像的 AList 监听 80 端口，会占用主机端口${NC}"
+    echo -e "${YELLOW}请选择镜像 6 (native-host) 或镜像 7 (host)${NC}"
+  fi
+
+  return 0
+}
+
 # 安装/更新容器
+
+# -------------------------
+# LEGACY MIGRATION (v3)
+# -------------------------
+migrate_legacy_data() {
+  local legacy_dir="/etc/xiaoya"
+  local new_dir="${CONFIG[BASE_DIR]:-/opt/alist-tvbox}"
+
+  # 如果新旧路径相同，无需迁移
+  if [[ "$new_dir" == "$legacy_dir" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$new_dir"
+
+  # 检查是否已经迁移完成
+  if [[ -f "$new_dir/.v3" ]]; then
+    echo -e "${GREEN}数据已迁移（存在标记文件 .v3），跳过${NC}"
+    return 0
+  fi
+
+  # 从现存容器的 /data 挂载反推用户实际使用的数据目录
+  local bound_source=""
+  local container_found=""
+  local name
+  for name in "$(get_container_name)" "$(get_opposite_container_name)"; do
+    [[ -n "$name" ]] || continue
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${name}\$"; then
+      bound_source="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$name" 2>/dev/null)"
+      if [[ -n "$bound_source" ]]; then
+        container_found="$name"
+        break
+      fi
+    fi
+  done
+
+  # 场景1：容器正在使用旧路径 /etc/xiaoya，需要迁移
+  if [[ "$bound_source" == "$legacy_dir" && -d "$legacy_dir" ]]; then
+    echo -e "${CYAN}检测到容器 $container_found 正在使用旧路径: $legacy_dir${NC}"
+    echo -e "${YELLOW}正在迁移数据: $legacy_dir -> $new_dir${NC}"
+
+    # 如果目标目录非空，警告用户
+    if [[ -n "$(ls -A "$new_dir" 2>/dev/null)" ]]; then
+      echo -e "${RED}警告：目标目录 $new_dir 已存在数据！${NC}"
+      echo -e "${YELLOW}建议：请手动检查并备份目标目录，或删除后重试${NC}"
+      echo -e "${YELLOW}跳过自动迁移，将使用目标目录现有数据${NC}"
+      touch "$new_dir/.v3"
+      return 0
+    fi
+
+    if cp -a "$legacy_dir/." "$new_dir/"; then
+      touch "$new_dir/.v3"
+      echo -e "${GREEN}✓ 迁移完成: $legacy_dir -> $new_dir${NC}"
+      echo -e "${CYAN}提示：旧目录 $legacy_dir 仍然保留，确认无误后可手动删除${NC}"
+    else
+      # 清理半成品
+      if [[ -n "$new_dir" && "$new_dir" != "/" ]]; then
+        find "$new_dir" -mindepth 1 -delete 2>/dev/null || true
+      fi
+      echo -e "${RED}✗ 迁移失败：已清理目标目录${NC}"
+      echo -e "${YELLOW}请检查权限后重试，或手动复制: cp -a $legacy_dir/. $new_dir/${NC}"
+      return 1
+    fi
+    return 0
+  fi
+
+  # 场景2：容器不存在或使用其他路径，但旧路径有数据，新路径为空
+  if [[ -d "$legacy_dir" && -n "$(ls -A "$legacy_dir" 2>/dev/null)" ]]; then
+    # 新目录为空，可以尝试迁移
+    if [[ -z "$(ls -A "$new_dir" 2>/dev/null)" ]]; then
+      echo -e "${YELLOW}检测到旧路径 $legacy_dir 存在数据，但容器未使用该路径${NC}"
+      read -p "是否从旧路径迁移数据？[Y/n] " yn
+      case "$yn" in
+        [Nn]*)
+          echo -e "${YELLOW}跳过迁移${NC}"
+          touch "$new_dir/.v3"
+          return 0
+          ;;
+        *)
+          echo -e "${CYAN}正在迁移数据: $legacy_dir -> $new_dir${NC}"
+          if cp -a "$legacy_dir/." "$new_dir/"; then
+            touch "$new_dir/.v3"
+            echo -e "${GREEN}✓ 迁移完成${NC}"
+            echo -e "${CYAN}提示：旧目录 $legacy_dir 仍然保留，确认无误后可手动删除${NC}"
+          else
+            find "$new_dir" -mindepth 1 -delete 2>/dev/null || true
+            echo -e "${RED}✗ 迁移失败${NC}"
+            return 1
+          fi
+          return 0
+          ;;
+      esac
+    else
+      # 新目录已有数据，直接标记完成
+      echo -e "${YELLOW}目标目录 $new_dir 已有数据，跳过迁移${NC}"
+      touch "$new_dir/.v3"
+      return 0
+    fi
+  fi
+
+  # 场景3：旧路径不存在或为空，无需迁移
+  touch "$new_dir/.v3"
+  echo -e "${GREEN}无需从旧路径迁移（旧路径不存在或为空）${NC}"
+  return 0
+}
+
+
 install_container() {
   # 先检查架构支持
   if ! check_architecture_support; then
     return 1
   fi
 
-  # 如果镜像名称包含host，自动切换网络模式
-  if [[ "${CONFIG[IMAGE_NAME]}" == *"host"* ]]; then
+  # 如果镜像名称包含host后缀，自动切换网络模式
+  if [[ "${CONFIG[IMAGE_NAME]}" =~ (:|-)host$ ]]; then
     CONFIG["NETWORK"]="host"
-    echo -e "${YELLOW}检测到host版本，已自动切换网络模式为host${NC}"
+    echo -e "${YELLOW}检测到host镜像，已自动切换网络模式为host${NC}"
     save_config
   fi
 
+  # 验证镜像与网络模式的兼容性
+  if ! validate_image_network_compatibility; then
+    read -n 1 -s -r -p "按任意键继续..."
+    return 1
+  fi
+
   local container_name=$(get_container_name)
+
+  # 在删除容器之前尝试迁移数据
+  # 此时容器还在，可以检测到它使用的旧路径
+  if ! migrate_legacy_data; then
+    echo -e "${RED}数据迁移失败，安装中止${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return 1
+  fi
+
   remove_opposite_container
 
   INIT=false
@@ -516,6 +1554,16 @@ install_container() {
   if [[ ! -d "${CONFIG[BASE_DIR]}" ]]; then
     echo -e "${YELLOW}基础目录不存在，正在创建: ${CONFIG[BASE_DIR]}${NC}"
     mkdir -p "${CONFIG[BASE_DIR]}"
+    INIT=true
+  fi
+
+  # 检查基础目录是否为空（排除 .v3 标记文件）。
+  # 用 find -print | head -n1 取首个条目即停止，避免对大目录（NAS 上可能数十万文件）全量遍历。
+  # 兼容 iStoreOS/OpenWrt 的 busybox find（不支持 GNU 专有的 -quit）；
+  # head 关闭管道后 find 收到 SIGPIPE（pipefail 下为非零），用 || true 规避 set -e 退出。
+  local sample
+  sample="$(find "${CONFIG[BASE_DIR]}" -mindepth 1 ! -name '.v3' -print 2>/dev/null | head -n 1)" || true
+  if [[ -z "$sample" ]]; then
     INIT=true
   fi
 
@@ -545,11 +1593,18 @@ check_update() {
   fi
 
   local image="${CONFIG[IMAGE_NAME]}"
+  local platform=""
+
+  if [[ $(uname -m) == "aarch64" || $(uname -m) == "arm64" ]]; then
+    platform="--platform=linux/arm64"
+    echo -e "${CYAN}检测到 ARM64 平台，强制使用 arm64 镜像${NC}"
+  fi
+
   echo -e "${CYAN}正在检查镜像更新...${NC}"
 
   local current_id=$(docker images --quiet "$image")
   echo -e "${CYAN}正在拉取镜像: ${CONFIG[IMAGE_NAME]}${NC}"
-  if ! docker pull "${CONFIG[IMAGE_NAME]}" >/dev/null; then
+  if ! docker pull $platform "${CONFIG[IMAGE_NAME]}" >/dev/null; then
     echo -e "${RED}镜像拉取失败!${NC}"
     return 1
   fi
@@ -570,7 +1625,12 @@ check_update() {
       esac
     fi
   else
+    local tag
+    tag="$(get_image_tag "$image")"
     echo -e "${YELLOW}当前已是最新版本${NC}"
+    if [[ -n "$tag" && "$tag" != "latest" ]]; then
+      echo -e "${YELLOW}已锁定版本 ${tag}，该版本镜像未变化。如需升级请更换版本号：交互模式选菜单 7「选择镜像」，命令行运行 menu 或编辑配置中的 IMAGE_NAME。${NC}"
+    fi
     return 1
   fi
 }
@@ -587,19 +1647,19 @@ replace_container() {
   start_container
 }
 
-# 显示版本选择菜单
-show_version_menu() {
+# 显示镜像选择菜单
+show_image_menu() {
   while true; do
     clear
     echo -e "${CYAN}=============================================${NC}"
-    echo -e "${GREEN}          请选择要使用的版本          ${NC}"
+    echo -e "${GREEN}          请选择要使用的镜像          ${NC}"
     echo -e "${CYAN}=============================================${NC}"
 
     local arch=$(uname -m)
     local current_version="${CONFIG[IMAGE_ID]}"
 
     for key in {1..9}; do
-      # 如果是 ARM64 并且是版本 2、5、6，则跳过
+      # 如果是 ARM64 并且是镜像 2、5、6，则跳过
       if [[ "$arch" == "aarch64" && ("$key" == "2" || "$key" == "5" || "$key" == "6") ]]; then
         continue
       fi
@@ -614,10 +1674,10 @@ show_version_menu() {
     echo -e "${CYAN}---------------------------------------------${NC}"
 
     while true; do
-      read -p "请输入版本编号 [0-9]: " version_choice
+      read -p "请输入镜像编号 [0-9]: " version_choice
       # 如果是 ARM64，不允许选择 2、5、6
       if [[ "$arch" == "aarch64" && ("$version_choice" == "2" || "$version_choice" == "5" || "$version_choice" == "6") ]]; then
-        echo -e "${RED}ARM64 不支持该版本，请选择其他选项${NC}"
+        echo -e "${RED}ARM64 不支持该镜像，请选择其他选项${NC}"
         continue
       fi
       # 验证输入是否为0-9的数字
@@ -634,18 +1694,65 @@ show_version_menu() {
     fi
 
     local old_version="${CONFIG[IMAGE_NAME]}"
+    local old_image_id="${CONFIG[IMAGE_ID]}"
     local image="${VERSIONS[$version_choice]}"
     image=$(echo "$image" | awk -F' - ' '{print $1}' | tr -d ' ')
+
+    # 步骤2：选择版本（docker tag）
+    local image_base image_tag cur_base cur_tag display_version version_input result_tag
+    image_base="$(get_image_base "$image")"
+    image_tag="$(get_image_tag "$image")"
+    if [[ -n "$image_tag" ]]; then
+      # 预定义 tag 镜像（如 :dev），版本即为其预定义 tag
+      display_version="$image_tag"
+    else
+      cur_base="$(get_image_base "${CONFIG[IMAGE_NAME]}")"
+      if [[ "$cur_base" == "$image_base" ]]; then
+        # 同一镜像：沿用当前 tag（latest 或之前输入的版本号）
+        cur_tag="$(get_image_tag "${CONFIG[IMAGE_NAME]}")"
+        display_version="${cur_tag:-latest}"
+      else
+        display_version="latest"
+      fi
+    fi
+
+    echo -e "${CYAN}---------------------------------------------${NC}"
+    echo -e "当前版本: ${GREEN}${display_version}${NC}"
+    read -p "请输入版本号（直接回车使用当前版本，如 1.9.0）: " version_input
+    version_input="$(echo "$version_input" | tr -d '[:space:]')"
+    if [[ -n "$version_input" ]]; then
+      result_tag="$version_input"
+    else
+      result_tag="$display_version"
+    fi
+
+    # 组装最终镜像名（latest 不附加 tag）
+    if [[ -n "$result_tag" && "$result_tag" != "latest" ]]; then
+      image="${image_base}:${result_tag}"
+    else
+      image="${image_base}"
+    fi
+
     CONFIG["IMAGE_ID"]="$version_choice"
     CONFIG["IMAGE_NAME"]="${image}"
 
-    # 新增：如果镜像名称包含host，自动切换网络模式
-    if [[ "${image}" == *"host"* ]]; then
+    # 新增：如果镜像基础名包含host后缀，自动切换网络模式
+    if [[ "$image_base" =~ (:|-)host$ ]]; then
       CONFIG["NETWORK"]="host"
-      echo -e "${YELLOW}检测到host版本，已自动切换网络模式为host${NC}"
+      echo -e "${YELLOW}检测到host镜像，已自动切换网络模式为host${NC}"
     fi
 
     save_config
+
+    # 验证镜像与网络模式的兼容性
+    if ! validate_image_network_compatibility; then
+      echo -e "${RED}镜像与网络模式不兼容，镜像切换失败${NC}"
+      CONFIG["IMAGE_ID"]="$old_image_id"
+      CONFIG["IMAGE_NAME"]="$old_version"
+      save_config
+      read -n 1 -s -r -p "按任意键继续..."
+      return
+    fi
 
     # 获取容器名称
     local container_name=$(get_container_name)
@@ -663,11 +1770,22 @@ show_version_menu() {
       docker rm -f "$container_name" >/dev/null
     fi
 
+    # 拉取最新镜像
+    echo -e "${YELLOW}正在拉取最新镜像...${NC}"
+    if ! docker pull "${CONFIG[IMAGE_NAME]}"; then
+      echo -e "${RED}拉取镜像失败，镜像切换终止${NC}"
+      CONFIG["IMAGE_ID"]="$old_image_id"
+      CONFIG["IMAGE_NAME"]="$old_version"
+      save_config
+      read -n 1 -s -r -p "按任意键继续..."
+      return
+    fi
+
     # 启动新容器
-    echo -e "${YELLOW}正在启动新版本容器...${NC}"
+    echo -e "${YELLOW}正在启动新镜像容器...${NC}"
     start_container
 
-    echo -e "${GREEN}版本已切换为: ${image}${NC}"
+    echo -e "${GREEN}镜像已切换为: ${image}${NC}"
     show_access_info false
     read -n 1 -s -r -p "按任意键继续..."
     return
@@ -750,7 +1868,11 @@ manage_custom_mounts() {
     # 显示当前挂载
     if [[ -f "${CONFIG[BASE_DIR]}/mounts.conf" ]]; then
       echo -e "${YELLOW}当前挂载配置:${NC}"
-      cat "${CONFIG[BASE_DIR]}/mounts.conf" | awk '{print " " NR ". " $0}'
+      if cat "${CONFIG[BASE_DIR]}/mounts.conf" 2>/dev/null | awk '{print " " NR ". " $0}'; then
+        :
+      else
+        echo -e "${RED}无法读取挂载配置文件 (权限不足)${NC}"
+      fi
     else
       echo -e "${YELLOW}暂无自定义挂载${NC}"
     fi
@@ -787,12 +1909,18 @@ add_custom_mount() {
 
   # 基本格式验证
   if [[ "$mount_config" =~ ^[^:]+:[^:]+(:ro|:rw)?$ ]]; then
-    mkdir -p "${CONFIG[BASE_DIR]}"
-    echo "$mount_config" >> "${CONFIG[BASE_DIR]}/mounts.conf"
-    echo -e "${GREEN}挂载配置已添加!${NC}"
-
-    # 自动重建容器使挂载生效
-    recreate_container_for_mounts
+    mkdir -p "${CONFIG[BASE_DIR]}" 2>/dev/null || {
+      echo -e "${RED}无法创建数据目录 (权限不足)${NC}"
+      sleep 1
+      return
+    }
+    if echo "$mount_config" >> "${CONFIG[BASE_DIR]}/mounts.conf" 2>/dev/null; then
+      echo -e "${GREEN}挂载配置已添加!${NC}"
+      # 自动重建容器使挂载生效
+      recreate_container_for_mounts
+    else
+      echo -e "${RED}添加失败 (权限不足)${NC}"
+    fi
   else
     echo -e "${RED}无效格式! 请使用 主机目录:容器目录[:权限] 格式${NC}"
   fi
@@ -808,18 +1936,26 @@ remove_custom_mount() {
   fi
 
   read -p "请输入要删除的挂载编号: " mount_num
-  local total_lines=$(wc -l < "${CONFIG[BASE_DIR]}/mounts.conf")
+  local total_lines
+  total_lines=$(wc -l < "${CONFIG[BASE_DIR]}/mounts.conf" 2>/dev/null) || {
+    echo -e "${RED}无法读取挂载配置文件 (权限不足)${NC}"
+    sleep 1
+    return
+  }
 
   if [[ "$mount_num" =~ ^[0-9]+$ ]] && [[ "$mount_num" -ge 1 ]] && [[ "$mount_num" -le "$total_lines" ]]; then
     # 创建临时文件
     local temp_file=$(mktemp)
     # 删除指定行
-    sed "${mount_num}d" "${CONFIG[BASE_DIR]}/mounts.conf" > "$temp_file"
-    mv "$temp_file" "${CONFIG[BASE_DIR]}/mounts.conf"
-    echo -e "${GREEN}挂载配置已删除!${NC}"
-
-    # 自动重建容器使挂载生效
-    recreate_container_for_mounts
+    if sed "${mount_num}d" "${CONFIG[BASE_DIR]}/mounts.conf" > "$temp_file" 2>/dev/null && \
+       mv "$temp_file" "${CONFIG[BASE_DIR]}/mounts.conf" 2>/dev/null; then
+      echo -e "${GREEN}挂载配置已删除!${NC}"
+      # 自动重建容器使挂载生效
+      recreate_container_for_mounts
+    else
+      echo -e "${RED}删除失败 (权限不足)${NC}"
+      rm -f "$temp_file" 2>/dev/null
+    fi
   else
     echo -e "${RED}无效编号!${NC}"
   fi
@@ -877,28 +2013,24 @@ get_host_ip() {
 
 # 检查 AList 运行状态
 check_alist_status() {
-  local ip=$(get_host_ip)
+  local ip
+  ip="$(get_host_ip)"
   local port="${CONFIG[PORT1]}"
-  local api_url="http://$ip:$port/api/alist/status"
+  local api_url="http://${ip:-localhost}:$port/api/alist/status"
 
   echo -e "${CYAN}正在检查 AList 状态...${NC}"
 
-  # 使用 curl 调用 API
-  local status_code
-  if status_code=$(curl -s --connect-timeout 3 "$api_url"); then
+  local response
+  if response="$(curl -fsS --connect-timeout 3 "$api_url" 2>/dev/null)"; then
+    local status_code
+    status_code="$(printf '%s' "$response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p')"
+    [[ -z "$status_code" ]] && status_code="$(printf '%s' "$response" | tr -d '\n' | sed -n 's/^\([0-9]\+\)$/\1/p')"
+
     case "$status_code" in
-      0)
-        echo -e "AList 状态: ${RED}未启动${NC}"
-        ;;
-      1)
-        echo -e "AList 状态: ${YELLOW}启动中...${NC}"
-        ;;
-      2)
-        echo -e "AList 状态: ${GREEN}已启动${NC}"
-        ;;
-      *)
-        echo -e "AList 状态: ${RED}未知状态码: $status_code${NC}"
-        ;;
+      0) echo -e "AList 状态: ${RED}未启动${NC}" ;;
+      1) echo -e "AList 状态: ${YELLOW}启动中...${NC}" ;;
+      2) echo -e "AList 状态: ${GREEN}已启动${NC}" ;;
+      *) echo -e "AList 状态: ${RED}未知状态: ${response}${NC}" ;;
     esac
   else
     echo -e "AList 状态: ${RED}无法连接到管理应用${NC}"
@@ -906,6 +2038,7 @@ check_alist_status() {
 }
 
 check_status() {
+  sync_runtime_config || true
   local status=$(check_container_status)
   if [[ "$status" != "running" ]]; then
     echo -e "${YELLOW}容器不存在${NC}"
@@ -918,34 +2051,48 @@ check_status() {
   docker ps -a --filter "name=$container_name" --format \
     "table {{.Names}}\t{{.Status}}\t{{.Image}}"
 
+  # 从容器实际配置读取网络模式
+  local actual_network=$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container_name" 2>/dev/null)
+
   # 显示端口映射（支持host和bridge模式）
   echo -e "\n${CYAN}============== 端口映射 ==============${NC}"
-  if [[ "${CONFIG[NETWORK]}" == "host" ]]; then
+  if [[ "$actual_network" == "host" ]]; then
     echo -e "${YELLOW}host模式使用主机网络，无独立端口映射${NC}"
-    echo -e "管理端口: ${GREEN}4567${NC}"
-    echo -e "AList端口: ${GREEN}5234${NC}"
-    echo -e "Nginx端口: ${GREEN}5678${NC}"
+
+    # 根据镜像类型显示端口
+    local image_name=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null)
+    if [[ "$image_name" =~ xiaoya.*host ]]; then
+      # xiaoya host系列镜像的端口
+      echo -e "管理端口: ${GREEN}4567${NC}"
+      echo -e "Nginx端口: ${GREEN}5678${NC}"
+      echo -e "httpd端口: ${GREEN}5233${NC}"
+      echo -e "AList端口: ${GREEN}5234${NC}"
+    else
+      # 纯净版镜像的端口（host模式直接使用容器端口）
+      echo -e "管理端口: ${GREEN}4567${NC}"
+      echo -e "AList端口: ${GREEN}5244${NC}"
+    fi
   else
-    docker inspect --format \
-      '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} -> {{(index $conf 0).HostPort}}{{"\n"}}{{end}}' \
-      "$container_name" 2>/dev/null || echo -e "${RED}无端口映射信息${NC}"
+    # 使用更安全的方式获取端口映射
+    local port_info
+    port_info=$(docker port "$container_name" 2>/dev/null)
+    if [[ -n "$port_info" ]]; then
+      echo "$port_info" | while IFS= read -r line; do
+        echo "  $line"
+      done
+    else
+      echo -e "${RED}无端口映射信息${NC}"
+    fi
   fi
 
   # 显示挂载信息（包括自定义挂载）
   echo -e "\n${CYAN}============== 挂载目录 ==============${NC}"
   docker inspect --format \
-    '{{range $mount := .Mounts}}{{.Source}}:{{.Destination}}:{{.Mode}}'$'\n''{{end}}' \
+    '{{range $mount := .Mounts}}{{.Source}} -> {{.Destination}} ({{.Mode}})'$'\n''{{end}}' \
     "$container_name" 2>/dev/null | \
-  awk -F: '{
-    max_source = (length($1) > max_source) ? length($1) : max_source;
-    max_dest = (length($2) > max_dest) ? length($2) : max_dest;
-    mounts[NR] = $0
-  } END {
-    for(i=1; i<NR; i++) {
-      split(mounts[i], arr, ":");
-      printf "  %-*s -> %-*s (%s)\n", max_source, arr[1], max_dest, arr[2], arr[3]
-    }
-  }'
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo "  $line"
+  done || true
 
   echo -e "\n${CYAN}============== 镜像信息 ==============${NC}"
   local image_id=$(docker inspect --format '{{.Image}}' "$container_name" 2>/dev/null | cut -d: -f2 | cut -c1-12)
@@ -963,10 +2110,581 @@ check_status() {
   echo -e "\n${CYAN}============= 资源使用情况 ============${NC}"
   docker stats --no-stream "$container_name" 2>/dev/null || echo -e "${YELLOW}容器未运行${NC}"
 
+  # 显示容器内部版本信息
+  if [[ "$status" == "running" ]]; then
+    echo -e "\n${CYAN}============ 容器版本信息 ============${NC}"
+
+    # 安装模式
+    local install_mode=$(docker exec "$container_name" sh -c 'echo $INSTALL' 2>/dev/null || echo "未知")
+    echo -e "安装模式: ${GREEN}${install_mode}${NC}"
+
+    # 应用版本
+    local app_version=$(docker exec "$container_name" cat /app_version 2>/dev/null | head -1 || echo "未知")
+    echo -e "应用版本: ${GREEN}${app_version}${NC}"
+
+    # 小雅版本（如果存在）
+    local xiaoya_version=$(docker exec "$container_name" sh -c 'head -n1 /docker.version 2>/dev/null' || echo "")
+    if [[ -n "$xiaoya_version" ]]; then
+      echo -e "小雅版本: ${GREEN}${xiaoya_version}${NC}"
+    fi
+
+    # 容器系统信息
+    local container_os=$(docker exec "$container_name" uname -mor 2>/dev/null || echo "未知")
+    echo -e "容器系统: ${GREEN}${container_os}${NC}"
+  fi
+
   # 检查AList服务状态
   if [[ "$status" == "running" ]]; then
     echo -e "\n${CYAN}============ AList服务状态 ============${NC}"
     check_alist_status
+
+    # 执行健康检查
+    echo ""
+    health_check
+  fi
+
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# 生成本地备份一次性 token（32 位），写入容器后供 /api/local/backup 校验
+generate_backup_token() {
+  local token=""
+  while [[ ${#token} -lt 32 ]]; do
+    token="${token}$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | base64 | tr -dc 'A-Za-z0-9')"
+  done
+  printf '%s' "${token:0:32}"
+}
+
+# 把一次性 token 写入容器内 /data/atv/backup_token（0600）
+write_backup_token() {
+  local container_name="$1" token="$2"
+  docker exec "$container_name" sh -lc "mkdir -p /data/atv && umask 077 && printf '%s' '$token' > /data/atv/backup_token"
+}
+
+# 调用容器内本地备份端点；$3=type(json|sql)，$4=includeDouban(true|false，默认 false)。
+# 成功打印产物文件名，失败返回非 0。迁移导出传 includeDouban=true 以把 movie/meta/alias 带到目标库。
+call_backup_api() {
+  local container_name="$1" token="$2" type="$3" include_douban="${4:-false}"
+  docker exec "$container_name" sh -lc "curl -fsS -X POST -H 'X-BACKUP-TOKEN: $token' 'http://127.0.0.1:4567/api/local/backup?type=$type&includeDouban=$include_douban'" \
+    | tr -d '\n' | sed -n 's/.*"file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+# 立即备份数据库（JSON 优先，SQL 与裸 atv.mv.db 为 fallback）
+backup_database_now() {
+  echo -e "${CYAN}=============================================${NC}"
+  echo -e "${GREEN}          立即备份数据库 (JSON 优先)          ${NC}"
+  echo -e "${CYAN}=============================================${NC}"
+
+  local container_name
+  container_name="$(get_container_name)"
+  local status
+  status="$(check_container_status)"
+
+  mkdir -p "${CONFIG[BASE_DIR]}/backup" 2>/dev/null || {
+    echo -e "${RED}无法创建备份目录 (权限不足)${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  }
+
+  # 容器未运行 → 退回裸 atv.mv.db 复制（兜底，与历史行为一致）
+  if [[ "$status" != "running" ]]; then
+    echo -e "${YELLOW}容器未运行，退回裸文件备份 atv.mv.db${NC}"
+    local db_file="${CONFIG[BASE_DIR]}/atv.mv.db"
+    if [[ ! -f "$db_file" ]]; then
+      echo -e "${RED}数据库文件不存在: $db_file${NC}"
+      echo -e "${YELLOW}可能原因：数据库未初始化${NC}"
+      read -n 1 -s -r -p "按任意键继续..."
+      return
+    fi
+    local timestamp
+    timestamp="$(date +"%Y-%m-%d-%H%M%S")"
+    local backup_file="${CONFIG[BASE_DIR]}/backup/database-${timestamp}.zip"
+    if command -v zip >/dev/null 2>&1 && (cd "${CONFIG[BASE_DIR]}" && zip -q "$backup_file" atv.mv.db 2>/dev/null); then
+      echo -e "${GREEN}✓ 备份成功 (atv.mv.db)${NC}"
+      echo -e "备份文件: ${GREEN}${backup_file}${NC}"
+      echo -e "文件大小: $(ls -lh "$backup_file" | awk '{print $5}')"
+    else
+      echo -e "${RED}备份失败（未安装 zip 或权限不足）${NC}"
+      echo -e "${YELLOW}请安装: apt install zip 或 yum install zip${NC}"
+    fi
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  fi
+
+  # 主：JSON 备份（JPA 导出，DB 无关，可移植）
+  local token file
+  token="$(generate_backup_token)"
+  write_backup_token "$container_name" "$token"
+  echo -e "${CYAN}正在生成 JSON 备份...${NC}"
+  if file="$(call_backup_api "$container_name" "$token" "json" 2>/dev/null)" && [[ -n "$file" ]]; then
+    local path="${CONFIG[BASE_DIR]}/backup/$file"
+    echo -e "${GREEN}✓ JSON 备份成功${NC}"
+    echo -e "备份文件: ${GREEN}${path}${NC}"
+    echo -e "文件大小: $(ls -lh "$path" 2>/dev/null | awk '{print $5}')"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  fi
+
+  # fallback：SQL 备份（H2 SCRIPT TO，仅 H2）
+  echo -e "${YELLOW}JSON 备份失败，尝试 SQL 备份...${NC}"
+  token="$(generate_backup_token)"
+  write_backup_token "$container_name" "$token"
+  if file="$(call_backup_api "$container_name" "$token" "sql" 2>/dev/null)" && [[ -n "$file" ]]; then
+    echo -e "${GREEN}✓ SQL 备份成功${NC}"
+    echo -e "备份文件: ${GREEN}${CONFIG[BASE_DIR]}/backup/$file${NC}"
+  else
+    echo -e "${RED}备份失败：JSON 与 SQL 均失败${NC}"
+    echo -e "${YELLOW}请查看容器日志: docker logs $container_name${NC}"
+  fi
+
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# GitHub代理管理
+manage_github_proxy() {
+  while true; do
+    clear
+    echo -e "${CYAN}=============================================${NC}"
+    echo -e "${GREEN}          GitHub代理设置          ${NC}"
+    echo -e "${CYAN}=============================================${NC}"
+
+    # 显示当前代理列表
+    local proxy_file="${CONFIG[BASE_DIR]}/github_proxy.txt"
+    local current_proxies=()
+
+    if [[ -f "$proxy_file" && -s "$proxy_file" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && current_proxies+=("$line")
+      done < "$proxy_file"
+    fi
+
+    if [[ ${#current_proxies[@]} -gt 0 ]]; then
+      echo -e "${YELLOW}当前代理列表 (最多5个):${NC}\n"
+      for i in "${!current_proxies[@]}"; do
+        echo -e " $((i+1)). ${GREEN}${current_proxies[$i]}${NC}"
+      done
+      echo ""
+    else
+      echo -e "${YELLOW}当前未设置代理${NC}\n"
+    fi
+
+    echo -e "${CYAN}支持的代理前缀:${NC}"
+    echo -e " - https://ghp.ci/"
+    echo -e " - https://github.moeyy.xyz/"
+    echo -e " - https://gh-proxy.com/"
+    echo -e " 等其他GitHub镜像加速服务\n"
+
+    echo -e "${GREEN} 1. 添加代理"
+    echo -e " 2. 删除代理"
+    echo -e " 3. 清空所有代理"
+    echo -e " 4. 测速对比"
+    echo -e " 0. 返回配置菜单${NC}"
+    echo -e "${CYAN}---------------------------------------------${NC}"
+    read -p "请选择操作 [0-4]: " choice
+
+    case $choice in
+      1)
+        if [[ ${#current_proxies[@]} -ge 5 ]]; then
+          echo -e "${RED}已达到最大代理数量 (5个)${NC}"
+          sleep 2
+          continue
+        fi
+
+        echo -e "${YELLOW}请输入代理URL (必须以 http:// 或 https:// 开头)${NC}"
+        echo -e "${YELLOW}示例: https://ghp.ci/${NC}"
+        read -p "代理URL: " new_proxy
+
+        # 验证URL格式
+        if [[ ! "$new_proxy" =~ ^https?:// ]]; then
+          echo -e "${RED}无效的URL格式，必须以 http:// 或 https:// 开头${NC}"
+          sleep 2
+          continue
+        fi
+
+        # 检查是否已存在
+        if printf '%s\n' "${current_proxies[@]}" | grep -Fxq "$new_proxy"; then
+          echo -e "${YELLOW}该代理已存在${NC}"
+          sleep 2
+          continue
+        fi
+
+        # 添加到列表
+        current_proxies+=("$new_proxy")
+        save_proxy_list "${current_proxies[@]}"
+        echo -e "${GREEN}代理已添加${NC}"
+        sleep 1
+        ;;
+
+      2)
+        if [[ ${#current_proxies[@]} -eq 0 ]]; then
+          echo -e "${YELLOW}当前没有代理可删除${NC}"
+          sleep 2
+          continue
+        fi
+
+        read -p "请输入要删除的代理编号 [1-${#current_proxies[@]}]: " del_num
+
+        if [[ "$del_num" =~ ^[0-9]+$ ]] && [[ "$del_num" -ge 1 ]] && [[ "$del_num" -le ${#current_proxies[@]} ]]; then
+          # 删除指定索引的元素
+          unset 'current_proxies[$((del_num-1))]'
+          current_proxies=("${current_proxies[@]}")  # 重新索引数组
+          save_proxy_list "${current_proxies[@]}"
+          echo -e "${GREEN}代理已删除${NC}"
+          sleep 1
+        else
+          echo -e "${RED}无效的编号${NC}"
+          sleep 2
+        fi
+        ;;
+
+      3)
+        if [[ ${#current_proxies[@]} -eq 0 ]]; then
+          echo -e "${YELLOW}当前没有代理${NC}"
+          sleep 2
+          continue
+        fi
+
+        read -p "确认清空所有代理? [y/N] " confirm
+        case "$confirm" in
+          [Yy]*)
+            save_proxy_list
+            echo -e "${GREEN}已清空所有代理${NC}"
+            sleep 1
+            ;;
+          *)
+            echo -e "${YELLOW}已取消${NC}"
+            sleep 1
+            ;;
+        esac
+        ;;
+
+      4)
+        if [[ ${#current_proxies[@]} -eq 0 ]]; then
+          echo -e "\n${YELLOW}当前未配置代理，无法测速${NC}"
+          echo -e "${YELLOW}请先添加代理后再进行测速对比${NC}"
+          read -n 1 -s -r -p "按任意键继续..."
+        else
+          test_github_proxy_speed "${current_proxies[@]}"
+        fi
+        ;;
+
+      0)
+        return
+        ;;
+
+      *)
+        echo -e "${RED}无效选择${NC}"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
+# GitHub代理测速
+test_github_proxy_speed() {
+  local proxies=("$@")
+  local test_url="https://raw.githubusercontent.com/xiaoyaliu00/data/main/version.txt"
+
+  echo -e "\n${CYAN}============== 代理测速对比 ==============${NC}"
+  echo -e "${YELLOW}测试文件: version.txt${NC}\n"
+
+  # 验证版本号格式 (x.y.z 或 vx.y.z)
+  validate_version() {
+    local content="$1"
+    # 匹配版本号格式: 数字.数字.数字 (可选的v前缀)
+    if [[ "$content" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      return 0
+    else
+      return 1
+    fi
+  }
+
+  # 测试直连
+  echo -e "${CYAN}测试 直连...${NC}"
+  local start_time=$(date +%s%3N)
+  local direct_result=$(curl -fsS --connect-timeout 5 --max-time 10 "$test_url" 2>/dev/null | tr -d '[:space:]')
+  local end_time=$(date +%s%3N)
+  local direct_time=$((end_time - start_time))
+
+  if [[ -n "$direct_result" ]] && validate_version "$direct_result"; then
+    echo -e "  ${GREEN}✓ 成功${NC} - 耗时: ${GREEN}${direct_time}ms${NC}"
+    echo -e "  版本号: ${direct_result}"
+  else
+    if [[ -n "$direct_result" ]]; then
+      echo -e "  ${RED}× 失败${NC} - 返回内容无效: ${direct_result}"
+    else
+      echo -e "  ${RED}× 失败${NC} - 连接超时或无法访问"
+    fi
+    direct_time=99999
+  fi
+
+  # 测试所有代理
+  if [[ ${#proxies[@]} -eq 0 ]]; then
+    echo -e "\n${YELLOW}当前未配置代理${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  fi
+
+  echo ""
+  local best_proxy=""
+  local best_time=99999
+  local proxy_times=()
+
+  for proxy in "${proxies[@]}"; do
+    echo -e "${CYAN}测试 ${proxy}${NC}"
+    local proxy_url="${proxy}${test_url}"
+
+    start_time=$(date +%s%3N)
+    local proxy_result=$(curl -fsS --connect-timeout 5 --max-time 10 "$proxy_url" 2>/dev/null | tr -d '[:space:]')
+    end_time=$(date +%s%3N)
+    local proxy_time=$((end_time - start_time))
+
+    if [[ -n "$proxy_result" ]] && validate_version "$proxy_result"; then
+      echo -e "  ${GREEN}✓ 成功${NC} - 耗时: ${GREEN}${proxy_time}ms${NC}"
+      echo -e "  版本号: ${proxy_result}"
+      proxy_times+=("$proxy_time:$proxy")
+
+      if [[ $proxy_time -lt $best_time ]]; then
+        best_time=$proxy_time
+        best_proxy=$proxy
+      fi
+    else
+      if [[ -n "$proxy_result" ]]; then
+        echo -e "  ${RED}× 失败${NC} - 返回内容无效: ${proxy_result}"
+      else
+        echo -e "  ${RED}× 失败${NC} - 连接超时或无法访问"
+      fi
+      proxy_times+=("99999:$proxy")
+    fi
+    echo ""
+  done
+
+  # 显示推荐
+  echo -e "${CYAN}============== 测速结果 ==============${NC}"
+  if [[ $direct_time -lt $best_time ]]; then
+    echo -e "${GREEN}推荐: 直连${NC} (${direct_time}ms)"
+    echo -e "${YELLOW}当前网络环境下，直连速度最快，建议清空代理${NC}"
+  elif [[ $best_time -lt 99999 ]]; then
+    echo -e "${GREEN}推荐: ${best_proxy}${NC} (${best_time}ms)"
+    echo -e "${YELLOW}该代理速度最快，建议保留此代理${NC}"
+  else
+    echo -e "${RED}所有代理均无法访问${NC}"
+    echo -e "${YELLOW}建议检查网络连接或更换其他代理${NC}"
+  fi
+
+  # 显示排序结果
+  if [[ ${#proxy_times[@]} -gt 1 ]]; then
+    echo -e "\n${CYAN}速度排行:${NC}"
+    printf '%s\n' "${proxy_times[@]}" | sort -t: -k1 -n | while IFS=: read -r time proxy; do
+      if [[ $time -eq 99999 ]]; then
+        echo -e "  ${RED}× ${proxy}${NC} - 失败"
+      else
+        echo -e "  ${GREEN}✓ ${proxy}${NC} - ${time}ms"
+      fi
+    done
+  fi
+
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# 保存代理列表
+save_proxy_list() {
+  local proxy_file="${CONFIG[BASE_DIR]}/github_proxy.txt"
+
+  if [[ $# -eq 0 ]]; then
+    # 清空代理
+    rm -f "$proxy_file" 2>/dev/null
+    CONFIG["GITHUB_PROXY"]=""
+  else
+    # 写入代理列表（一行一个）
+    printf '%s\n' "$@" > "$proxy_file" 2>/dev/null || {
+      echo -e "${RED}写入失败 (权限不足)${NC}"
+      sleep 2
+      return 1
+    }
+    # 保存到配置（用逗号分隔）
+    CONFIG["GITHUB_PROXY"]=$(IFS=','; echo "$*")
+  fi
+
+  save_config
+
+  # 提示重启容器
+  local container_name=$(get_container_name)
+  if docker ps --format '{{.Names}}' | grep -q "^${container_name}\$"; then
+    read -p "代理配置已更新，是否重启容器使其生效? [Y/n] " yn
+    case "$yn" in
+      [Nn]*) ;;
+      *) docker restart "$container_name" >/dev/null && echo -e "${GREEN}容器已重启${NC}" || echo -e "${RED}重启失败${NC}"
+         sleep 1 ;;
+    esac
+  fi
+}
+
+# 探测备份类型：文件名含 -json- 为 JSON 备份，否则视为 SQL 备份
+detect_backup_type() {
+  local name
+  name="$(basename "$1")"
+  if [[ "$name" == *"-json-"* ]]; then
+    echo "JSON"
+  else
+    echo "SQL"
+  fi
+}
+
+# SQL 备份恢复：复制到 database.zip，删除 mv.db，重启容器（init.sh 执行 RunScript）
+restore_sql_backup() {
+  local selected_backup="$1"
+  local backup_name
+  backup_name="$(basename "$selected_backup")"
+  echo -e "${RED}警告: 将以 SQL 方式覆盖当前数据库!${NC}"
+  read -p "确认恢复 ${backup_name}? [y/N] " confirm
+  case "$confirm" in
+    [Yy]*)
+      echo -e "${CYAN}正在恢复数据库 (SQL)...${NC}"
+      if ! cp "$selected_backup" "${CONFIG[BASE_DIR]}/database.zip" 2>/dev/null; then
+        echo -e "${RED}复制备份文件失败 (权限不足)${NC}"
+        return 1
+      fi
+      echo -e "${GREEN}✓ 备份文件已复制${NC}"
+      rm -f "${CONFIG[BASE_DIR]}/atv.mv.db" 2>/dev/null && echo -e "${GREEN}✓ 已删除 atv.mv.db${NC}"
+      rm -f "${CONFIG[BASE_DIR]}/atv.trace.db" 2>/dev/null && echo -e "${GREEN}✓ 已删除 atv.trace.db${NC}"
+      local container_name
+      container_name="$(get_container_name)"
+      if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}\$"; then
+        echo -e "${YELLOW}正在重启容器...${NC}"
+        docker restart "$container_name" >/dev/null 2>&1 && echo -e "${GREEN}✓ 容器已重启${NC}" || echo -e "${RED}容器重启失败${NC}"
+      else
+        echo -e "${YELLOW}容器不存在，请通过菜单 '1. 安装/更新' 启动容器${NC}"
+      fi
+      ;;
+    *)
+      echo -e "${YELLOW}已取消恢复${NC}"
+      ;;
+  esac
+}
+
+# JSON 备份恢复：复制到 database-json.zip，重启容器（StartupJsonRestoreRunner OVERWRITE + exit 85 干净重启）
+# 不删除 atv.mv.db：JSON 恢复通过 JPA 原地覆盖，init.sh 检测到 database-json.zip 时会跳过 SQL 恢复
+restore_json_backup() {
+  local selected_backup="$1"
+  local backup_name
+  backup_name="$(basename "$selected_backup")"
+  echo -e "${RED}警告: 将以 JSON 方式覆盖恢复当前数据库 (OVERWRITE)!${NC}"
+  read -p "确认恢复 ${backup_name}? [y/N] " confirm
+  case "$confirm" in
+    [Yy]*)
+      echo -e "${CYAN}正在恢复数据库 (JSON)...${NC}"
+      if ! cp "$selected_backup" "${CONFIG[BASE_DIR]}/database-json.zip" 2>/dev/null; then
+        echo -e "${RED}复制备份文件失败 (权限不足)${NC}"
+        return 1
+      fi
+      echo -e "${GREEN}✓ 备份文件已复制${NC}"
+      local container_name
+      container_name="$(get_container_name)"
+      if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}\$"; then
+        echo -e "${YELLOW}正在重启容器...${NC}"
+        docker restart "$container_name" >/dev/null 2>&1 && echo -e "${GREEN}✓ 容器已重启${NC}" || echo -e "${RED}容器重启失败${NC}"
+        echo -e "\n${GREEN}JSON 数据库恢复已触发!${NC}"
+        echo -e "${YELLOW}容器将恢复后自动重启一次以加载恢复数据，请稍候${NC}"
+      else
+        echo -e "${YELLOW}容器不存在，请通过菜单 '1. 安装/更新' 启动容器${NC}"
+      fi
+      ;;
+    *)
+      echo -e "${YELLOW}已取消恢复${NC}"
+      ;;
+  esac
+}
+
+# 数据库恢复
+restore_database() {
+  local backup_dir="${CONFIG[BASE_DIR]}/backup"
+
+  echo -e "${CYAN}=============================================${NC}"
+  echo -e "${GREEN}          数据库恢复 (JSON 优先)          ${NC}"
+  echo -e "${CYAN}=============================================${NC}"
+
+  # 检查备份目录是否存在
+  if [[ ! -d "$backup_dir" ]]; then
+    echo -e "${YELLOW}备份目录不存在: $backup_dir${NC}"
+    echo -e "${YELLOW}提示: 系统每天自动备份 (SQL 06:00 / JSON 06:30) 到此目录${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  fi
+
+  # 列出所有备份文件（按修改时间倒序，最新的在前）。
+  # busybox find 不支持 GNU 的 -printf，改用 glob 取候选 + 单次 ls -dt 按修改时间排序。
+  local backups=()
+  local entries=()
+  local nullglob_was_set=0
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+  entries=("$backup_dir"/*.zip)
+  (( nullglob_was_set )) || shopt -u nullglob
+  if [[ ${#entries[@]} -gt 0 ]]; then
+    while IFS= read -r file; do
+      backups+=("$file")
+    done < <(ls -dt "${entries[@]}" 2>/dev/null)
+  fi
+
+  if [[ ${#backups[@]} -eq 0 ]]; then
+    echo -e "${YELLOW}未找到备份文件${NC}"
+    echo -e "${YELLOW}提示: 备份文件为 .zip 格式，保存在 $backup_dir 目录${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  fi
+
+  # 探测每个备份类型，构造显示顺序：JSON 在前（优先），SQL 在后。
+  # 用 order+= 条件追加而非展开可能为空的数组，规避 NAS bash 4.3 下 set -u 的 unbound variable。
+  local types=()
+  local order=()
+  local i
+  for i in "${!backups[@]}"; do
+    types[$i]="$(detect_backup_type "${backups[$i]}")"
+  done
+  for i in "${!backups[@]}"; do
+    [[ "${types[$i]}" == "JSON" ]] && order+=("$i")
+  done
+  for i in "${!backups[@]}"; do
+    [[ "${types[$i]}" == "SQL" ]] && order+=("$i")
+  done
+
+  echo -e "${YELLOW}可用的备份文件 (JSON 优先):${NC}\n"
+  local n=0
+  for i in "${order[@]}"; do
+    n=$((n+1))
+    local file="${backups[$i]}"
+    local filename=$(basename "$file")
+    local filesize=$(ls -lh "$file" | awk '{print $5}')
+    local filetime=$(ls -l --time-style='+%Y-%m-%d %H:%M:%S' "$file" | awk '{print $6, $7}')
+    echo -e " $n. [${types[$i]}] ${GREEN}${filename}${NC}"
+    echo -e "    大小: ${filesize}  时间: ${filetime}"
+    echo ""
+  done
+
+  echo -e " 0. 取消"
+  echo -e "${CYAN}---------------------------------------------${NC}"
+  read -p "请选择要恢复的备份 [0-${#order[@]}]: " choice
+
+  # 验证输入
+  if [[ "$choice" == "0" ]]; then
+    return
+  fi
+
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt ${#order[@]} ]]; then
+    echo -e "${RED}无效选择!${NC}"
+    sleep 2
+    return
+  fi
+
+  local sel="${order[$((choice-1))]}"
+  local selected_backup="${backups[$sel]}"
+  local kind="${types[$sel]}"
+
+  if [[ "$kind" == "JSON" ]]; then
+    restore_json_backup "$selected_backup"
+  else
+    restore_sql_backup "$selected_backup"
   fi
 
   read -n 1 -s -r -p "按任意键继续..."
@@ -975,10 +2693,28 @@ check_status() {
 # 显示网络模式菜单
 show_network_menu() {
   clear
+
+  # 从配置文件重新加载，避免被 sync_runtime_config 覆盖的内存值
+  local saved_network=""
+  if [[ -f "$CONFIG_FILE" ]]; then
+    saved_network=$(grep "^NETWORK=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2)
+  fi
+  [[ -n "$saved_network" ]] && CONFIG["NETWORK"]="$saved_network"
+
   echo -e "${CYAN}=============================================${NC}"
   echo -e "${GREEN}          网络模式设置          ${NC}"
   echo -e "${CYAN}=============================================${NC}"
-  echo -e " 当前网络模式: ${GREEN}${CONFIG[NETWORK]}${NC}"
+  echo -e " 当前配置: ${GREEN}${CONFIG[NETWORK]}${NC}"
+
+  # 显示容器实际使用的网络模式（如果存在）
+  local container_name=$(get_container_name)
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}\$"; then
+    local actual_network=$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container_name" 2>/dev/null)
+    if [[ -n "$actual_network" && "$actual_network" != "${CONFIG[NETWORK]}" ]]; then
+      echo -e " 容器实际: ${YELLOW}${actual_network}${NC} (需要重建容器使配置生效)"
+    fi
+  fi
+
   echo -e " 1. bridge模式 (默认)"
   echo -e " 2. host模式"
   echo -e " 0. 返回"
@@ -990,11 +2726,27 @@ show_network_menu() {
       CONFIG["NETWORK"]="bridge"
       save_config
       echo -e "${GREEN}已设置为bridge模式${NC}"
+      # 验证与当前镜像的兼容性
+      if ! validate_image_network_compatibility; then
+        CONFIG["NETWORK"]="host"
+        save_config
+        echo -e "${RED}当前镜像不兼容bridge模式，已回退${NC}"
+        sleep 2
+        return
+      fi
       ;;
     2)
       CONFIG["NETWORK"]="host"
       save_config
       echo -e "${GREEN}已设置为host模式${NC}"
+      # 验证与当前镜像的兼容性
+      if ! validate_image_network_compatibility; then
+        CONFIG["NETWORK"]="bridge"
+        save_config
+        echo -e "${RED}当前镜像不兼容host模式，已回退${NC}"
+        sleep 2
+        return
+      fi
       ;;
     0)
       return
@@ -1006,9 +2758,8 @@ show_network_menu() {
 
   # 如果变更了网络模式且容器存在，提示需要重建
   if [[ "$choice" =~ ^[12]$ ]]; then
-    local container_name=$(get_container_name)
     if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}\$"; then
-      echo -e "${YELLOW}注意: 网络模式变更将在下次启动容器时生效${NC}"
+      echo -e "${YELLOW}注意: 网络模式变更需要重建容器才能生效${NC}"
       read -p "是否立即重建容器？[Y/n] " yn
       case "$yn" in
         [Nn]*) ;;
@@ -1059,6 +2810,16 @@ show_restart_menu() {
 show_config_menu() {
   while true; do
     clear
+
+    # 从配置文件重新加载关键配置，避免被 sync_runtime_config 覆盖
+    if [[ -f "$CONFIG_FILE" ]]; then
+      while IFS='=' read -r key value; do
+        if [[ -n "$key" && "$key" =~ ^(NETWORK|BASE_DIR|PORT1|PORT2|RESTART|MOUNT_WWW|GITHUB_PROXY)$ ]]; then
+          CONFIG["$key"]="$value"
+        fi
+      done < "$CONFIG_FILE"
+    fi
+
     echo -e "${CYAN}=============================================${NC}"
     echo -e "${GREEN}          当前配置管理          ${NC}"
     echo -e "${CYAN}=============================================${NC}"
@@ -1071,9 +2832,11 @@ show_config_menu() {
     echo -e " 7. 重启策略: ${CONFIG[RESTART]}"
     echo -e " 8. 重置管理员密码"
     echo -e " 9. GitHub代理设置"
+    echo -e " a. 数据恢复"
+    echo -e " b. 立即备份数据库"
     echo -e " 0. 返回主菜单"
     echo -e "${CYAN}---------------------------------------------${NC}"
-    read -p "选择要修改的配置 [0-9]: " config_choice
+    read -p "选择要修改的配置 [0-9/a-b]: " config_choice
 
     local need_recreate=false
 
@@ -1134,7 +2897,7 @@ show_config_menu() {
         ;;
       6)
         show_network_menu
-        need_recreate=true
+        # show_network_menu 内部已处理重建逻辑
         continue
         ;;
       7)
@@ -1150,12 +2913,16 @@ show_config_menu() {
         continue
         ;;
       9)
-        read -p "输入GitHub代理URL [${CONFIG[GITHUB_PROXY]}]: " url
-        if [[ "$url" != "${CONFIG[GITHUB_PROXY]}" ]]; then
-          CONFIG[GITHUB_PROXY]="$url"
-          save_config
-          need_recreate=true
-        fi
+        manage_github_proxy
+        continue
+        ;;
+      a|A)
+        restore_database
+        continue
+        ;;
+      b|B)
+        backup_database_now
+        continue
         ;;
       0)
         break
@@ -1169,9 +2936,594 @@ show_config_menu() {
 }
 
 # 主循环
+
+
+
+# =========================
+# ENVIRONMENT INIT / HEALTH
+# =========================
+
+
+
+is_default_or_legacy_base_dir() {
+  local dir="${1:-}"
+  # 仅把 /etc/xiaoya（旧版默认路径）和空值视为“未选定”，允许重新探测；
+  # 其它路径一律视为用户已选定，避免把用户数据目录改写后孤立其数据。
+  [[ -z "$dir" || "$dir" == "/etc/xiaoya" ]]
+}
+
+check_port_conflict() {
+  local ports=()
+
+  if [[ "${CONFIG[NETWORK]:-bridge}" == "host" ]]; then
+    ports=(4567 5678 5233 5234)
+  else
+    ports=("${CONFIG[PORT1]:-4567}" "${CONFIG[PORT2]:-5344}")
+  fi
+
+  local p
+  for p in "${ports[@]}"; do
+    if command -v ss >/dev/null 2>&1 && ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${p}$"; then
+      echo -e "${YELLOW}警告：端口 $p 已被占用，容器启动可能失败${NC}"
+    elif command -v netstat >/dev/null 2>&1 && netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${p}$"; then
+      echo -e "${YELLOW}警告：端口 $p 已被占用，容器启动可能失败${NC}"
+    fi
+  done
+}
+
+init_environment() {
+  local allow_mutation="${1:-false}"
+
+  if [[ "$allow_mutation" != "true" ]]; then
+    check_port_conflict
+    return 0
+  fi
+
+  # 只在 install/update/menu 等写操作路径中修正旧路径；
+  # status/logs/health 等只读命令不应改写 app.conf。
+  if is_default_or_legacy_base_dir "${CONFIG[BASE_DIR]:-}"; then
+    CONFIG["BASE_DIR"]="$(detect_best_base_dir)"
+    save_config
+  fi
+
+  check_port_conflict
+}
+
+
+check_url() {
+  local name="$1"
+  local url="$2"
+
+  if curl -fsS --connect-timeout 3 "$url" >/dev/null 2>&1; then
+    echo -e "${name}: ${GREEN}OK${NC} ${url}"
+  else
+    echo -e "${name}: ${RED}FAIL${NC} ${url}"
+  fi
+}
+
+health_check() {
+  sync_runtime_config || true
+  local ip
+  ip="$(get_host_ip)"
+  ip="${ip:-localhost}"
+
+  echo -e "${CYAN}============== 健康检查 ==============${NC}"
+
+  # 根据镜像名称判断是否为xiaoya host系列
+  local image_name="${CONFIG[IMAGE_NAME]:-}"
+  if [[ "$image_name" =~ xiaoya.*host ]]; then
+    # xiaoya host系列镜像的健康检查（特殊端口5234）
+    check_url "管理应用" "http://${ip}:4567/"
+    check_url "Nginx" "http://${ip}:5678/"
+    check_url "httpd" "http://${ip}:5233/"
+    check_url "AList" "http://${ip}:5234/"
+  elif [[ "${CONFIG[NETWORK]:-bridge}" == "host" ]]; then
+    # 所有其他镜像的host模式（标准端口5244）
+    check_url "管理应用" "http://${ip}:4567/"
+    check_url "AList" "http://${ip}:5244/"
+  else
+    # bridge模式（所有镜像）
+    check_url "管理应用" "http://${ip}:${CONFIG[PORT1]:-4567}/"
+    check_url "入口服务" "http://${ip}:${CONFIG[PORT2]:-5344}/"
+  fi
+}
+
+# 检查端口是否被占用
+check_port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${port}$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${port}$"
+  else
+    return 1
+  fi
+}
+
+# 网络诊断
+network_diagnostics() {
+  echo -e "\n${CYAN}============== 网络诊断 ==============${NC}"
+
+  # 1. 测试外网连通性
+  echo -e "${CYAN}1. 外网连通性测试${NC}"
+  local test_sites=("1.1.1.1" "8.8.8.8" "114.114.114.114")
+  local connectivity_ok=false
+
+  for site in "${test_sites[@]}"; do
+    if ping -c 1 -W 2 "$site" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} $site 连接正常"
+      connectivity_ok=true
+      break
+    else
+      echo -e "  ${RED}×${NC} $site 无法连接"
+    fi
+  done
+
+  if [[ "$connectivity_ok" == "false" ]]; then
+    echo -e "  ${RED}× 外网连接失败，请检查网络配置${NC}"
+    return 1
+  fi
+
+  # 2. DNS解析测试
+  echo -e "\n${CYAN}2. DNS解析测试${NC}"
+  local dns_test_domains=("www.baidu.com" "github.com" "docker.io")
+  local dns_ok=false
+
+  for domain in "${dns_test_domains[@]}"; do
+    if nslookup "$domain" >/dev/null 2>&1 || host "$domain" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} $domain 解析成功"
+      dns_ok=true
+    else
+      echo -e "  ${YELLOW}⚠${NC} $domain 解析失败"
+    fi
+  done
+
+  if [[ "$dns_ok" == "false" ]]; then
+    echo -e "  ${RED}× DNS解析失败，请检查DNS配置${NC}"
+    echo -e "  ${YELLOW}建议: 修改 /etc/resolv.conf 添加公共DNS${NC}"
+  fi
+
+  # 3. GitHub连通性测试（含代理）
+  echo -e "\n${CYAN}3. GitHub连通性测试${NC}"
+
+  # 测试直连
+  if curl -fsS --connect-timeout 3 https://github.com >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} GitHub直连正常"
+  else
+    echo -e "  ${RED}×${NC} GitHub直连失败"
+
+    # 测试配置的代理
+    local proxy_file="${CONFIG[BASE_DIR]}/github_proxy.txt"
+    if [[ -f "$proxy_file" && -s "$proxy_file" ]]; then
+      echo -e "  ${CYAN}测试配置的GitHub代理:${NC}"
+      while IFS= read -r proxy; do
+        [[ -z "$proxy" ]] && continue
+        local test_url="${proxy}https://github.com"
+        if curl -fsS --connect-timeout 3 "$test_url" >/dev/null 2>&1; then
+          echo -e "    ${GREEN}✓${NC} $proxy"
+        else
+          echo -e "    ${RED}×${NC} $proxy"
+        fi
+      done < "$proxy_file"
+    else
+      echo -e "  ${YELLOW}提示: 可通过配置管理添加GitHub代理${NC}"
+    fi
+  fi
+
+  # 4. Docker Hub连通性测试
+  echo -e "\n${CYAN}4. Docker Hub连通性测试${NC}"
+  if curl -fsS --connect-timeout 3 https://hub.docker.com >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Docker Hub连接正常"
+  else
+    echo -e "  ${RED}×${NC} Docker Hub连接失败"
+    echo -e "  ${YELLOW}建议: 配置Docker镜像加速${NC}"
+  fi
+
+  # 5. 容器网络测试（如果容器运行中）
+  local container_name=$(get_container_name)
+  if docker ps --format '{{.Names}}' | grep -q "^${container_name}\$"; then
+    echo -e "\n${CYAN}5. 容器网络测试${NC}"
+
+    # 测试容器内网络
+    if docker exec "$container_name" ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} 容器内网络正常"
+    else
+      echo -e "  ${RED}×${NC} 容器内网络异常"
+    fi
+
+    # 测试容器DNS
+    if docker exec "$container_name" nslookup www.baidu.com >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} 容器DNS正常"
+    else
+      echo -e "  ${YELLOW}⚠${NC} 容器DNS可能异常"
+    fi
+  fi
+
+  echo -e "\n${GREEN}网络诊断完成${NC}"
+}
+
+auto_repair() {
+  local container_name
+  container_name="$(get_container_name)"
+
+  echo -e "${CYAN}============== 自动修复诊断 ==============${NC}"
+
+  # 1. 检查容器是否存在
+  if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}\$"; then
+    echo -e "${RED}× 容器不存在${NC}"
+    echo -e "${YELLOW}建议：选择菜单 '1. 安装/更新' 创建容器${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return 1
+  fi
+
+  echo -e "${GREEN}✓ 容器存在${NC}"
+
+  # 2. 检查容器运行状态
+  local running
+  running="$(docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || echo false)"
+
+  if [[ "$running" != "true" ]]; then
+    echo -e "${RED}× 容器未运行${NC}"
+
+    # 检查退出状态
+    local exit_code
+    local exit_error
+    exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$container_name" 2>/dev/null || echo 0)"
+    exit_error="$(docker inspect -f '{{.State.Error}}' "$container_name" 2>/dev/null || echo '')"
+
+    if [[ "$exit_code" != "0" ]]; then
+      echo -e "${YELLOW}  容器异常退出 (退出码: $exit_code)${NC}"
+      [[ -n "$exit_error" ]] && echo -e "${YELLOW}  错误: $exit_error${NC}"
+    fi
+
+    # 检查端口冲突
+    echo -e "${CYAN}  检查端口冲突...${NC}"
+    local has_conflict=false
+    if [[ "${CONFIG[NETWORK]}" == "host" ]]; then
+      for p in 4567 5678 5233 5234; do
+        if check_port_in_use "$p"; then
+          echo -e "${RED}  × 端口 $p 被占用${NC}"
+          has_conflict=true
+        fi
+      done
+    else
+      if check_port_in_use "${CONFIG[PORT1]}"; then
+        echo -e "${RED}  × 管理端口 ${CONFIG[PORT1]} 被占用${NC}"
+        has_conflict=true
+      fi
+      if check_port_in_use "${CONFIG[PORT2]}"; then
+        echo -e "${RED}  × AList端口 ${CONFIG[PORT2]} 被占用${NC}"
+        has_conflict=true
+      fi
+    fi
+
+    if [[ "$has_conflict" == "true" ]]; then
+      echo -e "${YELLOW}建议：通过菜单 '8. 配置管理' 修改端口，或停止占用端口的进程${NC}"
+      read -n 1 -s -r -p "按任意键继续..."
+      return 1
+    fi
+    echo -e "${GREEN}  ✓ 端口无冲突${NC}"
+
+    # 检查数据目录权限
+    if [[ ! -w "${CONFIG[BASE_DIR]}" ]]; then
+      echo -e "${RED}  × 数据目录无写权限: ${CONFIG[BASE_DIR]}${NC}"
+      echo -e "${YELLOW}  尝试修复权限...${NC}"
+      if chmod 755 "${CONFIG[BASE_DIR]}" 2>/dev/null; then
+        echo -e "${GREEN}  ✓ 权限已修复${NC}"
+      else
+        echo -e "${RED}  × 权限修复失败${NC}"
+        echo -e "${YELLOW}  请手动执行: sudo chmod 755 ${CONFIG[BASE_DIR]}${NC}"
+        read -n 1 -s -r -p "按任意键继续..."
+        return 1
+      fi
+    else
+      echo -e "${GREEN}  ✓ 数据目录权限正常${NC}"
+    fi
+
+    # 尝试启动容器
+    echo -e "${YELLOW}  正在启动容器...${NC}"
+    if docker start "$container_name" >/dev/null 2>&1; then
+      echo -e "${GREEN}✓ 容器已启动${NC}"
+      echo -e "${CYAN}等待服务初始化...${NC}"
+      sleep 3
+    else
+      echo -e "${RED}× 容器启动失败${NC}"
+      echo -e "${YELLOW}可能的原因：${NC}"
+      echo -e "  1. 配置文件损坏"
+      echo -e "  2. 镜像与网络模式不匹配"
+      echo -e "  3. 挂载目录问题"
+      echo ""
+      read -p "是否尝试重建容器以修复？[y/N] " yn
+      case "$yn" in
+        [Yy]*)
+          echo -e "${YELLOW}正在重建容器...${NC}"
+          docker rm -f "$container_name" >/dev/null
+          start_container
+          echo -e "${GREEN}✓ 容器已重建并启动${NC}"
+          echo -e "${CYAN}等待服务初始化...${NC}"
+          sleep 3
+          ;;
+        *)
+          echo -e "${YELLOW}已取消重建${NC}"
+          echo -e "${YELLOW}请查看日志排查问题: docker logs $container_name${NC}"
+          read -n 1 -s -r -p "按任意键继续..."
+          return 1
+          ;;
+      esac
+    fi
+  else
+    echo -e "${GREEN}✓ 容器正在运行${NC}"
+  fi
+
+  # 3. 检查容器健康状态
+  echo -e "\n${CYAN}============== 服务健康检查 ==============${NC}"
+  health_check
+
+  # 4. 网络诊断
+  network_diagnostics
+
+  echo -e "\n${GREEN}诊断完成${NC}"
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# 清理Docker资源
+cleanup_docker_resources() {
+  echo -e "${CYAN}=============================================${NC}"
+  echo -e "${GREEN}          Docker资源清理          ${NC}"
+  echo -e "${CYAN}=============================================${NC}"
+
+  # 显示当前磁盘使用情况
+  echo -e "${YELLOW}正在分析Docker磁盘使用情况...${NC}\n"
+  docker system df 2>/dev/null || {
+    echo -e "${RED}无法获取Docker磁盘信息${NC}"
+    read -n 1 -s -r -p "按任意键继续..."
+    return
+  }
+
+  echo -e "\n${CYAN}可执行的清理操作:${NC}"
+  echo -e " 1. 清理未使用的镜像"
+  echo -e " 2. 清理已停止的容器"
+  echo -e " 3. 清理未使用的数据卷"
+  echo -e " 4. 清理构建缓存"
+  echo -e " 5. 一键清理所有未使用资源"
+  echo -e " 0. 返回"
+  echo -e "${CYAN}---------------------------------------------${NC}"
+  read -p "请选择清理操作 [0-5]: " choice
+
+  case $choice in
+    1)
+      echo -e "${YELLOW}正在清理未使用的镜像...${NC}"
+      docker image prune -a -f
+      echo -e "${GREEN}✓ 清理完成${NC}"
+      ;;
+    2)
+      echo -e "${YELLOW}正在清理已停止的容器...${NC}"
+      docker container prune -f
+      echo -e "${GREEN}✓ 清理完成${NC}"
+      ;;
+    3)
+      echo -e "${YELLOW}正在清理未使用的数据卷...${NC}"
+      docker volume prune -f
+      echo -e "${GREEN}✓ 清理完成${NC}"
+      ;;
+    4)
+      echo -e "${YELLOW}正在清理构建缓存...${NC}"
+      docker builder prune -a -f
+      echo -e "${GREEN}✓ 清理完成${NC}"
+      ;;
+    5)
+      echo -e "${RED}警告: 此操作将清理所有未使用的Docker资源${NC}"
+      read -p "确认继续? [y/N] " confirm
+      case "$confirm" in
+        [Yy]*)
+          echo -e "${YELLOW}正在清理...${NC}"
+          docker system prune -a -f --volumes
+          echo -e "${GREEN}✓ 清理完成${NC}"
+          ;;
+        *)
+          echo -e "${YELLOW}已取消${NC}"
+          ;;
+      esac
+      ;;
+    0)
+      return
+      ;;
+    *)
+      echo -e "${RED}无效选择${NC}"
+      ;;
+  esac
+
+  # 显示清理后的磁盘使用情况
+  if [[ "$choice" =~ ^[1-5]$ && "$choice" != "0" ]]; then
+    echo -e "\n${CYAN}清理后磁盘使用情况:${NC}"
+    docker system df 2>/dev/null
+  fi
+
+  read -n 1 -s -r -p "按任意键继续..."
+}
+
+# 打开Web界面
+open_web_interface() {
+  sync_runtime_config || true
+  local ip=$(get_host_ip)
+
+  echo -e "${CYAN}=============================================${NC}"
+  echo -e "${GREEN}          打开Web界面          ${NC}"
+  echo -e "${CYAN}=============================================${NC}"
+
+  local manage_url admin_url
+  if [[ "${CONFIG[NETWORK]}" == "host" ]]; then
+    manage_url="http://${ip}:4567/"
+    admin_url="http://${ip}:5234/"
+  else
+    manage_url="http://${ip}:${CONFIG[PORT1]}/"
+    admin_url="http://${ip}:${CONFIG[PORT2]}/"
+  fi
+
+  echo -e " 1. 管理界面: ${GREEN}${manage_url}${NC}"
+  echo -e " 2. AList界面: ${GREEN}${admin_url}${NC}"
+  echo -e " 0. 返回"
+  echo -e "${CYAN}---------------------------------------------${NC}"
+  read -p "请选择要打开的界面 [0-2]: " choice
+
+  local target_url=""
+  case $choice in
+    1) target_url="$manage_url" ;;
+    2) target_url="$admin_url" ;;
+    0) return ;;
+    *)
+      echo -e "${RED}无效选择${NC}"
+      sleep 1
+      return
+      ;;
+  esac
+
+  echo -e "${CYAN}正在打开浏览器...${NC}"
+
+  # 尝试多种方式打开浏览器
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$target_url" 2>/dev/null &
+    echo -e "${GREEN}✓ 已在浏览器中打开${NC}"
+  elif command -v open >/dev/null 2>&1; then
+    open "$target_url" 2>/dev/null &
+    echo -e "${GREEN}✓ 已在浏览器中打开${NC}"
+  elif command -v start >/dev/null 2>&1; then
+    start "$target_url" 2>/dev/null &
+    echo -e "${GREEN}✓ 已在浏览器中打开${NC}"
+  else
+    echo -e "${YELLOW}无法自动打开浏览器${NC}"
+    echo -e "${YELLOW}请手动访问: ${target_url}${NC}"
+  fi
+
+  sleep 2
+}
+
+# 日志管理
+manage_logs() {
+  local container_name=$(get_container_name)
+
+  while true; do
+    clear
+    echo -e "${CYAN}=============================================${NC}"
+    echo -e "${GREEN}          日志管理          ${NC}"
+    echo -e "${CYAN}=============================================${NC}"
+    echo -e " 1. 实时查看日志 (Ctrl+C退出)"
+    echo -e " 2. 查看最近N行"
+    echo -e " 3. 按关键词过滤"
+    echo -e " 4. 导出日志文件"
+    echo -e " 5. 查看日志文件大小"
+    echo -e " 0. 返回主菜单"
+    echo -e "${CYAN}---------------------------------------------${NC}"
+    read -p "请选择操作 [0-5]: " log_choice
+
+    case $log_choice in
+      1)
+        echo -e "${CYAN}实时查看日志 (按 Ctrl+C 退出)...${NC}"
+        sleep 1
+        docker logs -f "$container_name" 2>&1
+        ;;
+      2)
+        read -p "请输入要查看的行数 [默认100]: " lines
+        lines=${lines:-100}
+        if [[ "$lines" =~ ^[0-9]+$ ]]; then
+          if command -v less >/dev/null 2>&1; then
+            # 有 less 时使用分页器
+            docker logs --tail "$lines" "$container_name" 2>&1 | less -R
+          else
+            # 没有 less 时使用 more 或直接输出（限制行数）
+            if command -v more >/dev/null 2>&1; then
+              docker logs --tail "$lines" "$container_name" 2>&1 | more
+            else
+              echo -e "${CYAN}显示最近 ${lines} 行日志:${NC}\n"
+              docker logs --tail "$lines" "$container_name" 2>&1
+              read -n 1 -s -r -p "按任意键继续..."
+            fi
+          fi
+        else
+          echo -e "${RED}无效的行数${NC}"
+          sleep 1
+        fi
+        ;;
+      3)
+        read -p "请输入关键词: " keyword
+        if [[ -n "$keyword" ]]; then
+          echo -e "${CYAN}包含 '${keyword}' 的日志:${NC}\n"
+
+          if command -v less >/dev/null 2>&1; then
+            # 有 less 时使用分页器
+            docker logs "$container_name" 2>&1 | grep --color=always -i "$keyword" | less -R
+          elif command -v more >/dev/null 2>&1; then
+            # 有 more 时使用它
+            docker logs "$container_name" 2>&1 | grep --color=always -i "$keyword" | more
+          else
+            # 都没有时，限制显示前200行
+            local result=$(docker logs "$container_name" 2>&1 | grep --color=always -i "$keyword")
+            local line_count=$(echo "$result" | wc -l)
+
+            if [[ $line_count -gt 200 ]]; then
+              echo -e "${YELLOW}找到 ${line_count} 行匹配结果，显示前200行:${NC}\n"
+              echo "$result" | head -n 200
+              echo -e "\n${YELLOW}...省略 $((line_count - 200)) 行，建议使用选项4导出完整日志${NC}"
+            else
+              echo "$result"
+            fi
+            read -n 1 -s -r -p "按任意键继续..."
+          fi
+        else
+          echo -e "${RED}关键词不能为空${NC}"
+          sleep 1
+        fi
+        ;;
+      4)
+        local export_dir="${CONFIG[BASE_DIR]}/logs"
+        mkdir -p "$export_dir" 2>/dev/null || {
+          echo -e "${RED}无法创建导出目录 (权限不足)${NC}"
+          read -n 1 -s -r -p "按任意键继续..."
+          continue
+        }
+
+        local timestamp=$(date +"%Y%m%d-%H%M%S")
+        local log_file="${export_dir}/${container_name}-${timestamp}.log"
+
+        echo -e "${CYAN}正在导出日志...${NC}"
+        if docker logs "$container_name" > "$log_file" 2>&1; then
+          local filesize=$(ls -lh "$log_file" | awk '{print $5}')
+          echo -e "${GREEN}✓ 日志已导出${NC}"
+          echo -e "文件位置: ${GREEN}${log_file}${NC}"
+          echo -e "文件大小: ${filesize}"
+        else
+          echo -e "${RED}导出失败${NC}"
+        fi
+        read -n 1 -s -r -p "按任意键继续..."
+        ;;
+      5)
+        echo -e "${CYAN}正在获取日志大小...${NC}"
+        local log_info=$(docker inspect --format='{{.LogPath}}' "$container_name" 2>/dev/null)
+        if [[ -n "$log_info" && -f "$log_info" ]]; then
+          local log_size=$(ls -lh "$log_info" | awk '{print $5}')
+          echo -e "日志文件: ${YELLOW}${log_info}${NC}"
+          echo -e "文件大小: ${GREEN}${log_size}${NC}"
+          echo -e "\n${YELLOW}提示: Docker日志占用磁盘空间过大时，可通过配置日志轮转限制大小${NC}"
+        else
+          echo -e "${RED}无法获取日志信息${NC}"
+        fi
+        read -n 1 -s -r -p "按任意键继续..."
+        ;;
+      0)
+        return
+        ;;
+      *)
+        echo -e "${RED}无效选择${NC}"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
 interactive_mode() {
   check_environment
   load_config
+  init_environment true
 
   while true; do
     show_menu
@@ -1220,32 +3572,47 @@ interactive_mode() {
         ;;
       5)
         if [ "$status" != "not_exist" ]; then
-          docker logs -f "$container_name"
+          manage_logs
         else
           echo -e "${YELLOW}容器不存在${NC}"
           sleep 1
         fi
         ;;
       6)
-        echo "卸载容器..."
         if [ "$status" != "not_exist" ]; then
-          docker rm -f "$container_name"
-          echo -e "${GREEN}容器已卸载${NC}"
+          echo -e "${YELLOW}警告: 此操作将删除容器，但不会删除数据目录${NC}"
+          echo -e "${YELLOW}数据目录: ${CONFIG[BASE_DIR]}${NC}"
+          read -p "确认卸载容器? (y/N): " confirm
+          if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            echo "正在卸载容器..."
+            docker rm -f "$container_name"
+            echo -e "${GREEN}容器已卸载${NC}"
+            echo -e "${CYAN}数据目录已保留，如需删除请手动清理${NC}"
+          else
+            echo -e "${CYAN}已取消卸载${NC}"
+          fi
         else
           echo -e "${YELLOW}容器不存在${NC}"
         fi
-        sleep 1
+        sleep 2
         ;;
       7)
-        show_version_menu
+        show_image_menu
         ;;
       8)
         show_config_menu
         ;;
       9)
-        if ! check_update; then
-          sleep 3
-        fi
+        auto_repair
+        ;;
+      m|M)
+        show_migrate_menu
+        ;;
+      c|C)
+        cleanup_docker_resources
+        ;;
+      w|W)
+        open_web_interface
         ;;
       0)
         echo -e "${GREEN}再见!${NC}"
@@ -1259,6 +3626,31 @@ interactive_mode() {
   done
 }
 
+
+is_safe_data_dir() {
+  local dir="${1:-}"
+
+  [[ -n "$dir" ]] || return 1
+  [[ "$dir" != "/" ]] || return 1
+  [[ "$dir" != "/home" && "$dir" != "/etc" && "$dir" != "/opt" && "$dir" != "/usr" && "$dir" != "/var" ]] || return 1
+  [[ "$dir" != "$HOME" ]] || return 1
+
+  case "$dir" in
+    /opt/alist-tvbox|/opt/alist-tvbox/*) return 0 ;;
+    /volume*/docker/alist-tvbox|/volume*/docker/alist-tvbox/*) return 0 ;;
+    /share/CACHEDEV*_DATA/docker/alist-tvbox|/share/CACHEDEV*_DATA/docker/alist-tvbox/*) return 0 ;;
+    "$PWD"/alist-tvbox|"$PWD"/alist-tvbox/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+confirm_delete_data_dir() {
+  local dir="$1"
+  echo -e "${RED}危险操作：将删除数据目录：$dir${NC}"
+  read -p "请输入 DELETE 确认删除: " confirm
+  [[ "$confirm" == "DELETE" ]]
+}
+
 # 命令行模式处理
 cli_mode() {
   check_environment
@@ -1267,6 +3659,7 @@ cli_mode() {
 
   case "$1" in
     install)
+      init_environment true
       install_container
       ;;
     start)
@@ -1291,7 +3684,6 @@ cli_mode() {
       }
       ;;
     status)
-      local status=$(check_container_status)
       check_status
       ;;
     logs)
@@ -1309,34 +3701,118 @@ cli_mode() {
         echo -e "${RED}容器不存在${NC}"
       }
       if [[ "$#" -ge 2 && "$2" == "-f" ]]; then
-       echo -e "${RED}删除安装目录：${CONFIG[BASE_DIR]}${NC}"
-       rm -rf "${CONFIG[BASE_DIR]}"
+       if is_safe_data_dir "${CONFIG[BASE_DIR]}" && confirm_delete_data_dir "${CONFIG[BASE_DIR]}"; then
+         echo -e "${RED}删除安装目录：${CONFIG[BASE_DIR]}${NC}"
+         rm -rf -- "${CONFIG[BASE_DIR]}"
+       else
+         echo -e "${YELLOW}已取消删除数据目录，或目录不在安全白名单内：${CONFIG[BASE_DIR]}${NC}"
+       fi
       fi
       ;;
     update)
+      init_environment true
       if [[ "$#" -ge 2 && "$2" == "-y" ]]; then
         check_update "-y"
       else
         check_update
       fi
       ;;
+    health)
+      health_check
+      ;;
+    repair)
+      auto_repair
+      ;;
     menu)
       interactive_mode
       ;;
+    config-db)
+      case "${2:-}" in
+        apply) config_db_apply ;;
+        *)     config_db ;;
+      esac
+      ;;
+    migrate-db)
+      dispatch_migrate_db "$@"
+      ;;
+    rollback-db)
+      rollback_db
+      ;;
     *)
       echo -e "${RED}未知命令: $1${NC}"
-      echo "可用命令: install, start, stop, restart, status, logs, uninstall, update, menu"
+      echo "可用命令: install, start, stop, restart, status, logs, uninstall, update, health, repair, menu, config-db, migrate-db, rollback-db, help"
       exit 1
       ;;
   esac
 }
 
+# 打印帮助（不依赖 Docker，help/-h/--help 可在任何环境直接查看）
+show_help() {
+  printf '%b\n' "$(cat <<EOF
+${GREEN}AList-TvBox 安装升级配置管理脚本 v${SCRIPT_VERSION}${NC}
+
+${CYAN}用法:${NC}
+  ./alist-tvbox.sh                交互式菜单（默认）
+  ./alist-tvbox.sh <命令>         执行单次命令
+  ./alist-tvbox.sh help|-h|--help 显示本帮助
+
+${CYAN}命令行命令:${NC}
+  install    安装/更新容器
+  start      启动容器
+  stop       停止容器
+  restart    重启容器
+  status     查看容器状态
+  logs       查看日志（logs -f 实时跟踪）
+  update     检查并更新镜像（update -y 自动更新）
+  uninstall  卸载容器（uninstall -f 同时删除数据目录）
+  health     健康检查
+  repair     自动修复诊断
+  config-db  配置/切换主应用数据库 (H2/MySQL/PostgreSQL)；config-db apply 用新配置重建容器
+  migrate-db               进入数据库迁移向导（交互式导出→切换→导入）
+  migrate-db --jdbc-url <url> --username <u> --password <p>
+                            非交互一键迁移（自动从 URL 识别 mysql/postgresql，导出→切换→导入）
+  migrate-db export [zip]   从当前实例导出 JSON 备份（跨机迁移第一步：在源实例导出）
+  migrate-db import <zip>   将备份导入当前实例（恢复后自动重启；跨机迁移第二步，在目标实例执行）
+  rollback-db               回退到上次切换前的数据库（恢复快照并重建容器）
+  menu        进入交互式菜单
+  help        显示本帮助
+
+${CYAN}交互式主菜单:${NC}
+  1 安装/更新   2 启动/停止   3 重启   4 查看状态
+  5 日志管理    6 卸载容器    7 选择镜像   8 配置管理
+  9 自动修复    m 数据库迁移  c 清理资源    w 打开Web界面   0 退出
+
+${CYAN}配置管理 (菜单 8) 子菜单:${NC}
+  1 数据目录    2 管理端口    3 AList端口   4 挂载/www
+  5 自定义挂载  6 网络模式    7 重启策略    8 重置管理员密码
+  9 GitHub代理  a 数据恢复    b 立即备份数据库   0 返回
+
+${CYAN}数据库备份与恢复 (JSON 优先, SQL 为兜底):${NC}
+  - 自动备份: SQL 每日 06:00、JSON 每日 06:30，保存到 <数据目录>/backup/
+  - 文件名: database[-json]-yyyy-MM-dd-HHmmss.zip（带时间戳，多次备份互不覆盖），保留 7 天
+  - 立即备份: 菜单 8 → b（JSON 为主；JSON 失败回退 SQL；容器未运行回退裸 atv.mv.db）
+  - 恢复:     菜单 8 → a（按文件名识别 [JSON]/[SQL]，JSON 优先；选择后自动复制并重启恢复）
+  - JSON 走 JPA，可移植 (H2/MySQL/PostgreSQL)；SQL 走 H2 SCRIPT，仅 H2 可用
+
+${CYAN}配置:${NC}
+  配置文件: ~/.config/alist-tvbox/app.conf
+  数据目录默认: /opt/alist-tvbox (NAS: /volume1/docker/alist-tvbox)
+
+${CYAN}更多信息:${NC}
+  帮助文档: doc/README_zh.md    日志: docker logs -f <容器名>
+EOF
+  )"
+}
+
 main() {
   if [ $# -eq 0 ]; then
     interactive_mode
-  else
-    cli_mode "$@"
+    return
   fi
+  case "$1" in
+    -h|--help|help) show_help ;;
+    *) cli_mode "$@" ;;
+  esac
 }
 
 if [[ "${ALIST_TVBOX_SOURCE_ONLY:-}" != "1" ]]; then

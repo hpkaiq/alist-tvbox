@@ -1,6 +1,7 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.domain.DriveId;
 import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.dto.FileItem;
 import cn.har01d.alist_tvbox.dto.FilesList;
@@ -53,7 +54,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -105,7 +106,6 @@ public class TvBoxService {
     private static final Pattern NUMBER1 = Pattern.compile("^SE(\\d{1,2}).*");
     private static final Pattern NUMBER2 = Pattern.compile("^S(\\d{1,2}).*");
     private static final Pattern NUMBER3 = Pattern.compile("^第\\s*(.{1,2})\\s*季.*");
-    private static final Pattern SHARE_ID = Pattern.compile("^\\d+@.+@.*");
 
     private final AccountRepository accountRepository;
     private final AListAliasRepository aliasRepository;
@@ -126,6 +126,7 @@ public class TvBoxService {
     private final SettingService settingService;
     private final AListLocalService aListLocalService;
     private final ProxyService proxyService;
+    private final Index115TvBoxAdapter index115Adapter;
     private final ShareService shareService;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
@@ -189,6 +190,7 @@ public class TvBoxService {
                         ObjectMapper objectMapper,
                         DriverAccountRepository driverAccountRepository,
                         ProxyService proxyService,
+                        Index115TvBoxAdapter index115Adapter,
                         RestTemplateBuilder builder,
                         PikPakAccountRepository pikPakAccountRepository) {
         this.accountRepository = accountRepository;
@@ -211,6 +213,7 @@ public class TvBoxService {
         this.objectMapper = objectMapper;
         this.driverAccountRepository = driverAccountRepository;
         this.proxyService = proxyService;
+        this.index115Adapter = index115Adapter;
         this.restTemplate = builder.build();
         this.pikPakAccountRepository = pikPakAccountRepository;
     }
@@ -251,6 +254,9 @@ public class TvBoxService {
         } else {
             int id = 1;
             for (Site site : siteService.list()) {
+                if (site.getStorageVersion() == 1) {
+                    continue;
+                }
                 Category category = new Category();
                 category.setType_id(site.getId() + "$/" + "$1");
                 category.setType_name(site.getName());
@@ -600,7 +606,7 @@ public class TvBoxService {
             }
             MovieDetail movieDetail = new MovieDetail();
             List<Meta> metas = map.get(name);
-            if (metas.size() > 1) {
+            if (metas != null && metas.size() > 1) {
                 String ids = metas.stream().map(Meta::getId).map(String::valueOf).collect(Collectors.joining("-"));
                 log.debug("duplicate: {} {} {}", name, metas.size(), ids);
                 movieDetail.setVod_id(Objects.toString(meta.getSiteId(), "1") + "$" + encodeUrl(ids) + "$0");
@@ -750,6 +756,7 @@ public class TvBoxService {
             }
         } else {
             List<Future<List<MovieDetail>>> futures = new ArrayList<>();
+            String baseUrl = getBaseUrl();
             for (Site site : siteService.list()) {
                 if (site.isSearchable()) {
                     String tenant = tenantService.getCurrent();
@@ -761,7 +768,7 @@ public class TvBoxService {
                     } else {
                         futures.add(executorService.submit(() -> {
                             tenantService.setTenant(tenant);
-                            return searchByApi(site, ac, keyword);
+                            return searchByApi(site, ac, keyword, baseUrl);
                         }));
                     }
                 }
@@ -878,7 +885,23 @@ public class TvBoxService {
         return list;
     }
 
-    private List<MovieDetail> searchByApi(Site site, String ac, String keyword) throws IOException {
+    private String getBaseUrl() {
+        return ServletUriComponentsBuilder.fromCurrentRequest()
+                .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
+                .replacePath("")
+                .replaceQuery(null)
+                .build()
+                .toUriString();
+    }
+
+    private List<MovieDetail> searchByApi(Site site, String ac, String keyword, String baseUrl) throws IOException {
+        if (site.getStorageVersion() != null && site.getStorageVersion() == 1) {
+            List<MovieDetail> list = index115Adapter.search(site, keyword);
+            for (var movie : list) {
+                movie.setVod_pic(baseUrl + "/115.jpg");
+            }
+            return list;
+        }
         if (site.isXiaoya()) {
             try {
                 return searchByXiaoya(site, ac, keyword);
@@ -1036,6 +1059,9 @@ public class TvBoxService {
         }
 
         Site site = getSite(tid);
+        if (site.getStorageVersion() != null && site.getStorageVersion() == 1) {
+            return index115Adapter.list(site, path, page, size);
+        }
         if (path.contains(PLAYLIST)) {
             return getPlaylist("", site, path, 0);
         }
@@ -1048,6 +1074,10 @@ public class TvBoxService {
         List<MovieDetail> files = new ArrayList<>();
         List<MovieDetail> images = new ArrayList<>();
         MovieList result = new MovieList();
+
+        if (path.equals("/\uD83C\uDF8E我的套娃/115分享")) {
+            return result;
+        }
 
         FsResponse fsResponse = aListService.listFiles(site, path, page, size);
         int total = fsResponse.getTotal();
@@ -1092,7 +1122,7 @@ public class TvBoxService {
                     }
                     movieDetail.setCate(new CategoryList());
                 }
-                if (!"/".equals(path) && !"gui".equals(ac) && !newPath.contains("短剧")) {
+                if (!"/".equals(path) && !"gui".equals(ac) && !newPath.contains("短剧") && !path.startsWith("/115分享索引")) {
                     setMovieInfo(site, movieDetail, fsInfo.getName(), newPath, false);
                 }
                 folders.add(movieDetail);
@@ -1376,6 +1406,13 @@ public class TvBoxService {
 
     public Map<String, Object> getPlayUrl(Integer siteId, String path, boolean getSub, String client, String type) {
         Site site = siteService.getById(siteId);
+        // Only virtual /idx/... paths go through the index115 link resolver.
+        // Search-detail plays resolve to real mounted-storage paths (/115分享索引/...)
+        // and must use the normal AList play flow.
+        if (site.getStorageVersion() != null && site.getStorageVersion() == 1
+                && Index115PathCodec.decode(path) != null) {
+            return index115Adapter.play(site, path);
+        }
         String url = null;
         String name = getNameFromPath(path);
         String fullPath = path;
@@ -1419,7 +1456,7 @@ public class TvBoxService {
             case "QuarkShare", "Quark", "QuarkTV" -> DriverType.QUARK;
             case "UCShare", "UC", "UCTV" -> DriverType.UC;
             case "ThunderBrowser", "ThunderShare" -> DriverType.THUNDER;
-            case "115 Cloud", "115 Share" -> DriverType.PAN115;
+            case "115 Cloud", "115 Share", "115 Index" -> DriverType.PAN115;
             case "BaiduNetdisk", "BaiduShare2" -> DriverType.BAIDU;
             case "123Pan", "123PanShare" -> DriverType.PAN123;
             case "139Yun", "Yun139Share" -> DriverType.PAN139;
@@ -1440,20 +1477,39 @@ public class TvBoxService {
             useProxy = true;
             result.put("url", url);
         } else if (driverType == DriverType.QUARK) {
-            var account = getDriverAccount(url, driverType);
-            String cookie = account == null ? "" : account.getCookie();
-            result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.QUARK_USER_AGENT, "Referer", "https://pan.quark.cn"));
+            int marker = url.indexOf("#x-referer=raw");
+            if (marker >= 0) {
+                // PowerList 在夸克分享免转存直链追加 #x-referer=raw:夸克与 UC 共用同一 checkplay 后端,
+                // 同样需用「URL + "\ "」作 Referer 绕过回调(客户端代理场景)。无标记的夸克(原画/自有文件)仍用 Cookie。
+                String cleanUrl = url.substring(0, marker);
+                result.put("url", cleanUrl);
+                result.put("header", Map.of("User-Agent", Constants.QUARK_USER_AGENT, "Referer", cleanUrl + "\\ "));
+            } else {
+                var account = getDriverAccount(url, driverType);
+                String cookie = account == null ? "" : account.getCookie();
+                result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.QUARK_USER_AGENT, "Referer", "https://pan.quark.cn"));
+            }
         } else if (driverType == DriverType.UC) {
-            var account = getDriverAccount(url, driverType);
-            String cookie = account == null ? "" : account.getCookie();
-            result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.UC_USER_AGENT, "Referer", "https://drive.uc.cn"));
+            int marker = url.indexOf("#x-referer=raw");
+            if (marker >= 0) {
+                // PowerList 在 UC 分享免转存直链追加 #x-referer=raw 标记:此类直链需用
+                // 「URL + "\ "」作 Referer 绕过阿里云 checkplay 回调(客户端代理场景;后端代理由 PowerList 自身处理)。
+                // 无标记的 UC(原画/自有文件)仍用 Cookie + drive.uc.cn。
+                String cleanUrl = url.substring(0, marker);
+                result.put("url", cleanUrl);
+                result.put("header", Map.of("User-Agent", Constants.UC_USER_AGENT, "Referer", cleanUrl + "\\ "));
+            } else {
+                var account = getDriverAccount(url, driverType);
+                String cookie = account == null ? "" : account.getCookie();
+                result.put("header", Map.of("Cookie", cookie, "User-Agent", Constants.UC_USER_AGENT, "Referer", "https://drive.uc.cn"));
+            }
         } else if (driverType == DriverType.THUNDER) {
             result.put("header", Map.of("User-Agent", "AndroidDownloadManager/13 (Linux; U; Android 13; M2004J7AC Build/SP1A.210812.016)"));
         } else if (driverType == DriverType.PAN115) {
             // 115会把UA生成签名校验
             result.put("header", Map.of("User-Agent", Constants.USER_AGENT, "Referer", "https://115.com/"));
         } else if (driverType == DriverType.BAIDU) {
-            result.put("header", Map.of("User-Agent", "netdisk"));
+            result.put("header", Map.of("User-Agent", "netdisk;P2SP;2.2.91.136;android-android;"));
         } else if (url.contains("ali") || driverType == DriverType.ALI) {
             result.put("header", Map.of("User-Agent", appProperties.getUserAgent(), "Referer", Constants.ALIPAN, "origin", Constants.ALIPAN));
         }
@@ -1722,12 +1778,37 @@ public class TvBoxService {
         Site site = getSite(tid);
         String[] parts = tid.split("\\$");
         String path = parts[1];
-        try {
-            path = proxyService.getPath(Integer.parseInt(path));
-        } catch (NumberFormatException e) {
-            log.debug("", e);
-        } catch (Exception e) {
-            log.warn("", e);
+        if (site.getStorageVersion() != null && site.getStorageVersion() == 1 && !isProxyPid(path)) {
+            // Search result carries a raw 115 file id (not a proxy pid). For the web UI,
+            // resolve it to the mounted-storage folder and hand it back so the file browser
+            // navigates folder-by-folder (a dfs-built flat playlist would explode on large
+            // shares). Other clients keep the flat-playlist flow below.
+            if ("web".equals(ac)) {
+                String mounted = index115Adapter.resolvePlayPath(site, path);
+                String folder = mounted.endsWith(PLAYLIST)
+                        ? mounted.substring(0, mounted.length() - PLAYLIST.length())
+                        : getParent(mounted);
+                MovieList result = new MovieList();
+                MovieDetail md = new MovieDetail();
+                md.setVod_id(encodeUrl(tid));
+                md.setPath(folder);
+                md.setType(1);
+                result.getList().add(md);
+                result.setTotal(1);
+                result.setLimit(1);
+                return result;
+            }
+            path = index115Adapter.resolvePlayPath(site, path);
+        } else {
+            try {
+                if (!path.contains(PLAYLIST)) {
+                    path = proxyService.getPath(Integer.parseInt(path));
+                }
+            } catch (NumberFormatException e) {
+                log.debug("", e);
+            } catch (Exception e) {
+                log.warn("", e);
+            }
         }
         updateShareTime(path);
         if (path.contains(PLAYLIST)) {
@@ -1811,7 +1892,7 @@ public class TvBoxService {
             }
             if (fsDetail.getType() != 5 && !setMovieInfo(site, movieDetail, fsDetail.getName(), parent, true)) {
                 String newName = getNameFromPath(parent);
-                if (!SHARE_ID.matcher(newName).matches()) {
+                if (!DriveId.isShareTokenName(newName)) {
                     movieDetail.setVod_name(newName);
                     setMovieInfo(site, movieDetail, "", parent, true);
                     movieDetail.setVod_name(fsDetail.getName());
@@ -1842,6 +1923,21 @@ public class TvBoxService {
                 log.debug("update share time: {} {}", share.getId(), path);
                 shareRepository.save(share);
             }
+        }
+    }
+
+    /**
+     * Distinguishes a browse proxy pid (registered in ProxyService) from a raw
+     * 115 file id carried by search results. 115 file ids overflow int, so they
+     * fail Integer.parseInt; any value that parses but isn't registered also
+     * returns false.
+     */
+    private boolean isProxyPid(String value) {
+        try {
+            proxyService.getPath(Integer.parseInt(value));
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -1944,7 +2040,7 @@ public class TvBoxService {
         if (depth == null || depth == 0) {
             if ("detail".equals(ac) || "web".equals(ac)) {
                 depth = 1;
-            } else if ("gui".equals(ac)) {
+            } else if ("gui".equals(ac) || "search".equals(ac)) {
                 depth = 3;
             } else {
                 depth = 3;
@@ -2266,6 +2362,7 @@ public class TvBoxService {
             return true;
         }
 
+        Integer year = doubanService.getYear(movieDetail.getVod_name(), path);
         try {
             Movie movie = null;
             if (site.isXiaoya()) {
@@ -2288,25 +2385,25 @@ public class TvBoxService {
                     }
                 }
 
-                movie = doubanService.getByName(name);
+                movie = doubanService.getByName(name, year);
             }
 
             if (movie == null) {
                 String newName = name.replace("@", "").replace("！", "");
                 if (!newName.equals(name)) {
-                    movie = doubanService.getByName(newName);
+                    movie = doubanService.getByName(newName, year);
                 }
             }
 
             if (movie == null) {
                 int index = name.indexOf(' ');
                 if (index > 0) {
-                    movie = doubanService.getByName(name.substring(0, index));
+                    movie = doubanService.getByName(name.substring(0, index), year);
                 }
             }
 
             if (movie == null && !name.contains("第一季")) {
-                movie = doubanService.getByName(name + " 第一季");
+                movie = doubanService.getByName(name + " 第一季", year);
             }
 
             if (movie == null) {
@@ -2314,8 +2411,17 @@ public class TvBoxService {
                     var m = pattern.matcher(filename);
                     if (m.matches()) {
                         String newName = getNameFromPath(getParent(path));
-                        if (!newName.equals(name) && !SHARE_ID.matcher(newName).matches()) {
-                            movie = doubanService.getByName(newName);
+                        if (!newName.equals(name) && !DriveId.isShareTokenName(newName)) {
+                            movie = doubanService.getByName(newName, year);
+                            if (movie == null && details) {
+                                // No Douban entry for this show; surface the show name
+                                // derived from the parent folder instead of leaving the
+                                // bare season token (e.g. "S01" -> "百.花.杀（2026）" -> "百花杀").
+                                String showName = TextUtils.collapseCjkSpaces(TextUtils.fixName(newName));
+                                if (StringUtils.isNotBlank(showName) && !excludeNames.contains(showName)) {
+                                    movieDetail.setVod_name(showName);
+                                }
+                            }
                             break;
                         }
                     }
@@ -2350,7 +2456,7 @@ public class TvBoxService {
         if (!details) {
             return;
         }
-        if (movieDetail.getVod_id().endsWith("playlist$1")) {
+        if (movieDetail.getPath() != null && movieDetail.getPath().contains(PLAYLIST)) {
             movieDetail.setVod_name(movie.getName());
         }
         movieDetail.setVod_actor(movie.getActors());
@@ -2401,7 +2507,7 @@ public class TvBoxService {
         if (!details) {
             return;
         }
-        if (movieDetail.getVod_id().endsWith("playlist$1")) {
+        if (movieDetail.getPath() != null && movieDetail.getPath().contains(PLAYLIST)) {
             movieDetail.setVod_name(movie.getName());
         }
         movieDetail.setVod_actor(movie.getActors());
@@ -2604,7 +2710,7 @@ public class TvBoxService {
             if (StringUtils.isNotBlank(site.getFolder())) {
                 path = fixPath(site.getFolder() + "/" + path);
             }
-            return UriComponentsBuilder.fromHttpUrl(site.getUrl())
+            return UriComponentsBuilder.fromUriString(site.getUrl())
                     .replacePath("/p" + path)
                     .replaceQuery(StringUtils.isBlank(sign) ? "" : "sign=" + sign)
                     .build()
@@ -2623,7 +2729,7 @@ public class TvBoxService {
                     .toUri()
                     .toASCIIString();
         } else {
-            return UriComponentsBuilder.fromHttpUrl(site.getUrl())
+            return UriComponentsBuilder.fromUriString(site.getUrl())
                     .replacePath(path)
                     .replaceQuery(null)
                     .build()

@@ -1,6 +1,10 @@
 <template>
-  <div class="files">
-    <h1>文件管理</h1>
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">文件管理</h1>
+    </div>
+
+    <div class="page-card">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="配置文件" name="config">
         <el-row justify="end">
@@ -8,8 +12,9 @@
           <el-button type="primary" @click="handleAdd">添加</el-button>
         </el-row>
         <div class="space"></div>
+        <div class="table-scroll-wrapper">
 
-        <el-table :data="files" border style="width: 100%">
+        <el-table :data="files" border style="width: 100%; min-width: 900px">
           <el-table-column prop="dir" label="文件目录" width="250"/>
           <el-table-column prop="name" label="文件名称" width="180"/>
           <el-table-column prop="path" label="完整路径"/>
@@ -21,11 +26,12 @@
           </el-table-column>
           <el-table-column fixed="right" label="操作" width="200">
             <template #default="scope">
-              <el-button type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
-              <el-button type="danger" size="small" @click="handleDelete(scope.row)">删除</el-button>
+              <el-button link type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="handleDelete(scope.row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="静态文件" name="static">
@@ -82,7 +88,7 @@
               <el-icon v-else style="vertical-align: middle; margin-right: 4px">
                 <Document/>
               </el-icon>
-              <span style="cursor: pointer" @click="handleRowDblClick(scope.row)">{{ scope.row.name }}</span>
+              <span style="cursor: pointer" @click="handleFileNameClick(scope.row)">{{ scope.row.name }}</span>
             </template>
           </el-table-column>
           <el-table-column label="大小" width="120">
@@ -90,7 +96,7 @@
               {{ scope.row.directory ? '-' : formatSize(scope.row.size) }}
             </template>
           </el-table-column>
-          <el-table-column label="修改时间" width="180">
+          <el-table-column label="修改时间" width="185">
             <template #default="scope">
               {{ formatDate(scope.row.lastModified) }}
             </template>
@@ -103,9 +109,9 @@
           </el-table-column>
           <el-table-column fixed="right" label="操作" width="230">
             <template #default="scope">
-              <el-button type="primary" size="small" @click="showRenameDialog(scope.row)">重命名</el-button>
-              <el-button type="success" size="small" @click="downloadFile(scope.row)">下载</el-button>
-              <el-button type="danger" size="small" @click="handleStaticDelete(scope.row)">删除</el-button>
+              <el-button link type="primary" size="small" @click="showRenameDialog(scope.row)">重命名</el-button>
+              <el-button link type="success" size="small" @click="downloadFile(scope.row)">下载</el-button>
+              <el-button link type="danger" size="small" @click="handleStaticDelete(scope.row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -256,17 +262,21 @@
         <el-button type="primary" @click="confirmMove" :disabled="moveTargetDir === null">确定移动</el-button>
       </template>
     </el-dialog>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import {computed, onMounted, ref} from 'vue'
 import axios from "axios"
+import clipBorad from "vue-clipboard3"
 import {Folder, Document, Upload} from '@element-plus/icons-vue'
 import {ElMessage} from 'element-plus'
 import type {UploadInstance} from 'element-plus'
 
 const currentUrl = window.location.origin
+const {toClipboard} = clipBorad()
+
 const activeTab = ref('config')
 
 // ========== Config files ==========
@@ -407,6 +417,23 @@ const handleRowDblClick = (row: any) => {
   }
 }
 
+const handleFileNameClick = (row: any) => {
+  if (row.directory) {
+    handleRowDblClick(row)
+  } else {
+    copyFileUrl(row)
+  }
+}
+
+const copyFileUrl = (row: any) => {
+  const url = currentUrl + encodeURI(row.url)
+  toClipboard(url).then(() => {
+    ElMessage.success('已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
+
 const handleSelectionChange = (rows: any[]) => {
   selectedRows.value = rows
   selectedPaths.value = rows.map(r => r.path)
@@ -501,7 +528,7 @@ const confirmDelete = () => {
 }
 
 const downloadFile = (row: any) => {
-  window.open('/api/static-files/download?path=' + encodeURIComponent(row.path), '_blank')
+  window.open('/api/static-files/download?path=' + encodeURIComponent(row.path) + '&X-ACCESS-TOKEN=' + localStorage.getItem("token"), '_blank')
 }
 
 const batchDownloadSelected = () => {

@@ -19,7 +19,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpEntity;
@@ -79,25 +79,31 @@ public class SiteService {
 
         int order = 1;
         for (cn.har01d.alist_tvbox.tvbox.Site s : appProperties.getSites()) {
-            Site site = new Site();
-            site.setName(s.getName());
-            site.setUrl(s.getUrl());
-            site.setPassword(s.getPassword());
-            site.setSearchable(s.isSearchable());
-            site.setXiaoya(s.isXiaoya());
-            site.setIndexFile(s.getIndexFile());
-            site.setVersion(s.getVersion());
+            Site site = createSite(s, order);
             if (order == 1) {
                 aListToken = generateToken();
                 site.setToken(aListToken);
                 aListLocalService.executeUpdate("UPDATE x_setting_items SET value='" + aListToken + "' WHERE key='token'");
             }
-            site.setOrder(order++);
             siteRepository.save(site);
             log.info("save site to database: {}", site);
+            order++;
         }
 
         readAList(order);
+    }
+
+    private Site createSite(cn.har01d.alist_tvbox.tvbox.Site s, int order) {
+        Site site = new Site();
+        site.setName(s.getName());
+        site.setUrl(s.getUrl());
+        site.setPassword(s.getPassword());
+        site.setSearchable(s.isSearchable());
+        site.setXiaoya(s.isXiaoya());
+        site.setIndexFile(s.getIndexFile());
+        site.setStorageVersion(s.getVersion());
+        site.setSortOrder(order);
+        return site;
     }
 
     private void fixId() {
@@ -145,10 +151,10 @@ public class SiteService {
         try {
             Site site = new Site();
             site.setName(parts[0]);
-            site.setVersion(Integer.parseInt(parts[1].replace("v", "")));
+            site.setStorageVersion(Integer.parseInt(parts[1].replace("v", "")));
             site.setUrl(parts[2]);
             site.setFolder(fixPath(parts[3]));
-            site.setOrder(order);
+            site.setSortOrder(order);
             siteRepository.save(site);
             log.info("save site to database: {}", site);
         } catch (Exception e) {
@@ -174,14 +180,14 @@ public class SiteService {
 
     public String generateToken() {
         String token = "openlist-" + UUID.randomUUID() + IdUtils.generate(64);
-        log.info("generate token {}", token);
+        log.info("generate token {}", Utils.mask(token));
         return token;
     }
 
     public void resetToken() {
         String url = "http://localhost:" + aListLocalService.getInternalPort();
         String token = postRestToken(url + "/api/admin/setting/reset_token");
-        log.info("new token {}", token);
+        log.info("new token {}", Utils.mask(token));
         if (StringUtils.isBlank(token)) {
             token = generateToken();
             aListLocalService.executeUpdate("UPDATE x_setting_items SET value='" + token + "' WHERE key='token'");
@@ -217,12 +223,12 @@ public class SiteService {
     }
 
     public List<Site> findAll() {
-        Sort sort = Sort.by("order");
+        Sort sort = Sort.by("sortOrder");
         return siteRepository.findAll(sort);
     }
 
     public List<Site> list() {
-        Sort sort = Sort.by("order");
+        Sort sort = Sort.by("sortOrder");
         return siteRepository.findAllByDisabledFalse(sort);
     }
 
@@ -240,7 +246,7 @@ public class SiteService {
         siteRepository.save(site);
 
         try {
-            Storage storage = site.getVersion() == 4 ? new OpenList(site) : new AList(site);
+            Storage storage = site.getStorageVersion() != null && site.getStorageVersion() == 4 ? new OpenList(site) : new AList(site);
             aListLocalService.saveStorage(storage);
         } catch (Exception e) {
             log.warn("{}", e.getMessage());
@@ -254,12 +260,12 @@ public class SiteService {
         site.setPassword(dto.getPassword());
         site.setToken(dto.getToken());
         site.setFolder(fixPath(dto.getFolder()));
-        site.setOrder(dto.getOrder());
+        site.setSortOrder(dto.getSortOrder());
         site.setSearchable(dto.isSearchable());
         site.setXiaoya(dto.isXiaoya());
         site.setIndexFile(dto.getIndexFile());
         site.setDisabled(dto.isDisabled());
-        site.setVersion(dto.getVersion());
+        site.setStorageVersion(dto.getStorageVersion());
 
         if (StringUtils.isBlank(site.getUrl())) {
             site.setUrl("http://localhost");
@@ -294,7 +300,7 @@ public class SiteService {
         siteRepository.save(site);
 
         try {
-            Storage storage = site.getVersion() == 4 ? new OpenList(site) : new AList(site);
+            Storage storage = site.getStorageVersion() != null && site.getStorageVersion() == 4 ? new OpenList(site) : new AList(site);
             aListLocalService.saveStorage(storage);
         } catch (Exception e) {
             log.warn("{}", e.getMessage());

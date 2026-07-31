@@ -22,4 +22,13 @@ ln -sf /data/log /opt/atv/log
 
 /init.sh 2>&1 | tee /opt/atv/log/init.log 2>&1
 
-./atv "$@"
+# Exit code 85 = startup JSON restore completed; relaunch for a clean boot on restored data.
+while true; do
+  ./atv "$@"
+  code=$?
+  if [ "$code" = "85" ]; then
+    echo "=== restart after json restore ==="
+    continue
+  fi
+  exit $code
+done

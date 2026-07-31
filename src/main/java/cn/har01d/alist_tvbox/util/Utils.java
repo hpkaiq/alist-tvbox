@@ -23,7 +23,11 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -175,6 +179,32 @@ public final class Utils {
         }
     }
 
+    /**
+     * 将可能含非 ASCII 字符(如中文)的 URL 或相对路径转换为严格 ASCII 形式。
+     * 仅对非 ASCII 字节做百分号编码,保留所有 ASCII 字符(含 /、?、#、&、= 及已存在的 %XX 转义)原样不变,
+     * 因此对已编码输入幂等、不会二次编码;也不改变 ASCII 结构,故对纯 ASCII 输入直接返回。
+     * 用于在构造 java.net.URI 之前规范化用户可控 URL(如插件仓库/文件地址),避免 URISyntaxException。
+     */
+    public static String toAsciiUrl(String url) {
+        if (StringUtils.isBlank(url)) {
+            return url;
+        }
+        String s = url.trim();
+        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        StringBuilder sb = new StringBuilder(bytes.length);
+        for (byte b : bytes) {
+            int v = b & 0xFF;
+            if (v < 0x80) {
+                sb.append((char) v);
+            } else {
+                sb.append('%')
+                        .append(Character.toUpperCase(Character.forDigit(v >>> 4, 16)))
+                        .append(Character.toUpperCase(Character.forDigit(v & 0xF, 16)));
+            }
+        }
+        return sb.toString();
+    }
+
     public static String encryptWbi(Map<String, Object> params, String imgKey, String subKey) {
         String mixinKey = getMixinKey(imgKey, subKey);
         params.put("wts", System.currentTimeMillis() / 1000);
@@ -188,6 +218,9 @@ public final class Utils {
     }
 
     public static String byte2size(long size) {
+        if (size <= 0) {
+            return "";
+        }
         String result;
         String unit = "B";
         if (size > 999 * MB) {
@@ -209,6 +242,78 @@ public final class Utils {
             result = result.substring(0, result.length() - 1);
         }
         return result + " " + unit;
+    }
+
+    /**
+     * 校验外部 URL 是否安全(仅允许 http/https,拦截 loopback/链路本地/云元数据)。
+     * 用于服务端按用户可控 URL 发起请求前的 SSRF 防护。私网段(10/192.168/172.16)不拦截,
+     * 以兼容内网 NAS/emby 封面代理场景。
+     */
+    public static boolean isSafeExternalUrl(String url) {
+        try {
+            URI uri = new URI(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+                log.warn("Blocked non-HTTP(S) URL: {}", url);
+                return false;
+            }
+            if (host == null || host.isEmpty()) {
+                log.warn("Blocked URL with no host: {}", url);
+                return false;
+            }
+            // URI.getHost() 对 IPv6 literal 返回带方括号(如 [::1]),去掉方括号再判断
+            if (host.startsWith("[") && host.endsWith("]")) {
+                host = host.substring(1, host.length() - 1);
+            }
+            host = host.toLowerCase();
+            if (host.equals("localhost") || host.startsWith("127.") || host.equals("0.0.0.0")
+                    || host.equals("::1") || host.equals("0:0:0:0:0:0:0:1")) {
+                log.warn("Blocked localhost/loopback URL: {}", url);
+                return false;
+            }
+            if (host.startsWith("169.254.") || host.equals("metadata.google.internal") || host.equals("169.254.169.254")) {
+                log.warn("Blocked link-local/metadata URL: {}", url);
+                return false;
+            }
+            // 解析为 InetAddress,拦截所有 loopback/link-local/wildcard 变体
+            // (含 IPv4-mapped IPv6、[::1]、[fe80::] 等字符串匹配漏掉的情况)
+            try {
+                InetAddress addr = InetAddress.getByName(host);
+                if (addr.isLoopbackAddress() || addr.isLinkLocalAddress() || addr.isAnyLocalAddress()) {
+                    log.warn("Blocked loopback/link-local/wildcard IP: {} -> {}", url, addr.getHostAddress());
+                    return false;
+                }
+            } catch (UnknownHostException e) {
+                // 无法解析(可能是内网本地名),放行;请求时若仍无法解析会自然失败
+            }
+            return true;
+        } catch (URISyntaxException e) {
+            log.warn("Invalid URL syntax: {}", url, e);
+            return false;
+        }
+    }
+
+    /** 校验路径段(文件名/站点id/索引名)不含目录穿越字符;非法则抛 BadRequestException。 */
+    public static String requireSafePathSegment(String segment) {
+        if (segment == null || segment.isEmpty()
+                || segment.contains("..") || segment.contains("/") || segment.contains("\\")
+                || segment.contains(File.separator)) {
+            throw new BadRequestException("非法路径: " + segment);
+        }
+        return segment;
+    }
+
+    /** 脱敏:保留首尾各 2 字符,中间以 **** 替代。用于日志中的 token/cookie/apiKey。 */
+    public static String mask(String s) {
+        if (s == null) {
+            return "";
+        }
+        int len = s.length();
+        if (len <= 8) {
+            return "****";
+        }
+        return s.substring(0, 2) + "****" + s.substring(len - 2);
     }
 
     public static int executeUpdate(String sql) {

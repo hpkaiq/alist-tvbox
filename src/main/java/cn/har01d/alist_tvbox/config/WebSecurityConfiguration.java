@@ -32,11 +32,15 @@ public class WebSecurityConfiguration {
                                 "/tv/**",
                                 "/dav/**",
                                 "/parse/**",
+                                "/offline_download/**",
                                 "/ali/access_token",
                                 "/api/local/admin/password",
+                                "/api/local/backup",
+                                "/api/local/db-test",
                                 "/api/alist/status",
                                 "/api/profiles",
-                                "/api/accounts/login"
+                                "/api/accounts/login",
+                                "/api/sync/validate"
                         ).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS).permitAll()
                         .requestMatchers(
@@ -51,6 +55,8 @@ public class WebSecurityConfiguration {
                                 "/api/accounts/principal"
                         ).authenticated()
                         .requestMatchers("/api/history/**").hasAnyAuthority(Role.ADMIN.name(), Role.USER.name())
+                        .requestMatchers("/api/users/**", "/api/tenants/**", "/api/files/**", "/api/alist/alias/**")
+                        .hasAuthority(Role.ADMIN.name())
                         .requestMatchers("/api/**").hasAnyAuthority(Role.ADMIN.name(), Role.CLIENT.name())
                         .requestMatchers(HttpMethod.POST).authenticated()
                         .requestMatchers(HttpMethod.PUT).authenticated()

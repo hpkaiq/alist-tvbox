@@ -1,11 +1,9 @@
 package cn.har01d.alist_tvbox.web;
 
 import java.util.List;
-import java.util.Map;
 
 import cn.har01d.alist_tvbox.dto.UserDto;
-import cn.har01d.alist_tvbox.util.Utils;
-import jakarta.servlet.http.HttpServletRequest;
+import cn.har01d.alist_tvbox.dto.SessionDto;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -19,21 +17,19 @@ import org.springframework.web.bind.annotation.RestController;
 import cn.har01d.alist_tvbox.auth.LoginDto;
 import cn.har01d.alist_tvbox.auth.UserToken;
 import cn.har01d.alist_tvbox.entity.User;
-import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.UserUnauthorizedException;
+import cn.har01d.alist_tvbox.service.RateLimiter;
 import cn.har01d.alist_tvbox.service.UserService;
+import cn.har01d.alist_tvbox.util.Utils;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
-
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 @RestController
 @RequiredArgsConstructor
 public class UserController {
-    private static final String ADMIN_RESET_TOKEN_FILE = "admin_reset_token";
     private final UserService userService;
     private final PasswordEncoder passwordEncoder;
+    private final RateLimiter rateLimiter;
 
     @GetMapping("/api/users")
     public List<User> list() {
@@ -56,12 +52,16 @@ public class UserController {
     }
 
     @PostMapping("/api/accounts/login")
-    public UserToken login(@RequestBody LoginDto account) {
+    public UserToken login(@RequestBody LoginDto account, HttpServletRequest request) {
+        String rateKey = account.getUsername() + ":" + Utils.getClientIp(request);
+        rateLimiter.checkLocked(rateKey);
         User user = userService.findByUsername(account.getUsername());
         if (user == null || !passwordEncoder.matches(account.getPassword(), user.getPassword())) {
+            rateLimiter.recordFailure(rateKey);
             throw new UserUnauthorizedException("用户或密码错误", 40001);
         }
-        return userService.generateToken(user);
+        rateLimiter.reset(rateKey);
+        return userService.generateToken(user, Utils.getClientIp(request), request.getHeader("User-Agent"));
     }
 
     @PostMapping("/api/accounts/logout")
@@ -75,37 +75,18 @@ public class UserController {
     }
 
     @PostMapping("/api/accounts/update")
-    public UserToken updateAccount(@RequestBody UserDto user) {
-        return userService.updateAccount(user);
+    public UserToken updateAccount(@RequestBody UserDto user, HttpServletRequest request) {
+        return userService.updateAccount(user, Utils.getClientIp(request), request.getHeader("User-Agent"));
     }
 
-    @PostMapping("/api/local/admin/password")
-    public Map<String, String> resetAdminPassword(HttpServletRequest request) {
-        String requestToken = request.getHeader("X-ADMIN-RESET-TOKEN");
-        Path tokenFile = Utils.getDataPath("atv", ADMIN_RESET_TOKEN_FILE);
-        boolean deleteTokenFile = false;
-        try {
-            if (requestToken == null || requestToken.isBlank() || !Files.exists(tokenFile)) {
-                throw new BadRequestException("管理员重置令牌无效");
-            }
-            String expectedToken = Files.readString(tokenFile, StandardCharsets.UTF_8).trim();
-            if (!requestToken.equals(expectedToken)) {
-                throw new BadRequestException("管理员重置令牌无效");
-            }
-            deleteTokenFile = true;
-            String password = userService.resetAdminPassword(Utils.generateSecurePassword());
-            return Map.of("username", "admin", "password", password);
-        } catch (BadRequestException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new BadRequestException("管理员重置失败", e);
-        } finally {
-            if (deleteTokenFile) {
-                try {
-                    Files.deleteIfExists(tokenFile);
-                } catch (Exception ignored) {
-                }
-            }
-        }
+    @GetMapping("/api/accounts/sessions")
+    public List<SessionDto> sessions() {
+        String token = (String) SecurityContextHolder.getContext().getAuthentication().getCredentials();
+        return userService.listSessions(token);
+    }
+
+    @DeleteMapping("/api/accounts/sessions/{id}")
+    public void revokeSession(@PathVariable int id) {
+        userService.revokeSession(id);
     }
 }
