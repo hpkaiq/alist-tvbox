@@ -7,6 +7,8 @@ COPY target/application/ ./
 
 EXPOSE 4567 80
 
-ENTRYPOINT ["/entrypoint.sh"]
+VOLUME ["/www/static"]
+
+ENTRYPOINT ["/docker/scripts/entrypoint.sh"]
 
 CMD ["81", "--spring.profiles.active=production,xiaoya"]
