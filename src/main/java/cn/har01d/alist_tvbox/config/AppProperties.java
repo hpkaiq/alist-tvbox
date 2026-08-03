@@ -36,6 +36,8 @@ public class AppProperties {
     private String tgSearchApiKey;
     private String tgSortField = "time";
     private boolean tgLogin;
+    private String panCheckUrl;
+    private Integer panCheckTimeoutMs;
     private String panSouUrl;
     private String panSouSource = "all";
     private String panSouChannels = "custom";
@@ -44,7 +46,7 @@ public class AppProperties {
     private Boolean panSouAuthEnabled;
     private List<String> panSouPlugins;
     private boolean panSouLinkCheckEnabled;
-    private int panSouLinkCheckMaxCount = 30;
+    private int panSouLinkCheckMaxCount = 300;
     private List<String> panSouLinkCheckTypes;
     private Integer panSouConc;
     private Boolean panSouRefresh = false;

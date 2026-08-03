@@ -106,13 +106,16 @@ public class SettingService {
         appProperties.setSearchable(!settingRepository.findById("bilibili_searchable").map(Setting::getValue).orElse("").equals("false"));
         appProperties.setTgSearch(settingRepository.findById("tg_search").map(Setting::getValue).orElse(""));
         appProperties.setTgSearchApiKey(settingRepository.findById("tg_search_api_key").map(Setting::getValue).orElse(""));
+        appProperties.setPanCheckUrl(settingRepository.findById("pan_check_url").map(Setting::getValue).orElse(""));
+        appProperties.setPanCheckTimeoutMs(settingRepository.findById("pan_check_timeout_ms").map(Setting::getValue)
+                .filter(StringUtils::isNotBlank).map(v -> Integer.parseInt(v.trim())).orElse(null));
         appProperties.setPanSouUrl(settingRepository.findById("pan_sou_url").map(Setting::getValue).orElse(""));
         appProperties.setPanSouSource(settingRepository.findById("pan_sou_source").map(Setting::getValue).orElse("all"));
         appProperties.setPanSouChannels(settingRepository.findById("pan_sou_channels").map(Setting::getValue).map(this::normalizePanSouChannels).orElse("custom"));
         appProperties.setPanSouUsername(settingRepository.findById("pan_sou_username").map(Setting::getValue).orElse(""));
         appProperties.setPanSouPassword(settingRepository.findById("pan_sou_password").map(Setting::getValue).orElse(""));
         appProperties.setPanSouLinkCheckEnabled(settingRepository.findById("pan_sou_link_check_enabled").map(Setting::getValue).orElse("").equals("true"));
-        appProperties.setPanSouLinkCheckMaxCount(settingRepository.findById("pan_sou_link_check_max_count").map(Setting::getValue).map(Integer::parseInt).orElse(30));
+        appProperties.setPanSouLinkCheckMaxCount(settingRepository.findById("pan_sou_link_check_max_count").map(Setting::getValue).map(Integer::parseInt).orElse(300));
         appProperties.setPanSouLinkCheckTypes(parseList(settingRepository.findById("pan_sou_link_check_types").map(Setting::getValue).orElse("")));
         appProperties.setPanSouConc(settingRepository.findById("pan_sou_conc").map(Setting::getValue)
                 .filter(StringUtils::isNotBlank).map(v -> Integer.parseInt(v.trim())).orElse(null));
@@ -493,6 +496,23 @@ public class SettingService {
             }
             appProperties.setPanSouUrl(setting.getValue());
         }
+        if ("pan_check_url".equals(setting.getName())) {
+            if (setting.getValue().endsWith("/")) {
+                setting.setValue(setting.getValue().substring(0, setting.getValue().length() - 1));
+            }
+            String suffix = "/api/v1/links/check";
+            if (setting.getValue().endsWith(suffix)) {
+                setting.setValue(setting.getValue().substring(0, setting.getValue().length() - suffix.length()));
+            }
+            appProperties.setPanCheckUrl(setting.getValue());
+        }
+        if ("pan_check_timeout_ms".equals(setting.getName())) {
+            if (StringUtils.isBlank(setting.getValue())) {
+                appProperties.setPanCheckTimeoutMs(null);
+            } else {
+                appProperties.setPanCheckTimeoutMs(Math.max(0, Integer.parseInt(setting.getValue().trim())));
+            }
+        }
         if ("pan_sou_source".equals(setting.getName())) {
             appProperties.setPanSouSource(setting.getValue());
         }
@@ -554,6 +574,7 @@ public class SettingService {
         }
         if ("local_proxy_config".equals(setting.getName())) {
             appProperties.setLocalProxyConfig(parseLocalProxyConfig(setting.getValue()));
+            aListLocalService.updateProxyConfig(setting.getValue());
         }
         if ("delete_delay_time".equals(setting.getName())) {
             aListLocalService.updateSetting("delete_delay_time", setting.getValue(), "number");

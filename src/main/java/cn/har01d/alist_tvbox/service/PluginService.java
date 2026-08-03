@@ -7,6 +7,8 @@ import cn.har01d.alist_tvbox.entity.PluginRepository;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
+import cn.har01d.alist_tvbox.model.PluginFilterConfigSchema;
+import cn.har01d.alist_tvbox.util.ConfigSchemaParser;
 import cn.har01d.alist_tvbox.util.Utils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,10 +18,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -37,7 +42,14 @@ public class PluginService {
     private static final Pattern PLUGIN_ID = Pattern.compile("(?m)^\\s*//@id:([^\\s]+)\\s*$");
     private static final Pattern PLUGIN_VERSION = Pattern.compile("(?m)^\\s*//@version:(\\d+)\\s*$");
     private static final Pattern PLUGIN_NAME = Pattern.compile("(?m)^\\s*//@name:(.+)\\s*$");
+    // spider 插件配置结构声明：脚本顶层 PLUGIN_CONFIG_SCHEMA = { ... }；解析逻辑见 ConfigSchemaParser。
+    private static final String PLUGIN_CONFIG_CONST = "PLUGIN_CONFIG_SCHEMA";
     private static final String GITHUB_PROXY = "github_proxy";
+
+    // 文件-backed 插件：url 形如 /static/plugins/<相对路径>.py，由静态文件目录双向同步管理
+    public static final String STATIC_URL_PREFIX = "/static/";
+    public static final String FILE_PLUGIN_DIR = "plugins";
+    public static final String FILE_PLUGIN_URL_PREFIX = STATIC_URL_PREFIX + FILE_PLUGIN_DIR + "/";
 
     private final PluginRepository pluginRepository;
     private final SettingRepository settingRepository;
@@ -84,7 +96,9 @@ public class PluginService {
     }
 
     public List<Plugin> findAll() {
-        return pluginRepository.findAllByOrderBySortOrderAscIdAsc();
+        return pluginRepository.findAllByOrderBySortOrderAscIdAsc().stream()
+                .peek(this::applyConfigSchema)
+                .toList();
     }
 
     public List<Plugin> findEnabled() {
@@ -96,6 +110,43 @@ public class PluginService {
         validateUrlUniqueness(plugin.getUrl(), null);
         applyDownloadedPlugin(plugin, downloadPluginData(plugin.getUrl()), null, false);
         validateExternalIdUniqueness(plugin.getExternalId(), null);
+        plugin.setEnabled(true);
+        plugin.setSortOrder(subscriptionSourceService.nextSortOrder());
+        plugin.setLastCheckedAt(OffsetDateTime.now());
+        plugin.setLastError("");
+        return pluginRepository.save(plugin);
+    }
+
+    /**
+     * 静态文件目录双向同步入口：按 url 严格匹配 upsert，不发起 HTTP 下载。
+     * externalId 与现有不同 url 的插件冲突时丢弃，避免中断 reconcile。
+     */
+    @Transactional
+    public Plugin upsertFromContent(String url, String body) {
+        String name = extractPluginName(body);
+        if (StringUtils.isBlank(name)) {
+            name = deriveSourceName(url);
+        }
+        DownloadedPlugin downloaded = new DownloadedPlugin(body, name, extractPluginId(body), extractPluginVersion(body));
+
+        Plugin existing = pluginRepository.findByUrl(url).orElse(null);
+        if (existing != null) {
+            applyDownloadedPlugin(existing, downloaded, null, shouldUpdateName(existing));
+            existing.setLastCheckedAt(OffsetDateTime.now());
+            existing.setLastError("");
+            return pluginRepository.save(existing);
+        }
+
+        Plugin plugin = new Plugin();
+        plugin.setUrl(url);
+        applyDownloadedPlugin(plugin, downloaded, null, false);
+        if (StringUtils.isNotBlank(plugin.getExternalId())
+                && pluginRepository.findByExternalId(plugin.getExternalId())
+                        .filter(other -> !url.equals(other.getUrl()))
+                        .isPresent()) {
+            log.warn("externalId [{}] 与现有插件冲突，文件-backed 插件 [{}] 丢弃 externalId", plugin.getExternalId(), url);
+            plugin.setExternalId(null);
+        }
         plugin.setEnabled(true);
         plugin.setSortOrder(subscriptionSourceService.nextSortOrder());
         plugin.setLastCheckedAt(OffsetDateTime.now());
@@ -118,12 +169,18 @@ public class PluginService {
         plugin.setName(StringUtils.defaultIfBlank(input.getName(), plugin.getSourceName()));
         plugin.setEnabled(input.isEnabled());
         plugin.setExtend(input.getExtend());
-        return pluginRepository.save(plugin);
+        Plugin saved = pluginRepository.save(plugin);
+        applyConfigSchema(saved);
+        return saved;
     }
 
     @Transactional
     public Plugin refresh(Integer id) {
         Plugin plugin = pluginRepository.findById(id).orElseThrow(NotFoundException::new);
+        // 文件-backed 插件直接从磁盘读取，不发起 HTTP 下载
+        if (StringUtils.startsWith(plugin.getUrl(), FILE_PLUGIN_URL_PREFIX)) {
+            return refresh(plugin, readFileBackedPlugin(plugin));
+        }
         return refresh(plugin, null);
     }
 
@@ -477,6 +534,25 @@ public class PluginService {
         return Utils.isSafeExternalUrl(url);
     }
 
+    private DownloadedPlugin readFileBackedPlugin(Plugin plugin) {
+        String body = readFileBackedContent(plugin.getUrl());
+        String name = extractPluginName(body);
+        if (StringUtils.isBlank(name)) {
+            name = deriveSourceName(plugin.getUrl());
+        }
+        return new DownloadedPlugin(body, name, extractPluginId(body), extractPluginVersion(body));
+    }
+
+    private String readFileBackedContent(String url) {
+        String relative = StringUtils.removeStart(url, STATIC_URL_PREFIX);
+        Path file = Utils.getWebPath("static").resolve(relative).normalize();
+        try {
+            return Files.readString(file);
+        } catch (IOException e) {
+            throw new BadRequestException("插件文件读取失败: " + file, e);
+        }
+    }
+
     public String readContent(Integer id) {
         Plugin plugin = pluginRepository.findById(id).orElseThrow(NotFoundException::new);
         if (StringUtils.isBlank(plugin.getContent())) {
@@ -607,5 +683,36 @@ public class PluginService {
         plugin.setExternalId(StringUtils.defaultIfBlank(downloadedPlugin.externalId(), entryExternalId));
         plugin.setContent(downloadedPlugin.body());
         plugin.setVersion(downloadedPlugin.version());
+        applyConfigSchema(plugin);
+    }
+
+    // 从插件脚本内容解析自声明的配置结构并挂到运行时 transient 字段，供前端渲染可视化配置表单。
+    private void applyConfigSchema(Plugin plugin) {
+        if (plugin == null) {
+            return;
+        }
+        plugin.setConfigSchema(buildConfigSchema(plugin.getContent()));
+    }
+
+    private PluginFilterConfigSchema buildConfigSchema(String content) {
+        PluginFilterConfigSchema declared = ConfigSchemaParser.parse(content, PLUGIN_CONFIG_CONST);
+        if (declared != null) {
+            if (StringUtils.isBlank(declared.getDescription())) {
+                declared.setDescription("来自插件脚本内声明");
+            }
+            if (StringUtils.isBlank(declared.getSource())) {
+                declared.setSource("declared");
+            }
+            return declared;
+        }
+        PluginFilterConfigSchema schema = new PluginFilterConfigSchema();
+        schema.setSource("none");
+        schema.setDescription("插件未声明配置结构，可直接输入 JSON");
+        return schema;
+    }
+
+    public PluginFilterConfigSchema readConfigSchema(Integer id) {
+        Plugin plugin = pluginRepository.findById(id).orElseThrow(NotFoundException::new);
+        return buildConfigSchema(plugin.getContent());
     }
 }

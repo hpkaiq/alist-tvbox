@@ -12,6 +12,7 @@ import cn.har01d.alist_tvbox.entity.TelegramChannelRepository;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -42,6 +43,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,6 +55,7 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class RemoteSearchService {
+    private static final String CHECK_STATE_OK = "ok";
     private static final String CHECK_STATE_BAD = "bad";
     private static final String CHECK_STATE_UNCERTAIN = "uncertain";
     private static final Set<String> PAN_SOU_CHECK_TYPES = Set.of(
@@ -65,6 +68,7 @@ public class RemoteSearchService {
     private final ShareService shareService;
     private final TvBoxService tvBoxService;
     private final OfflineDownloadService offlineDownloadService;
+    private final SubscriptionSourceService subscriptionSourceService;
     private List<String> panSouDefaultChannels;
     private List<String> panSouBuiltinChannels;
     private String panSouToken;
@@ -85,7 +89,8 @@ public class RemoteSearchService {
                                TelegramChannelRepository telegramChannelRepository,
                                ShareService shareService,
                                TvBoxService tvBoxService,
-                               OfflineDownloadService offlineDownloadService) {
+                               OfflineDownloadService offlineDownloadService,
+                               SubscriptionSourceService subscriptionSourceService) {
         this.appProperties = appProperties;
         this.restTemplate = restTemplateBuilder.build();
         this.objectMapper = objectMapper;
@@ -93,6 +98,7 @@ public class RemoteSearchService {
         this.shareService = shareService;
         this.tvBoxService = tvBoxService;
         this.offlineDownloadService = offlineDownloadService;
+        this.subscriptionSourceService = subscriptionSourceService;
     }
 
     @PostConstruct
@@ -152,7 +158,7 @@ public class RemoteSearchService {
                 .map(TelegramChannel::getUsername)
                 .toList();
 
-        var messages = search(keyword, channels);
+        var messages = search(keyword, channels, "csp_FishPanSou");
         for (var message : messages) {
             list.add(toMovieDetail(message));
         }
@@ -194,7 +200,7 @@ public class RemoteSearchService {
                 .filter(TelegramChannel::isValid)
                 .map(TelegramChannel::getUsername)
                 .toList();
-        List<Message> messages = search(keyword, channels);
+        List<Message> messages = search(keyword, channels, "csp_FishPanSouGroup");
         String cacheId = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         groupCache.put(cacheId, messages);
 
@@ -284,8 +290,56 @@ public class RemoteSearchService {
         return tvBoxService.getDetail("", "1$" + path + "/~playlist", title, 0);
     }
 
+    // Per-built-in-source override parsed from the builtin extend JSON
+    // ({"source":..,"filter_include":..,"filter_exclude":..}); null when no siteKey
+    // or no extend configured, so callers fall back to global AppProperties values.
+    private JsonNode pansouSourceConfig(String siteKey) {
+        if (siteKey == null) {
+            return null;
+        }
+        String extend = subscriptionSourceService.getBuiltinExtend(siteKey);
+        if (StringUtils.isBlank(extend)) {
+            return null;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(extend);
+            return node.isObject() ? node : null;
+        } catch (Exception e) {
+            log.debug("invalid pansou source extend for {}: {}", siteKey, extend);
+            return null;
+        }
+    }
+
+    private String resolvePanSouSource(JsonNode config) {
+        String override = config == null ? "" : config.path("source").asText("");
+        return StringUtils.isNotBlank(override) ? override : appProperties.getPanSouSource();
+    }
+
+    private List<String> resolvePanSouFilterInclude(JsonNode config) {
+        return resolvePanSouFilter(config, "filter_include", appProperties.getPanSouFilterInclude());
+    }
+
+    private List<String> resolvePanSouFilterExclude(JsonNode config) {
+        return resolvePanSouFilter(config, "filter_exclude", appProperties.getPanSouFilterExclude());
+    }
+
+    // per-field inherit: a non-blank override wins, otherwise fall back to the global value
+    private List<String> resolvePanSouFilter(JsonNode config, String field, List<String> globalValue) {
+        String csv = config == null ? "" : config.path(field).asText("");
+        if (StringUtils.isBlank(csv)) {
+            return globalValue;
+        }
+        return Arrays.stream(csv.split(",")).map(String::trim)
+                .filter(StringUtils::isNotBlank).toList();
+    }
+
     public List<Message> search(String keyword, List<String> channels) {
-        var request = new SearchRequest(keyword, getSearchChannels(channels), appProperties.getPanSouSource());
+        return search(keyword, channels, null);
+    }
+
+    public List<Message> search(String keyword, List<String> channels, String siteKey) {
+        JsonNode sourceConfig = pansouSourceConfig(siteKey);
+        var request = new SearchRequest(keyword, getSearchChannels(channels), resolvePanSouSource(sourceConfig));
         request.setExt(Map.of("referer", "https://dm.xueximeng.com"));
         boolean offlineDownloadEnabled = offlineDownloadService.getConfig().enabled();
         if (StringUtils.isNotBlank(keyword)) {
@@ -301,8 +355,8 @@ public class RemoteSearchService {
             request.setRefresh(true);
         }
         //request.setRes(StringUtils.defaultIfBlank(appProperties.getPanSouRes(), "merge"));
-        List<String> filterInclude = appProperties.getPanSouFilterInclude();
-        List<String> filterExclude = appProperties.getPanSouFilterExclude();
+        List<String> filterInclude = resolvePanSouFilterInclude(sourceConfig);
+        List<String> filterExclude = resolvePanSouFilterExclude(sourceConfig);
         if (!CollectionUtils.isEmpty(filterInclude) || !CollectionUtils.isEmpty(filterExclude)) {
             request.setFilter(new SearchRequest.Filter(
                     CollectionUtils.isEmpty(filterInclude) ? List.of() : filterInclude,
@@ -380,35 +434,14 @@ public class RemoteSearchService {
 
         Map<String, String> states = new java.util.HashMap<>();
         Map<String, String> summaries = new java.util.HashMap<>();
-        Map<String, List<Message>> groups = checkable.stream()
-                .collect(Collectors.groupingBy(message -> getPanSouCloudType(message.getType())));
-        int batchSize = 10;
-        List<CompletableFuture<ObjectNode>> futures = new ArrayList<>();
-        for (var entry : groups.entrySet()) {
-            String diskType = entry.getKey();
-            List<Message> all = entry.getValue();
-            int batchTotal = (all.size() + batchSize - 1) / batchSize;
-            for (int i = 0; i < all.size(); i += batchSize) {
-                final List<Message> batch = all.subList(i, Math.min(i + batchSize, all.size()));
-                final int batchIndex = i / batchSize;
-                futures.add(CompletableFuture.supplyAsync(() -> {
-                    long startedAt = System.currentTimeMillis();
-                    try {
-                        ObjectNode response = checkPanSouLinks(buildPanSouLinkCheckRequest(diskType, batch));
-                        logPanSouLinkCheck(diskType + (batchTotal > 1 ? "[" + batchIndex + "]" : ""), batch.size(), response, startedAt);
-                        return response;
-                    } catch (Exception e) {
-                        log.warn("check PanSou search links failed: {} batch {}", diskType, batchIndex, e);
-                        return null;
-                    }
-                }));
-            }
+        long startedAt = System.currentTimeMillis();
+        ObjectNode response = null;
+        try {
+            response = checkPanSouLinks(buildPanSouLinkCheckRequest(checkable));
+        } catch (Exception e) {
+            log.warn("check PanSou search links failed", e);
         }
-        for (CompletableFuture<ObjectNode> future : futures) {
-            ObjectNode response = future.join();
-            if (response == null || !response.has("results") || !response.get("results").isArray()) {
-                continue;
-            }
+        if (response != null && response.has("results") && response.get("results").isArray()) {
             response.get("results").forEach(result -> {
                 if (result.has("url") && result.has("state")) {
                     String url = result.get("url").asText();
@@ -419,6 +452,7 @@ public class RemoteSearchService {
                 }
             });
         }
+        logPanSouLinkCheck(checkable, states, startedAt);
         if (states.isEmpty()) {
             return messages;
         }
@@ -445,28 +479,38 @@ public class RemoteSearchService {
         return "链接有效";
     }
 
-    private ObjectNode buildPanSouLinkCheckRequest(String diskType, List<Message> messages) {
+    private ObjectNode buildPanSouLinkCheckRequest(List<Message> messages) {
         ObjectNode request = objectMapper.createObjectNode();
         ArrayNode items = request.putArray("items");
         for (Message message : messages) {
             items.addObject()
-                    .put("disk_type", diskType)
+                    .put("disk_type", getPanSouCloudType(message.getType()))
                     .put("url", message.getLink());
         }
-        request.put("view_token", "pansou-search-" + diskType + "-" + System.currentTimeMillis());
+        request.put("view_token", "pansou-search-" + System.currentTimeMillis());
         return request;
     }
 
-    private void logPanSouLinkCheck(String diskType, int inputCount, ObjectNode response, long startedAt) {
-        long validCount = 0;
-        if (response != null && response.has("results") && response.get("results").isArray()) {
-            for (var result : response.get("results")) {
-                if (result.has("state") && "ok".equals(result.get("state").asText())) {
-                    validCount++;
-                }
+    private void logPanSouLinkCheck(List<Message> checkable, Map<String, String> states, long startedAt) {
+        Map<String, int[]> stats = new LinkedHashMap<>();
+        int totalValid = 0;
+        for (Message message : checkable) {
+            String type = getPanSouCloudType(message.getType());
+            int[] counts = stats.computeIfAbsent(type, k -> new int[2]);
+            counts[0]++;
+            if (CHECK_STATE_OK.equals(states.get(message.getLink()))) {
+                counts[1]++;
+                totalValid++;
             }
         }
-        log.info("检测{}网盘链接{}条，{}条有效，耗时{}ms", diskType, inputCount, validCount, System.currentTimeMillis() - startedAt);
+        StringBuilder detail = new StringBuilder();
+        for (var entry : stats.entrySet()) {
+            if (detail.length() > 0) {
+                detail.append(", ");
+            }
+            detail.append(entry.getKey()).append(' ').append(entry.getValue()[1]).append('/').append(entry.getValue()[0]);
+        }
+        log.info("检测网盘链接{}条，{}条有效 [{}]，耗时{}ms", checkable.size(), totalValid, detail, System.currentTimeMillis() - startedAt);
     }
 
     private String searchPanSou(String url, SearchRequest request) {
@@ -483,6 +527,110 @@ public class RemoteSearchService {
     }
 
     public ObjectNode checkPanSouLinks(ObjectNode request) {
+        // Priority: dedicated 盘检地址 (PanCheck) > TG-Search > PanSou
+        if (StringUtils.isNotBlank(appProperties.getPanCheckUrl())) {
+            return checkViaPanCheck(request);
+        }
+        if (StringUtils.isNotBlank(appProperties.getTgSearch())) {
+            return checkViaTgSearch(request);
+        }
+        return checkViaPanSou(request);
+    }
+
+    // PanCheck backend (see /home/harold/workspace/PanCheck): different contract —
+    // req {links:[url...], selected_platforms:[...]}, resp bucketed by validity.
+    private ObjectNode checkViaPanCheck(ObjectNode request) {
+        ObjectNode panCheckReq = objectMapper.createObjectNode();
+        ArrayNode links = panCheckReq.putArray("links");
+        Set<String> platforms = new LinkedHashSet<>();
+        if (request.has("items") && request.get("items").isArray()) {
+            for (JsonNode item : request.get("items")) {
+                if (item.has("url")) {
+                    links.add(item.get("url").asText());
+                }
+                if (item.has("disk_type")) {
+                    platforms.add(mapPanCheckPlatform(item.get("disk_type").asText()));
+                }
+            }
+        }
+        // send selected_platforms so PanCheck runs the checkers synchronously (realtime)
+        ArrayNode selectedPlatforms = panCheckReq.putArray("selected_platforms");
+        platforms.forEach(selectedPlatforms::add);
+        String url = appProperties.getPanCheckUrl() + "/api/v1/links/check";
+        ObjectNode response = restTemplate.postForObject(url, panCheckReq, ObjectNode.class);
+        return normalizePanCheckResponse(response);
+    }
+
+    private String mapPanCheckPlatform(String diskType) {
+        return switch (diskType) {
+            case "123" -> "pan123";
+            case "115" -> "pan115";
+            case "mobile" -> "cmcc";
+            default -> diskType;
+        };
+    }
+
+    private ObjectNode normalizePanCheckResponse(ObjectNode response) {
+        ObjectNode result = objectMapper.createObjectNode();
+        ArrayNode results = result.putArray("results");
+        if (response == null) {
+            return result;
+        }
+        addPanCheckResults(results, response, "valid_links", "ok");
+        addPanCheckResults(results, response, "invalid_links", "bad");
+        addPanCheckResults(results, response, "locked_links", "locked");
+        addPanCheckResults(results, response, "pending_links", "uncertain");
+        return result;
+    }
+
+    private void addPanCheckResults(ArrayNode results, ObjectNode response, String field, String state) {
+        if (response.has(field) && response.get(field).isArray()) {
+            for (JsonNode link : response.get(field)) {
+                results.addObject()
+                        .put("url", link.asText())
+                        .put("state", state)
+                        .put("summary", getPanCheckSummary(state));
+            }
+        }
+    }
+
+    private String getPanCheckSummary(String state) {
+        return switch (state) {
+            case "ok" -> "链接有效";
+            case "bad" -> "链接失效";
+            case "locked" -> "链接受限";
+            case "uncertain" -> "状态不确定";
+            default -> state;
+        };
+    }
+
+    // TG-Search exposes the same /api/check/links contract but wraps results under "data"
+    // and authenticates via X-API-Key. Unwrap so downstream sees the canonical {results} shape.
+    private ObjectNode checkViaTgSearch(ObjectNode request) {
+        String url = appProperties.getTgSearch() + "/api/check/links";
+        // Only TG-Search exposes a server-side check timeout; honor it when configured.
+        Integer timeoutMs = appProperties.getPanCheckTimeoutMs();
+        if (timeoutMs != null && timeoutMs > 0) {
+            request.put("timeout_ms", timeoutMs);
+        }
+        HttpHeaders headers = new HttpHeaders();
+        if (StringUtils.isNotBlank(appProperties.getTgSearchApiKey())) {
+            headers.set("X-API-Key", appProperties.getTgSearchApiKey());
+        }
+        ObjectNode response = restTemplate.exchange(url, HttpMethod.POST,
+                new HttpEntity<>(request, headers), ObjectNode.class).getBody();
+        if (response != null && response.has("data") && response.get("data").isObject()) {
+            JsonNode data = response.get("data");
+            if (data.has("results")) {
+                ObjectNode normalized = objectMapper.createObjectNode();
+                normalized.set("results", data.get("results"));
+                return normalized;
+            }
+        }
+        return response == null ? objectMapper.createObjectNode() : response;
+    }
+
+    private ObjectNode checkViaPanSou(ObjectNode request) {
         String url = appProperties.getPanSouUrl() + "/api/check/links";
         if (!shouldUsePanSouAuth()) {
             return restTemplate.postForObject(url, request, ObjectNode.class);

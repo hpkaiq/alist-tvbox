@@ -1472,7 +1472,7 @@ public class TvBoxService {
 
         if (url.contains("#proxy=0")) {
             // do nothing
-        } else if (isUseProxy(url) && !shouldSkipBackendProxy(type, driverType)) {
+        } else if (isLocalProxyEnabled(driverType) && !shouldSkipBackendProxy(type, driverType)) {
             url = buildProxyUrl(site, name, path);
             useProxy = true;
             result.put("url", url);
@@ -1573,7 +1573,7 @@ public class TvBoxService {
 
         boolean enabled = !(item.get("enabled") instanceof Boolean value) || value;
         int concurrency = readInt(item.get("concurrency"), 1);
-        return enabled && concurrency > 1;
+        return enabled && concurrency > 0;
     }
 
     private int readInt(Object value, int defaultValue) {

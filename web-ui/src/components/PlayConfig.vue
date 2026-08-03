@@ -28,6 +28,8 @@ const tgSearch = ref('')
 const tgSearchApiKey = ref('')
 const tgSearchVersion = ref('')
 const tgSearchHealthError = ref('')
+const panCheckUrl = ref('')
+const panCheckTimeoutMs = ref<number | null>(null)
 const panSouUrl = ref('')
 const panSouSource = ref('all')
 const panSouChannels = ref('custom')
@@ -39,7 +41,7 @@ const panSouBuiltinChannelsCount = ref(0)
 const panSouPluginCount = ref(0)
 const panSouPlugins = ref([])
 const panSouLinkCheckEnabled = ref(false)
-const panSouLinkCheckMaxCount = ref(30)
+const panSouLinkCheckMaxCount = ref(300)
 const panSouLinkCheckTypes = ref<string[]>([])
 const panSouLinkCheckTypeOptions = [
   {label: '百度网盘', value: 'baidu'},
@@ -222,6 +224,19 @@ const updatePanSouUrl = () => {
   axios.post('/api/settings', {name: 'pan_sou_url', value: panSouUrl.value}).then(({data}) => {
     panSouUrl.value = data.value
     loadPanSouInfo()
+    ElMessage.success('更新成功')
+  })
+}
+
+const updatePanCheckUrl = () => {
+  axios.post('/api/settings', {name: 'pan_check_url', value: panCheckUrl.value}).then(({data}) => {
+    panCheckUrl.value = data.value
+    ElMessage.success('更新成功')
+  })
+}
+
+const updatePanCheckTimeout = () => {
+  axios.post('/api/settings', {name: 'pan_check_timeout_ms', value: panCheckTimeoutMs.value || ''}).then(() => {
     ElMessage.success('更新成功')
   })
 }
@@ -448,6 +463,8 @@ onMounted(() => {
     tgWebChannels.value = data.tg_web_channels
     tgSearch.value = data.tg_search
     tgSearchApiKey.value = data.tg_search_api_key
+    panCheckUrl.value = data.pan_check_url
+    panCheckTimeoutMs.value = data.pan_check_timeout_ms ? +data.pan_check_timeout_ms : null
     checkTgSearchHealth()
     panSouUrl.value = data.pan_sou_url
     if (panSouUrl.value) {
@@ -461,7 +478,7 @@ onMounted(() => {
     panSouSource.value = data.pan_sou_source || 'all'
     panSouChannels.value = data.pan_sou_channels || 'custom'
     panSouLinkCheckEnabled.value = data.pan_sou_link_check_enabled === 'true'
-    panSouLinkCheckMaxCount.value = +(data.pan_sou_link_check_max_count || 30)
+    panSouLinkCheckMaxCount.value = +(data.pan_sou_link_check_max_count || 300)
     panSouLinkCheckTypes.value = data.pan_sou_link_check_types ? data.pan_sou_link_check_types.split(',') : []
     panSouConc.value = data.pan_sou_conc ? +data.pan_sou_conc : null
     panSouRefresh.value = data.pan_sou_refresh === 'true'
@@ -505,6 +522,21 @@ onUnmounted(() => {
           <span class="hint" v-if="tgSearchVersion">版本：{{ tgSearchVersion }}</span>
           <span class="hint error" v-if="tgSearchHealthError">{{ tgSearchHealthError }}</span>
         </el-form-item>
+        <el-form-item label="盘检地址">
+          <el-input v-model="panCheckUrl" placeholder="http://IP:6080"/>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="updatePanCheckUrl">更新</el-button>
+          <a class="hint" target="_blank" title="部署PanCheck" href="https://github.com/Lampon/PanCheck">部署</a>
+          <span class="hint">独立的网盘链接检测后端，配置后优先使用；检测优先级：盘检地址 &gt; TG-Search &gt; PanSou，留空则回退</span>
+        </el-form-item>
+        <el-form-item label="盘检超时(ms)">
+          <el-input-number v-model="panCheckTimeoutMs" :min="0" :step="1000" placeholder="默认5000"/>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="updatePanCheckTimeout">更新</el-button>
+          <span class="hint">仅在走 TG-Search 盘检时作为 timeout_ms 生效，0/留空用上游默认（PanCheck/PanSou 无此参数）</span>
+        </el-form-item>
         <el-form-item label="链接检测" v-if="panSouUrl">
           <el-switch v-model="panSouLinkCheckEnabled"/>
           <span class="hint">自动检查盘搜搜索结果的有效性</span>
@@ -516,7 +548,7 @@ onUnmounted(() => {
           <span class="hint">留空=检测全部9种</span>
         </el-form-item>
         <el-form-item label="检测数量上限" v-if="panSouUrl">
-          <el-input-number v-model="panSouLinkCheckMaxCount" :min="0" :max="500"/>
+          <el-input-number v-model="panSouLinkCheckMaxCount" :min="0" :max="1000"/>
           <span class="hint">仅当网盘结果数量小于等于该值时检查，磁力和ED2K不计算数量</span>
         </el-form-item>
         <el-form-item v-if="panSouUrl">
