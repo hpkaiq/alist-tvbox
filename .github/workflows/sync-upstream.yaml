@@ -1,0 +1,83 @@
+name: Sync upstream master into own-master
+
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout own-master
+        uses: actions/checkout@v4
+        with:
+          ref: own-master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/power721/alist-tvbox.git
+          git fetch upstream master
+
+      - name: Check if own-master is behind upstream
+        id: check_behind
+        run: |
+          if git merge-base --is-ancestor upstream/master own-master; then
+            echo "own-master is up-to-date with or ahead of upstream/master."
+            echo "behind=false" >> $GITHUB_OUTPUT
+          else
+            # upstream/master is not an ancestor of own-master,
+            # meaning upstream/master has commits own-master doesn't.
+            echo "own-master is behind upstream/master."
+            echo "behind=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream/master into own-master
+        if: steps.check_behind.outputs.behind == 'true'
+        id: merge
+        run: |
+          if git merge upstream/master --no-edit; then
+            echo "Merge succeeded."
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "Merge failed due to conflicts."
+            git merge --abort
+            echo "success=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push own-master to GitHub
+        if: steps.merge.outputs.success == 'true'
+        run: |
+          git push origin own-master
+
+      - name: Send Lark notification on merge failure
+        if: steps.merge.outputs.success == 'false'
+        run: |
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "post",
+              "content": {
+                "post": {
+                  "zh_cn": {
+                    "title": "Sync Upstream Failed",
+                    "content": [
+                      [
+                        {
+                          "tag": "text",
+                          "text": "Merge conflict when syncing power721/alist-tvbox master into own-master. Manual resolution required."
+                        }
+                      ]
+                    ]
+                  }
+                }
+              }
+            }' \
+            ${{ secrets.LARK_WEBHOOK_URL }}
