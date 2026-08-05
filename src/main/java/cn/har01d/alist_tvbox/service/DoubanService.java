@@ -434,6 +434,8 @@ public class DoubanService {
                 return alias.getMovie();
             }
 
+            year = year == null ? getYearFromText(name) : year;
+            name = TextUtils.cleanMediaTitle(name);
             name = TextUtils.collapseCjkSpaces(TextUtils.fixName(name));
             if (name.isEmpty()) {
                 return null;
@@ -445,7 +447,10 @@ public class DoubanService {
                 return alias.getMovie();
             }
 
-            Movie movie = pickBest(movieRepository.getByName(name), year);
+            List<Movie> candidates = movieRepository.getByName(name);
+            log.debug("search local Douban movie: name='{}', year={}, matches={}",
+                    name, year, candidates == null ? 0 : candidates.size());
+            Movie movie = pickBest(candidates, year);
             if (movie != null) {
                 return movie;
             }
@@ -461,7 +466,10 @@ public class DoubanService {
                     return alias.getMovie();
                 }
 
-                movie = pickBest(movieRepository.getByName(name), year);
+                candidates = movieRepository.getByName(name);
+                log.debug("search local Douban movie: name='{}', year={}, matches={}",
+                        name, year, candidates == null ? 0 : candidates.size());
+                movie = pickBest(candidates, year);
                 if (movie != null) {
                     return movie;
                 }
@@ -472,7 +480,10 @@ public class DoubanService {
             // Skip for a bare season token (第一季/Season 1/S01): it is not a title and
             // the LIKE would match every season-N show of that year (wrong title).
             if (year != null && !isSeasonOnly(name)) {
-                return pickBestName(movieRepository.findByYearAndNameContains(year, name, Pageable.ofSize(10)).getContent(), name);
+                List<Movie> matches = movieRepository.findByYearAndNameContains(year, name, Pageable.ofSize(10)).getContent();
+                log.debug("search local Douban movie by year/name: name='{}', year={}, matches={}",
+                        name, year, matches.size());
+                return pickBestName(matches, name);
             }
         } catch (Exception e) {
             log.warn("", e);
@@ -888,14 +899,15 @@ public class DoubanService {
         return null;
     }
 
-    // extract a release year from the title/path to disambiguate same-name titles;
-    // path takes precedence, then a parenthesized year in the title, then a bare year
+    // Extract a release year to disambiguate same-name titles. An explicit title
+    // belongs to the current search result and therefore takes precedence over the
+    // mounted path, which may be an opaque share token or contain unrelated digits.
     public Integer getYear(String name, String path) {
-        Integer year = getYearFromPath(path);
+        Integer year = getYearFromText(name);
         if (year != null) {
             return year;
         }
-        return getYearFromText(name);
+        return getYearFromPath(path);
     }
 
     static Integer getYearFromText(String text) {
