@@ -10,7 +10,7 @@ import types
 from abc import ABCMeta, abstractmethod
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import requests
@@ -197,6 +197,7 @@ class Spider(HostSpider):
         self._vod_token = ""
         self._localProxyConfig = {}
         self._detail_result_cache = {}
+        self._search_keyword_cache = {}
         self._play_context_cache = {}
         self._filters = []
 
@@ -933,7 +934,16 @@ class Spider(HostSpider):
 
     def _parse(self, share_url):
         api = self._build_backend_endpoint("parse")
-        rsp = self.post(api, json={"url": share_url}, params={"ac": "play"}, timeout=10)
+        share_url = str(share_url or "").strip()
+        cached_vod = self._detail_result_cache.get(share_url)
+        title = str(cached_vod.get("vod_name") or "").strip() if isinstance(cached_vod, dict) else ""
+        request = {"url": share_url}
+        if title:
+            request["title"] = title
+        keyword = self._search_keyword_cache.get(share_url, "")
+        if keyword:
+            request["keyword"] = keyword
+        rsp = self.post(api, json=request, params={"ac": "play"}, timeout=10)
         if rsp.status_code != 200:
             return self.PUSH_PREFIX + share_url
         body = str(rsp.text or "")
@@ -944,11 +954,31 @@ class Spider(HostSpider):
         parsed_result = self._run_filters("parse", parsed_result, {"share_url": share_url})
         parsed_result = self._run_filters("detail", parsed_result, {"share_url": share_url, "source": "parse"})
         parsed_result = self._check_detail_links(parsed_result)
-        self._cache_detail_result(parsed_result)
+        self._cache_detail_result(parsed_result, keyword)
         self._cache_play_context(parsed_result)
         return parsed_result
 
-    def _cache_detail_result(self, detail_result):
+    def _remember_search_keyword(self, value, keyword):
+        value = str(value or "").strip()
+        keyword = str(keyword or "").strip()
+        if not value or not keyword:
+            return
+        self._search_keyword_cache[value] = keyword
+        if value.startswith(self.DETAIL_PREFIX):
+            self._search_keyword_cache[value[len(self.DETAIL_PREFIX):]] = keyword
+        decoded = unquote(value)
+        if decoded != value:
+            self._search_keyword_cache[decoded] = keyword
+
+    def _remember_result_keywords(self, result, keyword):
+        vod_list = result.get("list") if isinstance(result, dict) else None
+        if not isinstance(vod_list, list):
+            return
+        for vod in vod_list:
+            if isinstance(vod, dict):
+                self._remember_search_keyword(vod.get("vod_id"), keyword)
+
+    def _cache_detail_result(self, detail_result, keyword=None):
         vod_list = detail_result.get("list") if isinstance(detail_result, dict) else None
         if not isinstance(vod_list, list) or len(vod_list) != 1:
             return
@@ -957,14 +987,26 @@ class Spider(HostSpider):
         if not isinstance(vod, dict):
             return
 
-        for url_group in str(vod.get("vod_play_url") or "").split("$$$"):
-            _, _, target = str(url_group or "").partition("$")
+        def remember(target):
+            target = str(target or "").strip()
             if target.startswith(self.PUSH_PREFIX):
-                target = target[len(self.PUSH_PREFIX):]
+                target = target[len(self.PUSH_PREFIX):].strip()
             share_url = self._decode_parse(target)
-            if share_url is None:
+            if share_url is not None:
+                self._detail_result_cache[share_url] = dict(vod)
+                self._remember_search_keyword(share_url, keyword)
+
+        for url_group in str(vod.get("vod_play_url") or "").split("$$$"):
+            for episode in str(url_group or "").split("#"):
+                _, _, target = episode.partition("$")
+                remember(target or episode)
+
+        for group in vod.get("group") or []:
+            if not isinstance(group, dict):
                 continue
-            self._detail_result_cache[share_url] = dict(vod)
+            for media in group.get("media") or []:
+                if isinstance(media, dict):
+                    remember(media.get("url"))
 
     def _cache_play_context(self, detail_result):
         vod_list = detail_result.get("list") if isinstance(detail_result, dict) else None
@@ -1126,7 +1168,8 @@ class Spider(HostSpider):
         detail_result = self._require_inner().detailContent([source_id])
         detail_result = self._run_filters("detail", detail_result, {"ids": [source_id], "source": "category"})
         detail_result = self._check_detail_links(detail_result)
-        self._cache_detail_result(detail_result)
+        keyword = self._search_keyword_cache.get(str(source_id or "").strip(), "")
+        self._cache_detail_result(detail_result, keyword)
         self._cache_play_context(detail_result)
         vod_list = detail_result.get("list") if isinstance(detail_result, dict) else None
         if not isinstance(vod_list, list) or len(vod_list) != 1:
@@ -1276,6 +1319,7 @@ class Spider(HostSpider):
             tid = tid[len(self.DETAIL_PREFIX):]
             return self._split_detail_to_vods(tid)
         result = self._require_inner().categoryContent(tid, pg, filter, extend)
+        self._remember_result_keywords(result, self._search_keyword_cache.get(str(tid or "").strip(), ""))
         return self._normalize_category_content(result)
 
     def detailContent(self, ids):
@@ -1289,15 +1333,17 @@ class Spider(HostSpider):
                     self._detail_result_cache[resolved_url] = self._detail_result_cache[share_url]
                 return self._parse(resolved_url)
         result = self._require_inner().detailContent(ids)
+        keyword = self._search_keyword_cache.get(str(ids[0] if ids else "").strip(), "")
         result = self._run_filters("detail", result, {"ids": ids})
         result = self._check_detail_links(result)
-        self._cache_detail_result(result)
+        self._cache_detail_result(result, keyword)
         self._cache_play_context(result)
         return result
 
     def searchContent(self, key, quick, pg="1"):
         print('searchContent', key, quick, pg)
         result = self._require_inner().searchContent(key, quick, int(pg))
+        self._remember_result_keywords(result, key)
         result = self._check_search_links(result)
         if not self._category_mode_enabled():
             return result

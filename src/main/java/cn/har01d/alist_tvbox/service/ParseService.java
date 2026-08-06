@@ -27,21 +27,29 @@ public class ParseService {
             throw new BadRequestException("url is required");
         }
         if (request.url().startsWith("http")) {
-            return drive(request.url(), ac);
+            return drive(request.url(), request.title(), request.keyword(), ac);
         }
         DownloadTarget target = offlineDownloadService.downloadTarget(request);
         String targetPath = target.path();
         if (target.folder()) {
             targetPath += "/~playlist";
         }
-        return tvBoxService.getDetail(ac, "1$" + targetPath);
+        return tvBoxService.getDetail(ac, "1$" + targetPath, request.title(), request.keyword(), 0);
     }
 
     public MovieList drive(String tid, String ac) {
+        return drive(tid, null, ac);
+    }
+
+    public MovieList drive(String tid, String title, String ac) {
+        return drive(tid, title, null, ac);
+    }
+
+    public MovieList drive(String tid, String title, String keyword, String ac) {
         ShareLink share = new ShareLink();
         share.setLink(tid);
         String path = shareService.add(share);
 
-        return tvBoxService.getDetail(ac, "1$" + path + "/~playlist");
+        return tvBoxService.getDetail(ac, "1$" + path + "/~playlist", title, keyword, 0);
     }
 }

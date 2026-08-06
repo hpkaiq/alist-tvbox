@@ -125,7 +125,91 @@ class Spider:
         )
         self.spider.fetch.assert_called_once_with(
             "https://atv.example/play/demo",
-            params={"id": "1@share"},
+            params={"id": "1@share", "type": "client-proxy"},
+            timeout=10,
+        )
+
+    def test_backend_parse_sends_cached_plugin_title(self):
+        source = '''
+class Spider:
+    def init(self, extend=""):
+        self.backend_parse = True
+'''
+        self.init_inner(source)
+        share_url = "https://pan.quark.cn/s/demo"
+        self.spider._cache_detail_result({
+            "list": [{
+                "vod_name": "测试剧名",
+                "vod_play_url": f"夸克${share_url}",
+            }],
+        })
+        self.spider.post = Mock(
+            return_value=Response(
+                text=json.dumps({"list": [{"vod_name": "quark@demo@"}]})
+            )
+        )
+
+        parsed = self.spider.detailContent([share_url])
+
+        self.assertEqual(parsed["list"][0]["vod_name"], "测试剧名")
+        self.spider.post.assert_called_once_with(
+            "https://atv.example/parse/demo",
+            json={"url": share_url, "title": "测试剧名"},
+            params={"ac": "play"},
+            timeout=10,
+        )
+
+    def test_group_media_link_caches_plugin_title_for_backend_parse(self):
+        source = '''
+class Spider:
+    def init(self, extend=""):
+        self.backend_parse = True
+'''
+        self.init_inner(source)
+        share_url = "https://pan.quark.cn/s/group-demo"
+
+        self.spider._cache_detail_result({
+            "list": [{
+                "vod_name": "分组剧名",
+                "group": [{
+                    "name": "夸克",
+                    "media": [{"name": "资源一", "url": share_url}],
+                }],
+            }],
+        })
+
+        self.assertEqual(
+            self.spider._detail_result_cache[share_url]["vod_name"],
+            "分组剧名",
+        )
+
+    def test_backend_parse_sends_inherited_search_keyword(self):
+        source = '''
+class Spider:
+    def init(self, extend=""):
+        self.backend_parse = True
+'''
+        self.init_inner(source)
+        share_url = "https://pan.quark.cn/s/search-demo"
+        self.spider._remember_result_keywords({
+            "list": [{"vod_id": "movie-1", "vod_name": "源标题"}],
+        }, "搜索关键词")
+        self.spider._cache_detail_result({
+            "list": [{
+                "vod_name": "源标题",
+                "vod_play_url": f"夸克${share_url}",
+            }],
+        }, self.spider._search_keyword_cache["movie-1"])
+        self.spider.post = Mock(
+            return_value=Response(text=json.dumps({"list": [{"vod_name": "quark@demo@"}]}))
+        )
+
+        self.spider.detailContent([share_url])
+
+        self.spider.post.assert_called_once_with(
+            "https://atv.example/parse/demo",
+            json={"url": share_url, "title": "源标题", "keyword": "搜索关键词"},
+            params={"ac": "play"},
             timeout=10,
         )
 
