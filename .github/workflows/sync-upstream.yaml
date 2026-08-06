@@ -64,7 +64,9 @@ jobs:
       - name: Trigger docker-image workflow
         if: steps.merge.outputs.success == 'true'
         run: |
-          gh workflow run docker-image.yaml --ref own-master
+          gh workflow run docker-image.yaml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref own-master
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
