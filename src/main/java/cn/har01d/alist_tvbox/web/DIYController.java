@@ -1,12 +1,8 @@
 package cn.har01d.alist_tvbox.web;
 
-import cn.har01d.alist_tvbox.entity.DeviceRepository;
 import cn.har01d.alist_tvbox.service.EmbyService;
-import cn.har01d.alist_tvbox.service.HistoryService;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
-import cn.har01d.alist_tvbox.service.TvBoxService;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -24,20 +20,12 @@ import java.util.stream.Collectors;
 public class DIYController {
     private final EmbyService embyService;
     private final SubscriptionService subscriptionService;
-    private final HistoryService historyService;
-    private final DeviceRepository deviceRepository;
-    private final ObjectMapper objectMapper;
+
 
     public DIYController(EmbyService embyService,
-                         SubscriptionService subscriptionService,
-                         HistoryService historyService,
-                         DeviceRepository deviceRepository,
-                         ObjectMapper objectMapper) {
+                         SubscriptionService subscriptionService) {
         this.embyService = embyService;
         this.subscriptionService = subscriptionService;
-        this.historyService = historyService;
-        this.deviceRepository = deviceRepository;
-        this.objectMapper = objectMapper;
     }
 
     @GetMapping("/{token}/allsubs")
@@ -69,7 +57,7 @@ public class DIYController {
     }
 
     @GetMapping("/{token}/embyFakePlay")
-    public void embyFakePlay(@PathVariable String token,HttpServletRequest request) throws JsonProcessingException {
+    public void embyFakePlay(@PathVariable String token, HttpServletRequest request) throws JsonProcessingException {
         subscriptionService.checkToken(token);
         embyService.fakePlay();
     }
@@ -80,7 +68,7 @@ public class DIYController {
     }
 
     @GetMapping("/embyRemoveCache")
-    public void embyRemoveCache(HttpServletRequest request,Integer id) throws JsonProcessingException {
+    public void embyRemoveCache(HttpServletRequest request, Integer id) throws JsonProcessingException {
         embyService.cache.invalidate(id);
         log.info("embyRemoveCache id:{} success", id);
     }
