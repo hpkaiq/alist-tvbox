@@ -383,8 +383,11 @@ public class EmbyService {
         List<MovieDetail> list = new ArrayList<>();
 
         for (Emby emby : findAll()) {
+            if (emby.isDisabled()) {
+                continue;
+            }
             var info = getEmbyInfo(emby);
-            if (info == null || emby.isDisabled()) {
+            if (info == null) {
                 continue;
             }
             list.addAll(search(emby, info, wd, "Movie"));
