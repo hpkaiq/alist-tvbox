@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {onMounted, ref} from "vue";
+import {computed, onMounted, ref} from "vue";
 import axios from "axios";
 import mpegts from "mpegts.js";
 import {onUnmounted} from "@vue/runtime-core";
@@ -68,11 +68,47 @@ const room = ref<Movie>({
   vod_play_url: ""
 });
 const activeName = ref("");
+const activeTab = ref("");
+const follows = ref<LiveFollow[]>([]);
+const followsLoading = ref(false);
+const followLoading = ref(false);
+const playGroups = ref<string[]>([]);
+const danmaku = ref<DanmakuConfig>({enabled: true, rows: 0, speed: 1, fontSize: 100, opacity: 100, color: "", showOnline: true});
+const platformNames: Record<string, string> = {
+  bili: "B站",
+  bilibili: "B站",
+  cc: "网易",
+  douyin: "抖音",
+  douyu: "斗鱼",
+  huya: "虎牙",
+  ks: "快手",
+  kuaishou: "快手"
+};
 
 interface Category {
   type_id: string;
   type_name: string;
   type_flag: number;
+}
+
+interface LiveFollow {
+  platform: string;
+  roomId: string;
+  roomName?: string;
+  anchorName?: string;
+  cover?: string;
+  live?: boolean | null;
+  followedTime?: number;
+}
+
+interface DanmakuConfig {
+  enabled: boolean;
+  rows: number;
+  speed: number;
+  fontSize: number;
+  opacity: number;
+  color: string | null;
+  showOnline: boolean;
 }
 
 interface Movie {
@@ -152,17 +188,28 @@ const destory = () => {
 
 const handleClick = (tab: TabsPaneContext) => {
   const index = +(tab.index || "0");
-  playUrls.value = room.value.vod_play_url.split("$$$")[index].split("#");
+  playUrls.value = playGroups.value[index].split("#");
   loadFlv(playUrls.value[0]);
 };
 
 const handleCategoryClick = (tab: TabsPaneContext) => {
+  if (tab.props.name === "manage") {
+    router.push('/live/manage')
+    loadFollows();
+    return;
+  }
+  if (tab.props.name === "danmaku") {
+    router.push('/live/danmaku')
+    loadDanmakuConfig();
+    return;
+  }
   const index = +(tab.index || "0");
   if (index >= categories.value.length) {
     router.push('/live/config')
     loadConfig();
   } else {
     category.value = categories.value[index];
+    activeTab.value = category.value.type_id;
     router.push('/live/' + category.value.type_id)
     loadTypes();
   }
@@ -189,6 +236,80 @@ const loadFlv = (url: string) => {
   });
 };
 
+const currentRoom = computed(() => {
+  const [platform, ...roomIdParts] = room.value.vod_id.split("$");
+  return {platform, roomId: roomIdParts.join("$")};
+});
+
+const isFollowed = computed(() => currentRoom.value.platform && currentRoom.value.roomId
+  && follows.value.some(follow => follow.platform === currentRoom.value.platform && follow.roomId === currentRoom.value.roomId));
+
+const toggleFollow = () => {
+  const {platform, roomId} = currentRoom.value;
+  if (!platform || !roomId) {
+    return;
+  }
+  const unfollow = isFollowed.value;
+  followLoading.value = true;
+  const request = unfollow
+    ? axios.delete("/api/live/follows", {params: {platform, roomId}})
+    : axios.post("/api/live/follows", {platform, roomId});
+  request.then(() => {
+    ElMessage.success(unfollow ? "已取消关注" : "已关注");
+    loadFollows();
+  }).catch(() => {
+    ElMessage.error("操作失败");
+  }).finally(() => {
+    followLoading.value = false;
+  });
+};
+
+const loadFollows = () => {
+  followsLoading.value = true;
+  axios.get("/api/live/follows").then(({data}) => {
+    follows.value = data;
+    followsLoading.value = false;
+  }).catch(() => {
+    followsLoading.value = false;
+  });
+};
+
+const removeFollow = (row: LiveFollow) => {
+  axios.delete("/api/live/follows", {params: {platform: row.platform, roomId: row.roomId}}).then(() => {
+    ElMessage.success("已取消关注");
+    loadFollows();
+  });
+};
+
+const loadDanmakuConfig = () => {
+  axios.get("/api/settings/danmaku_config").then(({data}) => {
+    if (data?.value) {
+      try {
+        danmaku.value = {...danmaku.value, ...JSON.parse(data.value)};
+      } catch {
+        // 配置解析失败保持默认值
+      }
+    }
+  });
+};
+
+const updateDanmakuConfig = () => {
+  axios.post("/api/settings", {
+    name: "danmaku_config",
+    value: JSON.stringify({...danmaku.value, color: danmaku.value.color || ""})
+  }).then(() => {
+    ElMessage.success("更新成功,播放中最迟 2 秒生效");
+  });
+};
+
+const openFollowRoom = (row: LiveFollow) => {
+  loadRoom(row.platform + "$" + row.roomId);
+};
+
+const formatTime = (time?: number) => {
+  return time ? new Date(time).toLocaleString() : "";
+};
+
 const start = () => {
   loadFlv(playUrls.value[0]);
 };
@@ -207,10 +328,16 @@ const loadRoom = (id: string) => {
   axios.get("/live/" + store.token + "?platform=web&ids=" + id).then(({data}) => {
     loading.value = false;
     room.value = data.list[0];
-    playFrom.value = room.value.vod_play_from.split("$$$");
-    playUrls.value = room.value.vod_play_url.split("$$$")[0].split("#");
+    const sources = room.value.vod_play_from.split("$$$");
+    playGroups.value = room.value.vod_play_url.split("$$$").filter(group => !group.split("#").some(url => {
+      const [, action] = url.split("$");
+      return action === "follow" || action === "unfollow";
+    }));
+    playFrom.value = sources.slice(0, playGroups.value.length);
+    playUrls.value = playGroups.value[0]?.split("#") || [];
     activeName.value = playFrom.value[0];
     dialogVisible.value = true;
+    loadFollows();
   });
 };
 
@@ -224,12 +351,25 @@ const loadCategories = (id: string) => {
   room.value.vod_id = "";
   typeKeyword.value = "";
   axios.get("/live/" + store.token + '?platform=web').then(({data}) => {
-    categories.value = data.class;
+    categories.value = data.class.filter((item: Category) => item.type_id !== "follow");
+    if (id === "manage") {
+      category.value = categories.value[0];
+      activeTab.value = "manage";
+      loadFollows();
+      return;
+    }
+    if (id === "danmaku") {
+      category.value = categories.value[0];
+      activeTab.value = "danmaku";
+      loadDanmakuConfig();
+      return;
+    }
     if (id) {
       category.value = categories.value.find(e => e.type_id == id) || categories.value[0];
     } else {
       category.value = categories.value[0];
     }
+    activeTab.value = category.value.type_id;
     loadTypes();
   });
 };
@@ -265,8 +405,17 @@ const loadTypes = () => {
   room.value.vod_id = "";
   roomKeyword.value = "";
   axios.get("/live/" + store.token + "?platform=web&t=" + id).then(({data}) => {
-    types.value = data.list;
-    filteredTypes.value = types.value;
+    if (id === "follow") {
+      // 关注分类直接返回直播间列表(非文件夹)
+      types.value = [];
+      filteredTypes.value = [];
+      rooms.value = data.list;
+      filteredRooms.value = data.list;
+      total.value = data.pagecount || 1;
+    } else {
+      types.value = data.list;
+      filteredTypes.value = types.value;
+    }
   });
 };
 
@@ -320,7 +469,7 @@ onUnmounted(() => {
 
 <template>
   <div class="mainContainer">
-    <el-tabs v-model="category.type_id" @tab-click="handleCategoryClick">
+    <el-tabs v-model="activeTab" @tab-click="handleCategoryClick">
       <el-tab-pane :label="item.type_name" :name="item.type_id" v-for="item of categories">
         <el-breadcrumb separator="/">
           <el-breadcrumb-item>
@@ -389,6 +538,89 @@ onUnmounted(() => {
           </el-row>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="关注管理" name="manage">
+        <div id="follow-toolbar">
+          <el-button :icon="Refresh" circle @click="loadFollows"/>
+          <span v-if="follows.length" class="follow-summary">共 {{ follows.length }} 个关注</span>
+        </div>
+        <el-table :data="follows" v-loading="followsLoading">
+          <el-table-column label="房间" min-width="300">
+            <template #default="{row}">
+              <div class="follow-room">
+                <img v-if="row.cover" :src="row.cover" :alt="row.roomName" referrerpolicy="no-referrer" @click="openFollowRoom(row)">
+                <div>
+                  <div>{{ row.roomName || row.roomId }}</div>
+                  <div class="follow-anchor">{{ row.anchorName }}</div>
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="平台" width="100">
+            <template #default="{row}">{{ platformNames[row.platform] || row.platform }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{row}">
+              <el-tag :type="row.live === true ? 'danger' : row.live === false ? 'info' : 'warning'">
+                {{ row.live === true ? '直播中' : row.live === false ? '未开播' : '未知' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="关注时间" width="210">
+            <template #default="{row}">{{ formatTime(row.followedTime) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="170">
+            <template #default="{row}">
+              <el-button size="small" @click="openFollowRoom(row)">观看</el-button>
+              <el-button size="small" type="danger" @click="removeFollow(row)">取关</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+      <el-tab-pane label="弹幕管理" name="danmaku">
+        <el-form label-width="110px" style="max-width: 620px">
+          <el-form-item label="弹幕开关">
+            <el-switch
+              v-model="danmaku.enabled"
+              inline-prompt
+              active-text="开启"
+              inactive-text="关闭"
+              @change="updateDanmakuConfig"
+            />
+            <span class="danmaku-tip">关闭后播放中约 1 分钟内停止拉取</span>
+          </el-form-item>
+          <el-form-item label="实时人气值">
+            <el-switch
+              v-model="danmaku.showOnline"
+              inline-prompt
+              active-text="显示"
+              inactive-text="隐藏"
+              @change="updateDanmakuConfig"
+            />
+            <span class="danmaku-tip">播放画面顶部的实时在线人数</span>
+          </el-form-item>
+          <el-form-item label="弹幕行数">
+            <el-input-number v-model="danmaku.rows" :min="0" :max="8" @change="updateDanmakuConfig"/>
+            <span class="danmaku-tip">0 为自动</span>
+          </el-form-item>
+          <el-form-item label="弹幕速度">
+            <el-select v-model="danmaku.speed" style="width: 120px" @change="updateDanmakuConfig">
+              <el-option label="慢" :value="0"/>
+              <el-option label="正常" :value="1"/>
+              <el-option label="快" :value="2"/>
+            </el-select>
+          </el-form-item>
+          <el-form-item label="字体大小">
+            <el-slider v-model="danmaku.fontSize" :min="50" :max="200" :step="5" show-input @change="updateDanmakuConfig"/>
+          </el-form-item>
+          <el-form-item label="不透明度">
+            <el-slider v-model="danmaku.opacity" :min="10" :max="100" :step="5" show-input @change="updateDanmakuConfig"/>
+          </el-form-item>
+          <el-form-item label="弹幕颜色">
+            <el-color-picker v-model="danmaku.color" @change="updateDanmakuConfig"/>
+            <span class="danmaku-tip">默认跟随平台弹幕原色</span>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
 <!--      <el-tab-pane label="配置" name="config">-->
 <!--        <el-form label-width="110px">-->
 <!--          <el-form-item label="订阅">-->
@@ -448,6 +680,14 @@ onUnmounted(() => {
             <el-descriptions-item label="主播">{{ room.vod_actor }}</el-descriptions-item>
             <el-descriptions-item label="人气">{{ room.vod_remarks }}</el-descriptions-item>
           </el-descriptions>
+          <el-button
+            class="follow-button"
+            :type="isFollowed ? 'danger' : 'primary'"
+            :loading="followLoading"
+            @click="toggleFollow"
+          >
+            {{ isFollowed ? '取消关注' : '关注主播' }}
+          </el-button>
         </el-col>
       </el-row>
 <!--      <template #footer>-->
@@ -530,6 +770,48 @@ onUnmounted(() => {
 #type-filter {
   display: flex;
   justify-content: flex-end;
+}
+
+#follow-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.follow-summary {
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+}
+
+.danmaku-tip {
+  margin-left: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.follow-room {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.follow-room img {
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.follow-anchor {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.follow-button {
+  margin-top: 16px;
 }
 
 #pagination {
