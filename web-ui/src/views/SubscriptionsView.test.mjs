@@ -43,3 +43,38 @@ test('keeps null benchmark success values pending', () => {
   assert.equal(viewSource.includes('const isBenchmarkPending = (result: any) => result?.success === null || result?.pending'), true)
   assert.equal(viewSource.includes('result.success !== undefined && result.success !== null'), true)
 })
+
+test('supports declarative list fields with per-item editors', () => {
+  const editorSource = readFileSync(new URL('../components/PluginFilterConfigFieldEditor.vue', import.meta.url), 'utf8')
+  assert.equal(editorSource.includes("field.type === 'list'"), true)
+  assert.equal(editorSource.includes('addListItem'), true)
+  assert.equal(editorSource.includes('removeListItem'), true)
+  assert.equal(editorSource.includes('itemLabel'), true)
+})
+
+test('validates and normalizes list config fields', () => {
+  assert.equal(viewSource.includes('resolveConfigListItems'), true)
+  assert.equal(viewSource.includes("field.type === 'list'"), true)
+  assert.equal(viewSource.includes('itemLabel: field?.itemLabel'), true)
+})
+
+test('offers qq music qr login from managed source row', () => {
+  assert.equal(viewSource.includes('QqMusicQrLoginDialog'), true)
+  assert.equal(viewSource.includes('isQqMusicSource'), true)
+  assert.equal(viewSource.includes('@click="openQqMusicLogin(scope.row)"'), true)
+  assert.equal(viewSource.includes("name.includes('QQ音乐')"), true)
+})
+
+test('qq music qr dialog allows switching login type while polling', () => {
+  const dialogSource = readFileSync(new URL('../components/QqMusicQrLoginDialog.vue', import.meta.url), 'utf8')
+  assert.equal(dialogSource.includes(':disabled="polling"'), false)
+  assert.equal(dialogSource.includes('@change="startLogin"'), true)
+})
+
+test('qq music qr dialog polls backend and saves extend', () => {
+  const dialogSource = readFileSync(new URL('../components/QqMusicQrLoginDialog.vue', import.meta.url), 'utf8')
+  assert.equal(dialogSource.includes("'/api/qqmusic/login?type='"), true)
+  assert.equal(dialogSource.includes("'/api/qqmusic/check?key='"), true)
+  assert.equal(dialogSource.includes("'/api/subscription-sources/' + props.source.id"), true)
+  assert.equal(dialogSource.includes('setInterval(check, 1500)'), true)
+})

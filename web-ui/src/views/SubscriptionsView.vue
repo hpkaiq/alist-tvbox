@@ -568,12 +568,13 @@
             <span>{{ scope.row.lastError || '正常' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column label="操作" width="200">
           <template #default="scope">
             <el-button v-if="scope.row.extendable" link type="primary" @click="openSourceConfig(scope.row)">配置</el-button>
+            <el-button v-if="isQqMusicSource(scope.row)" link type="primary" @click="openQqMusicLogin(scope.row)">扫码</el-button>
             <el-button v-if="scope.row.refreshable" link type="primary" @click="refreshPlugin(scope.row.pluginId)">刷新</el-button>
             <el-button v-if="scope.row.deletable" link type="danger" @click="deletePlugin(scope.row.pluginId)">删除</el-button>
-            <span v-if="!scope.row.extendable && !scope.row.refreshable && !scope.row.deletable">-</span>
+            <span v-if="!scope.row.extendable && !isQqMusicSource(scope.row) && !scope.row.refreshable && !scope.row.deletable">-</span>
           </template>
         </el-table-column>
       </el-table>
@@ -983,6 +984,12 @@
       </template>
     </el-dialog>
 
+    <QqMusicQrLoginDialog
+      v-model="qqMusicLoginVisible"
+      :source="qqMusicLoginSource"
+      @success="loadManagedSources"
+    />
+
   </div>
 </template>
 
@@ -996,6 +1003,7 @@ import {Link, ArrowRight} from "@element-plus/icons-vue";
 import Sortable from "sortablejs";
 import type {Device} from "@/model/Device";
 import PluginFilterConfigFieldEditor from "@/components/PluginFilterConfigFieldEditor.vue";
+import QqMusicQrLoginDialog from "@/components/QqMusicQrLoginDialog.vue";
 import SubscriptionConfigEditor from "@/components/SubscriptionConfigEditor.vue";
 import {isPluginDragEnabledForUserAgent} from "@/utils/pluginDragSupport.mjs";
 
@@ -1067,6 +1075,7 @@ interface PluginFilterConfigField {
   placeholder: string
   aliases: string[]
   children: PluginFilterConfigField[]
+  itemLabel?: string
 }
 
 interface PluginFilterConfigSchema {
@@ -1158,6 +1167,20 @@ const pluginVisible = ref(false)
 const pluginFilterVisible = ref(false)
 const pluginFilterConfigVisible = ref(false)
 const sourceExtendVisible = ref(false)
+
+// QQ音乐爬虫支持后端扫码登录，凭据直接写入订阅源 extend
+const qqMusicLoginVisible = ref(false)
+const qqMusicLoginSource = ref<ManagedSource | null>(null)
+
+const isQqMusicSource = (source: ManagedSource) => {
+  const name = `${source.name || ''}${source.sourceName || ''}`
+  return name.includes('QQ音乐')
+}
+
+const openQqMusicLogin = (source: ManagedSource) => {
+  qqMusicLoginSource.value = source
+  qqMusicLoginVisible.value = true
+}
 const importingPlugins = ref(false)
 const tgVisible = ref(false)
 const scanVisible = ref(false)
@@ -1528,7 +1551,8 @@ const normalizePluginFilterConfigField = (field: PluginFilterConfigField): Plugi
     defaultValue: field?.defaultValue,
     placeholder: field?.placeholder || '',
     aliases: Array.isArray(field?.aliases) ? field.aliases : [],
-    children: Array.isArray(field?.children) ? field.children.map(item => normalizePluginFilterConfigField(item)) : []
+    children: Array.isArray(field?.children) ? field.children.map(item => normalizePluginFilterConfigField(item)) : [],
+    itemLabel: field?.itemLabel || ''
   }
 }
 
@@ -1665,6 +1689,22 @@ const fieldValueByAliases = (field: PluginFilterConfigField, container: Record<s
   return field.defaultValue
 }
 
+// list 字段值可能是数组，也可能是旧数据留下的 JSON 字符串
+const resolveConfigListItems = (value: any): any[] => {
+  if (Array.isArray(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
 const rebuildPluginFilterConfigExtras = () => {
   const declared = new Set(getDeclaredFieldKeys(pluginFilterConfigSchema.value))
   pluginFilterConfigExtras.value = Object.entries(pluginFilterConfigObject.value)
@@ -1689,6 +1729,21 @@ const validatePluginFilterConfigObject = () => {
         const nestedRequiredPath = validateFields(field.children, nested, currentPath)
         if (nestedRequiredPath) {
           return nestedRequiredPath
+        }
+        continue
+      }
+      if (field.type === 'list' && field.children?.length) {
+        const items = resolveConfigListItems(value)
+        if (field.required && items.length === 0) {
+          return currentPath.join(' / ')
+        }
+        for (let index = 0; index < items.length; index++) {
+          const item = items[index] && typeof items[index] === 'object' && !Array.isArray(items[index]) ? items[index] : {}
+          const itemPath = [...currentPath, `${field.itemLabel || '项'} ${index + 1}`]
+          const itemRequiredPath = validateFields(field.children, item, itemPath)
+          if (itemRequiredPath) {
+            return itemRequiredPath
+          }
         }
         continue
       }
@@ -1831,6 +1886,21 @@ const validateSourceConfigObject = () => {
         const nestedRequiredPath = validateFields(field.children, nested, currentPath)
         if (nestedRequiredPath) {
           return nestedRequiredPath
+        }
+        continue
+      }
+      if (field.type === 'list' && field.children?.length) {
+        const items = resolveConfigListItems(value)
+        if (field.required && items.length === 0) {
+          return currentPath.join(' / ')
+        }
+        for (let index = 0; index < items.length; index++) {
+          const item = items[index] && typeof items[index] === 'object' && !Array.isArray(items[index]) ? items[index] : {}
+          const itemPath = [...currentPath, `${field.itemLabel || '项'} ${index + 1}`]
+          const itemRequiredPath = validateFields(field.children, item, itemPath)
+          if (itemRequiredPath) {
+            return itemRequiredPath
+          }
         }
         continue
       }
