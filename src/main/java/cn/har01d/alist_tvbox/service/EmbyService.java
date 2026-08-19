@@ -854,18 +854,40 @@ public class EmbyService {
                     log.error("Emby {} fakePlay failed.", emby.getName());
                     continue;
                 }
-                MovieDetail movie = list.get((int) (Math.random() * (resumeSize > 2 ? resumeSize : list.size())));
-                MovieList details = detail(movie.getVod_id());
-                MovieDetail detail = details.getList().get(0);
-                String vodPlayUrl = detail.getVod_play_url();
-                vodId = vodPlayUrl;
-                if (vodPlayUrl.contains("$")) {
-                    vodId = vodPlayUrl.split("\\$\\$\\$")[0].split("#")[0].split("\\$")[1];
+                int randomSize = resumeSize > 10 ? resumeSize : list.size();
+                int maxRetries = 5;
+                Set<String> failedVodIds = new HashSet<>();
+                for (int i = 0; i <= maxRetries; i++) {
+                    List<MovieDetail> candidates = list.subList(0, randomSize).stream()
+                            .filter(movie -> !failedVodIds.contains(movie.getVod_id()))
+                            .toList();
+                    if (candidates.isEmpty()) {
+                        log.error("Emby {} fakePlay failed, no available videos to retry.", emby.getName());
+                        break;
+                    }
+                    MovieDetail movie = candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+                    try {
+                        MovieList details = detail(movie.getVod_id());
+                        MovieDetail detail = details.getList().getFirst();
+                        String vodPlayUrl = detail.getVod_play_url();
+                        vodId = vodPlayUrl;
+                        if (vodPlayUrl.contains("$")) {
+                            vodId = vodPlayUrl.split("\\$\\$\\$")[0].split("#")[0].split("\\$")[1];
+                        }
+                        log.debug("fakePlay debug movie {}", movie);
+                        log.debug("fakePlay debug detail {}", detail);
+                        play(vodId);
+                        log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
+                        break;
+                    } catch (Exception e) {
+                        failedVodIds.add(movie.getVod_id());
+                        if (i == maxRetries) {
+                            log.error("Emby {} fakePlay failed after {} retries.", emby.getName(), maxRetries, e);
+                        } else {
+                            log.warn("Emby {} fakePlay failed, retry {}/{}.", emby.getName(), i + 1, maxRetries, e);
+                        }
+                    }
                 }
-                log.debug("fakePlay debug movie {}", movie);
-                log.debug("fakePlay debug detail {}", detail);
-                play(vodId);
-                log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
             } catch (Exception e) {
                 log.error("Emby {} fakePlay failed.", emby.getName(), e);
             }
