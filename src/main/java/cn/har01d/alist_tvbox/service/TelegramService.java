@@ -55,6 +55,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -763,7 +764,8 @@ public class TelegramService {
     }
 
     private MovieList getDoubanList(String type, String ac, String sort, Integer year, String genre, String region, int page, int size) {
-        String key = ac + "-" + type + "-" + page;
+        String key = ac + "-" + type + "-" + page + "-" + StringUtils.defaultString(sort) + "-" + year
+                + "-" + StringUtils.defaultString(genre) + "-" + StringUtils.defaultString(region);
         MovieList result = douban.getIfPresent(key);
         if (result != null) {
             return result;
@@ -778,11 +780,11 @@ public class TelegramService {
         }
 
         if (type.startsWith("suggestion_")) {
-            return getDoubanItems(type, ac, page, size);
+            return getDoubanItems(type, ac, page, size, region);
         }
 
         if (type.startsWith("hot_")) {
-            return getDoubanItems(type, ac, page, size);
+            return getDoubanItems(type, ac, page, size, region);
         }
 
         result = new MovieList();
@@ -815,20 +817,12 @@ public class TelegramService {
     }
 
     private void fixCover(MovieDetail movie) {
-        try {
-            if (movie.getVod_pic() != null && !movie.getVod_pic().isEmpty()) {
-                String cover = ServletUriComponentsBuilder.fromCurrentRequest()
-                        .scheme(appProperties.isEnableHttps() && !Utils.isLocalAddress() ? "https" : "http") // nginx https
-                        .replacePath("/images")
-                        .replaceQuery("url=" + movie.getVod_pic())
-                        .build()
-                        .toUriString();
-                log.debug("cover url: {}", cover);
-                movie.setVod_pic(cover);
-            }
-        } catch (Exception e) {
-            // ignore
+        if (StringUtils.isEmpty(movie.getVod_pic())) {
+            return;
         }
+        // 相对地址交给浏览器按页面源补全:fromCurrentRequest 在 https 反代未开 enable_https 时会拼出
+        // http:// 封面被按混合内容拦截(TMDB 直链不受影响),换域名/端口也不会再拼错
+        movie.setVod_pic("/images?url=" + movie.getVod_pic());
     }
 
     private MovieList getLocalMovieList(String ac, String sort, Integer year, String genre, String region, int page, int size) {
@@ -935,8 +929,8 @@ public class TelegramService {
         return result;
     }
 
-    private MovieList getDoubanItems(String type, String ac, int page, int size) {
-        String key = ac + "-" + type + "-" + page;
+    private MovieList getDoubanItems(String type, String ac, int page, int size, String region) {
+        String key = ac + "-" + type + "-" + page + "-" + StringUtils.defaultString(region);
         int start = (page - 1) * size;
         String url = "https://m.douban.com/rexxar/api/v2/subject/recent_hot/movie?limit=" + size + "&start=" + start;
         if (type.equals("hot_tv")) {
@@ -946,13 +940,22 @@ public class TelegramService {
         } else if (type.equals("suggestion_tv")) {
             url = "https://m.douban.com/rexxar/api/v2/tv/suggestion?start=" + start + "&count=" + size + "&new_struct=1&with_review=1&for_mobile=1";
         }
+        // 近期热播接口不支持地区参数;带地区改走 discover 式 recommend(tags 语法,单国家粒度)
+        if (StringUtils.isNotBlank(region) && (type.equals("hot_tv") || type.equals("hot_movie"))) {
+            String tags = URLEncoder.encode((type.equals("hot_tv") ? "电视剧" : "电影") + "," + region, StandardCharsets.UTF_8);
+            // sort=U 近期热度:recommend 默认综合排序全是经典老剧,与热门榜单语义不符
+            url = "https://m.douban.com/rexxar/api/v2/" + (type.equals("hot_tv") ? "tv" : "movie")
+                    + "/recommend?refresh=0&start=" + start + "&limit=" + size + "&uncollect=false&sort=U&tags=" + tags;
+        }
 
         MovieList result = new MovieList();
         List<MovieDetail> list = new ArrayList<>();
 
         HttpEntity<Void> httpEntity = buildHttpEntity();
 
-        var response = restTemplate.exchange(url, HttpMethod.GET, httpEntity, JsonNode.class);
+        // tags 已 URLEncoder 预编码:传 String 会经 uriTemplateHandler 二次编码(%→%25)使 tags 变乱码,
+        // 豆瓣按乱码 tag 匹配 total=0(地区筛选全空);传 URI 跳过模板编码
+        var response = restTemplate.exchange(URI.create(url), HttpMethod.GET, httpEntity, JsonNode.class);
         int total = response.getBody().get("total").asInt();
         ArrayNode items = (ArrayNode) response.getBody().get("items");
         for (JsonNode item : items) {

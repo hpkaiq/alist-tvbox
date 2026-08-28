@@ -98,11 +98,12 @@
           </el-table-column>
           <el-table-column label="进度" width="170">
             <template #default="scope">
-              <span>{{ scope.row.currentEpisodes ?? 0 }}{{ scope.row.officialTotal ? ' / ' + scope.row.officialTotal : (scope.row.expectedEpisodes ? ' / ' + scope.row.expectedEpisodes : '') }} 集</span>
+              <span>{{ scope.row.currentEpisodes ?? 0 }}{{ progressTotal(scope.row) ? ' / ' + progressTotal(scope.row) : '' }} 集</span>
               <div class="sub-text danger" v-if="scope.row.missingEpisodes && scope.row.missingEpisodes.length">
                 缺第 {{ compactNumbers(scope.row.missingEpisodes) }} 集
               </div>
-              <div class="sub-text" v-else-if="scope.row.officialEpisodes && scope.row.officialEpisodes > (scope.row.currentEpisodes ?? 0)">
+              <div class="sub-text" v-else-if="scope.row.officialEpisodes && scope.row.officialEpisodes > (scope.row.currentEpisodes ?? 0)
+                  && scope.row.officialEpisodes <= (progressTotal(scope.row) ?? scope.row.officialEpisodes)">
                 官方已播 {{ scope.row.officialEpisodes }} 集
               </div>
             </template>
@@ -291,21 +292,33 @@
           <template #default="scope">
             <el-tag v-if="scope.row.primary" size="small" type="success">主源</el-tag>
             <el-tag v-else-if="scope.row.state === 'MOUNTED'" size="small" type="warning">补缺</el-tag>
+            <el-tag v-if="scope.row.pinned" size="small" type="danger" style="margin-left: 4px">钉选</el-tag>
           </template>
         </el-table-column>
-        <el-table-column fixed="right" label="操作" width="90">
+        <el-table-column fixed="right" label="操作" width="180">
           <template #default="scope">
             <el-button v-if="scope.row.state === 'CANDIDATE'" link type="primary" size="small"
                        @click="activateResource(scope.row)">启用</el-button>
             <el-button v-else-if="scope.row.state === 'MOUNTED' && !scope.row.primary" link type="primary" size="small"
                        @click="activateResource(scope.row)">转主源</el-button>
+            <el-button v-if="scope.row.pinned" link type="danger" size="small"
+                       @click="unpinResource(scope.row)">取消钉选</el-button>
+            <el-button v-else link type="danger" size="small"
+                       @click="pinResource(scope.row)">钉选</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-drawer>
 
     <el-drawer v-model="episodesVisible" :title="'集数清单 - ' + (current?.name || '')" size="52%">
-      <el-table :data="episodeItems" border v-loading="episodesLoading" max-height="600" row-key="episode">
+      <div class="episode-filter">
+        <el-radio-group v-model="episodeFilter" size="small">
+          <el-radio-button value="all">全部 {{ episodeItems.length }}</el-radio-button>
+          <el-radio-button value="present">有源 {{ episodePresentCount }}</el-radio-button>
+          <el-radio-button value="missing">缺失 {{ episodeMissingCount }}</el-radio-button>
+        </el-radio-group>
+      </div>
+      <el-table :data="filteredEpisodeItems" border v-loading="episodesLoading" max-height="600" row-key="episode">
         <el-table-column type="expand">
           <template #default="scope">
             <div v-if="scope.row.sources?.length" class="episode-matrix">
@@ -689,6 +702,8 @@ interface ResourceDto {
   /** 挂载生命周期:CANDIDATE/MOUNTED/RETIRED/REJECTED(可用性由集源行聚合,不再落在资源上) */
   state: string | null
   primary: boolean
+  /** 手动钉选:换源候选序置顶、归属复核豁免(用户否决自动换源) */
+  pinned: boolean
 }
 
 interface EventDto {
@@ -841,6 +856,11 @@ const resources = ref<ResourceDto[]>([])
 const episodesVisible = ref(false)
 const episodesLoading = ref(false)
 const episodeItems = ref<any[]>([])
+const episodeFilter = ref<'all' | 'present' | 'missing'>('all')
+const episodePresentCount = computed(() => episodeItems.value.filter(it => it.present).length)
+const episodeMissingCount = computed(() => episodeItems.value.length - episodePresentCount.value)
+const filteredEpisodeItems = computed(() => episodeFilter.value === 'all' ? episodeItems.value
+    : episodeItems.value.filter(it => !!it.present === (episodeFilter.value === 'present')))
 const eventsVisible = ref(false)
 const events = ref<EventDto[]>([])
 const detailVisible = ref(false)
@@ -1358,10 +1378,28 @@ const activateResource = (resource: ResourceDto) => {
   })
 }
 
+const pinResource = (resource: ResourceDto) => {
+  if (!current.value) return
+  axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/pin`).then(() => {
+    ElMessage.success('已钉选为主源,自动换源不再覆盖')
+    schedule(loadResources, 6000)
+    schedule(loadAll, 8000)
+  })
+}
+
+const unpinResource = (resource: ResourceDto) => {
+  if (!current.value) return
+  axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/unpin`).then(() => {
+    ElMessage.success('已取消钉选,恢复自动换源')
+    schedule(loadResources, 2000)
+  })
+}
+
 const showEpisodes = (row: SubscriptionDto) => {
   current.value = row
   episodesVisible.value = true
   episodesLoading.value = true
+  episodeFilter.value = 'all'
   const my = ++episodesSeq
   axios.get(`/api/media-subscriptions/${row.id}/episodes`).then(response => {
     if (my !== episodesSeq) return
@@ -1716,6 +1754,10 @@ const compactNumbers = (numbers: number[]) => {
   if (numbers.length <= 6) return numbers.join(',')
   return numbers.slice(0, 6).join(',') + ` 等${numbers.length}集`
 }
+
+/** 进度分母:官方总集数滞后于资源现实时(长番官方 1212/本地已到 1270)以观测最大集号兜底,避免 1243/1212 倒挂 */
+const progressTotal = (row: SubscriptionDto): number | null =>
+    Math.max(row.officialTotal ?? 0, row.expectedEpisodes ?? 0, row.maxEpisode ?? 0) || null
 
 const formatTime = (time: number | null) => {
   if (!time) return '-'
@@ -2150,6 +2192,10 @@ const formatClock = (time: number) => {
   display: flex;
   justify-content: center;
   margin-top: 14px;
+}
+
+.episode-filter {
+  margin-bottom: 10px;
 }
 
 .episode-matrix {

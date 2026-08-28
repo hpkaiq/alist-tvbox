@@ -172,6 +172,7 @@ public class BangumiMetadataProvider implements MetadataProvider {
             if (biliScheduleRefiner != null) {
                 // B站独播番剧实际更新时刻(如盗妖行 周二/四 9:00)校正默认 20:00,并登记 B站条目外链
                 biliClocked = biliScheduleRefiner.refine(details);
+                biliScheduleRefiner.refineAiredCount(details); // 官方已播集数:B站已上线最大集号取大(bgm 集数也常滞后)
             }
             if (playScheduleBridge != null && !biliClocked) {
                 playScheduleBridge.refine(details); // 豆瓣桥接带出播放源后校正爱优腾实际排播时刻;B站已校正则让位
@@ -183,13 +184,18 @@ public class BangumiMetadataProvider implements MetadataProvider {
         return details;
     }
 
+    /** 页数上限:50 页 × 100 = 5000 行,与追剧分集展示 MAX_EPISODE_ROWS 同口径(超长连载兜底,不至拉无界)。 */
+    private static final int EPISODE_PAGE_LIMIT = 50;
+
     /**
-     * 章节 API 分页拉全(https://api.bgm.tv/v0/episodes,每页上限 100,防长篇翻 5 页封顶):
+     * 章节 API 分页拉全(https://api.bgm.tv/v0/episodes,每页上限 100,翻到不满页即止):
      * 供本类与 {@link BangumiEpisodeBridge}(分集标题桥)共用。失败上抛,由调用方决定健康记录/静默。
+     * 页数上限必须覆盖千集级连载 —— 旧上限 5 页把航海王(bgm 1191 集)截到 500,桥接据此把官方
+     * 总/已播集数双双钉死 500,千集级真资源反被集号门禁当同名异剧拦截(线上订阅 48)。
      */
     static List<JsonNode> fetchEpisodePages(RestTemplate restTemplate, String subjectId) throws Exception {
         List<JsonNode> result = new ArrayList<>();
-        for (int page = 0; page < 5; page++) {
+        for (int page = 0; page < EPISODE_PAGE_LIMIT; page++) {
             ResponseEntity<String> response = restTemplate.exchange(
                     URI.create("https://api.bgm.tv/v0/episodes?subject_id=" + subjectId
                             + "&limit=100&offset=" + (page * 100)),

@@ -90,7 +90,7 @@ import static cn.har01d.alist_tvbox.util.Constants.TOKEN;
 public class SubscriptionService {
     private static final String PLUGIN_RUN_MODE = "plugin_run_mode";
     private static final String PLUGIN_RUN_MODE_PYTHON = "python";
-    private static final String ATVP_RUNTIME_REVISION = "resume-group-v1";
+    private static final String ATVP_RUNTIME_REVISION = "local-proxy-v1";
     private static final String AUTO_UPDATE_PG = "auto_update_pg";
     private static final String AUTO_UPDATE_ZX = "auto_update_zx";
     private static final String AUTO_UPDATE_XS = "auto_update_xs";
@@ -695,6 +695,12 @@ public class SubscriptionService {
             }
             overrideConfig(config, fixUrl(url.trim()), prefix, getConfigData(url.trim()));
         }
+
+        // 上游订阅的 spider 会在 overrideConfig 中直接写入全局字段,抢占 TVBox 唯一的主 spider 位,
+        // 导致本项目 spring.jar 不随订阅加载,其代理/播放同步等常驻服务不启动。
+        // 全局主 spider 固定为本项目 spring.jar;上游 spider 已在合并 sites 时降级为上游站点的 jar 属性。
+        // 用户在全局或订阅覆盖配置中显式指定 spider 时以用户为准(两处均在此后应用)。
+        config.put("spider", readHostAddress("/spring.jar"));
 
 //        injectCookies(config);
 
@@ -1576,7 +1582,9 @@ public class SubscriptionService {
         map.put("playbackSourceKind", "spider_plugin");
         map.put("playbackSourceKey", pluginSiteKey(plugin));
         map.put("playbackSourceName", plugin.getName());
-        map.put("local_proxy_config", rawPython || !nativePython ? localProxyConfig : new HashMap<>());
+        // 代理配置对所有运行模式下发:Java 转发由 PyProxy 读它调 VideoStreamProxy;
+        // Python 原生由 Atvp.py 读它,向后端声明 client-proxy 取直链,再经本地 /player 接口改写为分片代理地址。
+        map.put("local_proxy_config", localProxyConfig);
         if (StringUtils.isNotBlank(plugin.getExtend())) {
             map.put("data", plugin.getExtend());
         }
