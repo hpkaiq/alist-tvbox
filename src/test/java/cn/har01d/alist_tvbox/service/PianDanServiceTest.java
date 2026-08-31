@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.ExpectedCount.once;
@@ -52,7 +53,9 @@ class PianDanServiceTest {
     void setUp() {
         restTemplate = new RestTemplate();
         when(builder.build()).thenReturn(restTemplate);
-        service = new PianDanService(telegramService, settingRepository, subscriptionSourceService, builder, new ObjectMapper());
+        // TmdbEndpoint 即读即用:未配置镜像回落官方直连,不改变测试里的 URL 断言
+        lenient().when(settingRepository.findById("tmdb_api_host")).thenReturn(java.util.Optional.empty());
+        service = new PianDanService(telegramService, subscriptionSourceService, builder, new ObjectMapper(), new TmdbEndpoint(settingRepository));
     }
 
     @Test
@@ -694,5 +697,29 @@ class PianDanServiceTest {
         category.setType_name(name);
         category.setType_flag(0);
         return category;
+    }
+
+    @Test
+    void tmdbDetailCachedAcrossCallsWithinWindow() {
+        when(settingRepository.findById("tmdb_api_key")).thenReturn(Optional.empty());
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        String body = "{\"name\":\"外滩探秘\",\"overview\":\"简介\",\"first_air_date\":\"2024-01-01\","
+                + "\"vote_average\":7.5,\"genres\":[{\"name\":\"纪录\"}],"
+                + "\"credits\":{\"cast\":[{\"name\":\"甲\"},{\"name\":\"乙\"}]},"
+                + "\"seasons\":[{\"season_number\":0},{\"season_number\":1,\"air_date\":\"2024-01-01\",\"episode_count\":8},"
+                + "{\"season_number\":2,\"air_date\":null,\"episode_count\":0}]}"; // S2=已续订未开播占位季
+        server.expect(once(), request -> assertThat(request.getURI().getPath()).isEqualTo("/3/tv/100757"))
+                .andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+
+        MovieDetail first = service.tmdbDetail("tv", 100757);
+        MovieDetail second = service.tmdbDetail("tv", 100757); // 「媒体信息」条目:命中缓存,不重打 TMDB
+
+        server.verify(); // 只放行一次网络请求
+        assertThat(second).isNotNull();
+        assertThat(second.getVod_name()).isEqualTo("外滩探秘");
+        assertThat(second.getType_name()).isEqualTo("纪录"); // 类型归 type_name,不再冒充演员
+        assertThat(second.getVod_actor()).isEqualTo("甲 / 乙");
+        assertThat(first).isSameAs(second);
+        assertThat((List<?>) second.getExt()).singleElement().isEqualTo(1); // season 0(特典)与未开播占位季被滤掉
     }
 }

@@ -54,6 +54,65 @@ class MediaSubscriptionRemarksTest {
 
     // ---------- 🆕 角标 ----------
 
+    // ---------- 「最近更新」虚拟分类(updatedTime 近 7 天) ----------
+
+    @Test
+    void recentCategoryKeepsRecentlyUpdatedSubscriptions() {
+        MediaSubscription stale = subscription();
+        stale.setId(8);
+        long now = System.currentTimeMillis();
+        subscription.setUpdatedTime(now - 3L * 24 * 3600 * 1000);
+        stale.setUpdatedTime(now - 8L * 24 * 3600 * 1000);
+        Mockito.when(subscriptionRepository.findByUidOrderByCreatedTimeDesc(1)).thenReturn(List.of(subscription, stale));
+
+        List<String> names = service.contentList(1, "recent", null).getList()
+                .stream().map(cn.har01d.alist_tvbox.tvbox.MovieDetail::getVod_name).toList();
+        assertEquals(List.of("测试剧"), names, "7 天窗口外的订阅不进「最近更新」");
+    }
+
+    @Test
+    void recentCategoryIncludesAllStatuses() {
+        // 完结/暂停订阅只要有近期变动也在列 —— 口径是「有更新」而非「在播」
+        subscription.setStatus(MediaSubscription.STATUS_ENDED);
+        subscription.setUpdatedTime(System.currentTimeMillis() - 3600_000L);
+        Mockito.when(subscriptionRepository.findByUidOrderByCreatedTimeDesc(1)).thenReturn(List.of(subscription));
+
+        assertEquals(1, service.contentList(1, "recent", null).getList().size());
+    }
+
+    // ---------- 操作线路「订阅信息」缺集行 ----------
+
+    @Test
+    void statusTextIncludesMissingEpisodes() {
+        subscription.setOfficialEpisodes(20);
+        Mockito.when(subscriptionRepository.findById(7)).thenReturn(Optional.of(subscription));
+        Mockito.when(episodeSourceRepository.findNumbersBySubscriptionAndStatesIn(Mockito.eq(7), Mockito.anyCollection()))
+                .thenReturn(java.util.stream.IntStream.rangeClosed(1, 19).boxed().toList());
+
+        String text = service.subscriptionStatusText(1, 7);
+        assertTrue(text.contains("官方已播至第 20 集,缺第 20 集"), text);
+    }
+
+    @Test
+    void statusTextAllSyncedWhenNoGap() {
+        subscription.setOfficialEpisodes(5);
+        Mockito.when(subscriptionRepository.findById(7)).thenReturn(Optional.of(subscription));
+        Mockito.when(episodeSourceRepository.findNumbersBySubscriptionAndStatesIn(Mockito.eq(7), Mockito.anyCollection()))
+                .thenReturn(java.util.stream.IntStream.rangeClosed(1, 5).boxed().toList());
+
+        String text = service.subscriptionStatusText(1, 7);
+        assertTrue(text.contains("本地已全部同步"), text);
+    }
+
+    @Test
+    void statusTextSkipsMissingLineWithoutOfficialSnapshot() {
+        subscription.setOfficialEpisodes(null);
+        Mockito.when(subscriptionRepository.findById(7)).thenReturn(Optional.of(subscription));
+
+        String text = service.subscriptionStatusText(1, 7);
+        assertFalse(text.contains("官方已播"), "官方快照缺失不臆测: " + text);
+    }
+
     @Test
     void badgeCountsNewEpisodesAiredAfterCaughtUp() {
         // 用户故事:追平(看到第18集=当时最新)→ 第19集新播出 → 🆕1

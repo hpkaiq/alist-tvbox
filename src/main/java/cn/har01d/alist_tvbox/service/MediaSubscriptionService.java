@@ -20,6 +20,7 @@ import cn.har01d.alist_tvbox.entity.MediaSubscriptionEventRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionResource;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionResourceRepository;
+import cn.har01d.alist_tvbox.entity.Movie;
 import cn.har01d.alist_tvbox.entity.MovieRepository;
 import cn.har01d.alist_tvbox.entity.UserPreference;
 import cn.har01d.alist_tvbox.entity.UserPreferenceRepository;
@@ -59,6 +60,20 @@ import java.util.stream.Collectors;
 public class MediaSubscriptionService {
     public static final String CATEGORY_ID = "msub";
     public static final String VOD_ID_PREFIX = "msub:";
+    /** 片单条目「加入追剧」伪播放 id 前缀:msubadd-{vodId}(vodId 为片单形态 tmdb:tv:123 / s:{标题}),
+     *  PlayController 截前缀后按片单条目建订阅,播放器经 msg 通道收到回执。 */
+    public static final String SUBSCRIBE_PLAY_PREFIX = "msubadd-";
+    /** 片单条目「取消追剧」伪播放 id 前缀:msubdel-{vodId},取消与该条目同名的全部订阅(含多季)。 */
+    public static final String UNSUBSCRIBE_PLAY_PREFIX = "msubdel-";
+    /** 订阅操作线路伪播放 id 前缀:msubstat-{subId}(订阅信息)/ msubcheck-{subId}(轻量检查更新)/
+     *  msubinspect-{subId}(完整巡检,异步)/ msubunsub-{subId}(取消追剧),均 msg 回执。 */
+    public static final String STAT_PLAY_PREFIX = "msubstat-";
+    public static final String CHECK_PLAY_PREFIX = "msubcheck-";
+    public static final String INSPECT_PLAY_PREFIX = "msubinspect-";
+    public static final String UNSUBSCRIBE_SUB_PLAY_PREFIX = "msubunsub-";
+    /** 片单条目「媒体信息」伪播放 id 前缀:msubinfo-{vodId},msg 通道返回条目元数据,无任何副作用。
+     *  排在选集第一位:部分播放器内核进详情会自动触发第一集播放,第一条目不能是订阅动作。 */
+    public static final String INFO_PLAY_PREFIX = "msubinfo-";
     /** TVBox 分集标题美化开关(Setting,默认关):剧集列表显示「集数. 分集标题(大小)」替代文件名 */
     public static final String SETTING_EPISODE_TITLES = "msub_episode_titles";
     /** 资源侧"可播集"状态口径:列目录见过(LISTED)或取链成功过(VERIFIED)的集源行 —— 详情装配与角标同源。 */
@@ -125,9 +140,24 @@ public class MediaSubscriptionService {
         this.siteRepository = siteRepository;
     }
 
-    /** 订阅 token → 归属用户:用户名 token → 该用户;共享 token/空 → 首个管理员。与 live-follow/播放同步一致。 */
+    /** 订阅 token → 归属用户:凭证形态(u-{username}-{secret})验真或裸 u-{username} → 该用户;
+     * 共享 token/空 → 首个管理员(全局 tokens 无 u- 前缀,不撞车)。与 live-follow/播放同步一致。
+     * 必须先按凭证形态解析:带密钥 token 整段(含 '-' 的用户名拼接)不是合法用户名,裸形态查不到会误回落管理员。 */
+    /** token 归属用户(凭证形态优先、裸 u- 形态回退);全局/共享/无效 token 返回 null(管理级口径)。
+     * 供 /p 代理等只需「是否用户级 token」的调用方使用,不带 resolveUid 的首个 ADMIN 兜底。 */
+    public cn.har01d.alist_tvbox.entity.User resolveTokenUser(String token) {
+        if (StringUtils.isBlank(token) || "-".equals(token)) {
+            return null;
+        }
+        var user = userService.findUserByCredentialToken(token);
+        if (user == null) {
+            user = userService.findByUserVodToken(token);
+        }
+        return user;
+    }
+
     public int resolveUid(String token) {
-        var user = StringUtils.isBlank(token) || "-".equals(token) ? null : userService.findByUsername(token);
+        var user = resolveTokenUser(token);
         if (user == null) {
             user = userService.list().stream()
                     .filter(candidate -> candidate.getRole() == Role.ADMIN)
@@ -162,11 +192,13 @@ public class MediaSubscriptionService {
         // 季号兜底:片单/链接直订等入口不解析季号(片单曾硬编码 season=1),而条目名常写着"第四季"。
         // 季号错会同时击穿候选季过滤、SxxEyy 集号识别、播放列表集号解析三条链路,且都表现为"什么都没搜到"。
         subscription.setSeason(TextUtils.resolveSeason(request.getSeason(), subscription.getName()));
-        // 同名同季幂等:搜索/播放页「追更」按钮可连点、下一季订阅可重复提交,重复订阅会产生
-        // 两条 score=1000 候选抢主源 —— 已存在则直接复用(删除后重订不受影响)
+        // 同剧幂等(语义匹配,非精确名):剥季号后裸名相等且季号相容(任一方未标季即视为相容)——
+        // web TMDB 搜「末日地堡」订的 S3 与豆瓣片单「末日地堡 第三季」是同一部订阅,
+        // 精确名匹配会开出第二条重复条目;已存在则直接复用(删除后重订不受影响)
         Integer season = subscription.getSeason();
+        String bareName = TextUtils.stripSeasonSuffix(subscription.getName());
         MediaSubscription existing = subscriptionRepository.findByUidOrderByCreatedTimeDesc(uid).stream()
-                .filter(s -> subscription.getName().equals(s.getName()) && Objects.equals(season, s.getSeason()))
+                .filter(s -> matchesTitle(s, bareName, season))
                 .findFirst().orElse(null);
         if (existing != null) {
             log.info("media subscription already exists: uid={} {} season={}, reuse id {}", uid,
@@ -188,6 +220,7 @@ public class MediaSubscriptionService {
         subscription.setCrossDrive(request.getCrossDrive() != null && request.getCrossDrive());
         subscription.setCheckIntervalHours(request.getCheckIntervalHours() != null && request.getCheckIntervalHours() > 0
                 ? request.getCheckIntervalHours() : appProperties.getSubscription().getCheckIntervalHours());
+        subscription.setCustomAirClock(requireAirClock(request.getCustomAirClock()));
         subscription.setFilterConfig(serializeFilter(resolveFilter(uid, request.getFilter())));
         subscription.setMainDrives(serializeMainDrives(request.getMainDrives()));
         subscription.setStatus(MediaSubscription.STATUS_ACTIVE);
@@ -253,6 +286,12 @@ public class MediaSubscriptionService {
         if (request.getCheckIntervalHours() != null && request.getCheckIntervalHours() > 0) {
             subscription.setCheckIntervalHours(request.getCheckIntervalHours());
         }
+        if (request.getCustomAirClock() != null) {
+            subscription.setCustomAirClock(requireAirClock(request.getCustomAirClock()));
+            // 立即重放改写 schedule/nextAirTime(元数据刷新 24h 节流,等下轮太迟)并按新时刻重排
+            checkService.applyCustomAirClock(subscription);
+            checkService.scheduleNext(subscription);
+        }
         if (request.getFilter() != null) {
             subscription.setFilterConfig(serializeFilter(request.getFilter()));
             searchRelevant = true;
@@ -313,6 +352,11 @@ public class MediaSubscriptionService {
         List<Integer> sharesToUnmount = List.copyOf(new java.util.LinkedHashSet<>(shareIds));
         Runnable cleanup = () -> {
             for (Integer shareId : sharesToUnmount) {
+                // 共享挂载:share 仍被其它订阅引用时不卸载(换季只是本订阅重置,别人的挂载不动)
+                if (isShareReferencedByOthers(shareId, id)) {
+                    log.debug("share {} still referenced by another subscription, skip unmount on season reset", shareId);
+                    continue;
+                }
                 try {
                     shareService.deleteShare(shareId);
                 } catch (Exception e) {
@@ -347,6 +391,10 @@ public class MediaSubscriptionService {
         List<MediaSubscriptionResource> resources = resourceRepository.findBySubscriptionIdOrderByScoreDesc(id);
         for (MediaSubscriptionResource resource : resources) {
             if (resource.getShareId() != null) {
+                if (isShareReferencedByOthers(resource.getShareId(), id)) {
+                    log.debug("share {} still referenced by another subscription, skip unmount", resource.getShareId());
+                    continue;
+                }
                 try {
                     shareService.deleteShare(resource.getShareId());
                 } catch (Exception e) {
@@ -354,7 +402,7 @@ public class MediaSubscriptionService {
                 }
             }
         }
-        if (subscription.getShareId() != null) {
+        if (subscription.getShareId() != null && !isShareReferencedByOthers(subscription.getShareId(), id)) {
             try {
                 shareService.deleteShare(subscription.getShareId());
             } catch (Exception e) {
@@ -415,6 +463,7 @@ public class MediaSubscriptionService {
             MediaSubscriptionResourceDto dto = new MediaSubscriptionResourceDto();
             dto.setId(r.getId());
             dto.setLink(r.getLink());
+            dto.setPassword(r.getPassword());
             dto.setType(r.getType());
             dto.setDriveName(r.getType() == null ? null : DriveId.toDrive(r.getType()));
             dto.setSource(r.getSource());
@@ -470,7 +519,9 @@ public class MediaSubscriptionService {
             detail.setVod_id(VOD_ID_PREFIX + subscription.getId());
             detail.setVod_name(displayName(subscription));
             detail.setVod_pic(absoluteCover(coverOf(subscription)));
-            detail.setVod_remarks(buildRemarks(subscription));
+            String rating = compactRatingSuffix(subscription);
+            detail.setVod_remarks(buildRemarks(subscription)
+                    + (rating.isEmpty() ? "" : " · " + rating));
             list.add(detail);
         }
         result.setList(list);
@@ -480,11 +531,61 @@ public class MediaSubscriptionService {
         return result;
     }
 
+    /** 片单/订阅标题语义匹配:裸名(剥季号)相等 + 季号相容(任一方未标季即相容,双方都标则须相等)。 */
+    private static boolean matchesTitle(MediaSubscription subscription, String bareName, Integer season) {
+        if (!TextUtils.stripSeasonSuffix(subscription.getName()).equals(bareName)) {
+            return false;
+        }
+        return season == null || subscription.getSeason() == null || season.equals(subscription.getSeason());
+    }
+
+    /** 豆瓣片单条目绑 id 优先路:本地豆瓣库精确名匹配(Movie.id 即豆瓣 subject id,零网络)。
+     *  同名多部(翻拍)本地无年份无法消歧,返回 null 由调用方回落 suggest 严格匹配。 */
+    public Integer localDoubanId(String name) {
+        if (StringUtils.isBlank(name)) {
+            return null;
+        }
+        var ids = movieRepository.getByName(name.trim()).stream()
+                .map(Movie::getId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        return ids.size() == 1 ? ids.get(0) : null;
+    }
+
+    /** 片单条目是否已在追:标题语义匹配(「末日地堡 第三季」命中 web 订的「末日地堡」S3)。 */
+    public boolean isSubscribedTitle(int uid, String title) {
+        String bareName = TextUtils.stripSeasonSuffix(title);
+        return subscriptionRepository.findByUidOrderByCreatedTimeDesc(uid).stream()
+                .anyMatch(s -> matchesTitle(s, bareName, TextUtils.parseTitleSeason(title)));
+    }
+
+    /** 与片单条目同剧的订阅 id 列表:裸名相等;季号(显式或条目名解析)已知则只取该季,
+     *  完全未标季则同名各季一并撤销(回执报部数)。 */
+    public List<Integer> subscriptionIdsByTitle(int uid, String title, Integer explicitSeason) {
+        String bareName = TextUtils.stripSeasonSuffix(title);
+        Integer season = explicitSeason != null ? explicitSeason : TextUtils.parseTitleSeason(title);
+        return subscriptionRepository.findByUidOrderByCreatedTimeDesc(uid).stream()
+                .filter(s -> matchesTitle(s, bareName, season))
+                .map(MediaSubscription::getId)
+                .toList();
+    }
+
+    /** 片单条目封面 → 客户端可用地址:直链图床包 /images 代理(防盗链/被墙),再按当前请求 host 重建绝对地址。 */
+    public String absoluteClientCover(String cover) {
+        return absoluteCover(cover);
+    }
+
+    /** 「最近更新」口径:updatedTime(集数变化/编辑时刷新)近 7 天。 */
+    private static final long RECENT_WINDOW_MS = 7L * 24 * 3600 * 1000;
+
     private boolean filterByStatus(MediaSubscription subscription, String status) {
         if (StringUtils.isBlank(status) || "all".equals(status)) {
             return true;
         }
         return switch (status) {
+            case "recent" -> subscription.getUpdatedTime() != null
+                    && System.currentTimeMillis() - subscription.getUpdatedTime() <= RECENT_WINDOW_MS;
             case "active" -> !MediaSubscription.STATUS_ENDED.equals(subscription.getStatus())
                     && !MediaSubscription.STATUS_PAUSED.equals(subscription.getStatus());
             case "ended" -> MediaSubscription.STATUS_ENDED.equals(subscription.getStatus());
@@ -568,7 +669,7 @@ public class MediaSubscriptionService {
                         sizeByEpisode.merge(entry.getKey(), file.size(), Math::max);
                         String path = file.dir() + "/" + file.name();
                         driveLine(driveLines, target.drive()).putIfAbsent(entry.getKey(),
-                                fileEntry(site, path, file.name(), file.size()));
+                                fileEntry(site, path, file.name(), file.size(), subscription.getUid()));
                     }
                 }
             } catch (Exception e) {
@@ -608,7 +709,7 @@ public class MediaSubscriptionService {
                 if (drive != null) {
                     String path = resource.getMountPath() + "/" + row.getRelPath();
                     driveLine(driveLines, drive).putIfAbsent(episode,
-                            fileEntry(site, path, row.getRelPath(), row.getFileSize() == null ? 0L : row.getFileSize()));
+                            fileEntry(site, path, row.getRelPath(), row.getFileSize() == null ? 0L : row.getFileSize(), subscription.getUid()));
                 }
             }
         }
@@ -624,6 +725,7 @@ public class MediaSubscriptionService {
         }
         rewriteEpisodeTitles(subscription, merged, driveLines);
         String[] lines = buildTvBoxPlayLines(id, merged, driveLines, Set.copyOf(checkService.mainDrives(subscription)));
+        appendActionLine(lines, id);
         MovieDetail detail = new MovieDetail();
         applySubscriptionMetadata(detail, subscription);
         detail.setVod_play_from(lines[0]);
@@ -641,11 +743,11 @@ public class MediaSubscriptionService {
      * 剧完结停止回放一年后由 clean 自然回收(默认 7 天有效期会把历史里的物理地址变成死链)。 */
     private static final java.time.Duration DRIVE_LINE_PID_TTL = java.time.Duration.ofDays(365);
 
-    /** 盘线路条目:`文件名(大小)$1@{pid}` —— pid 经 PlayUrl 长效注册(纯 DB),点击时才解析真链。 */
-    private String fileEntry(cn.har01d.alist_tvbox.entity.Site site, String path, String relPath, long size) {
+    /** 盘线路条目:`文件名(大小)$1@{pid}` —— pid 经 PlayUrl 长效注册(纯 DB,带订阅归属),点击时才解析真链。 */
+    private String fileEntry(cn.har01d.alist_tvbox.entity.Site site, String path, String relPath, long size, int ownerUid) {
         String name = relPath.contains("/") ? relPath.substring(relPath.lastIndexOf('/') + 1) : relPath;
         String sizeText = size > 0 ? "(" + cn.har01d.alist_tvbox.util.Utils.byte2size(size) + ")" : "";
-        return name + sizeText + "$1@" + proxyService.generateProxyUrl(site, path, DRIVE_LINE_PID_TTL);
+        return name + sizeText + "$1@" + proxyService.generateProxyUrl(site, path, DRIVE_LINE_PID_TTL, ownerUid);
     }
 
     /** 逻辑线路分集标题:`NN. 分集标题(大小)`(分集标题读元数据快照零网络;无标题兜底"第N集",无大小省略括号)。 */
@@ -681,7 +783,8 @@ public class MediaSubscriptionService {
     }
 
     /** 订阅元数据覆写(vod_id/名称/封面/状态 + 快照详情字段)。快照读 media_metadata 持久层零网络,
-     * 无快照时仅基础字段 —— 替代旧版按挂载路径名匹配豆瓣/TMDB(路径名带资源后缀既慢又易错)。 */
+     * 快照缺失的字段再用 douban_id 查本地豆瓣库(Movie 行)补空;无快照无豆瓣行时仅基础字段 ——
+     * 替代旧版按挂载路径名匹配豆瓣/TMDB(路径名带资源后缀既慢又易错)。 */
     private void applySubscriptionMetadata(MovieDetail detail, MediaSubscription subscription) {
         detail.setVod_id(VOD_ID_PREFIX + subscription.getId());
         detail.setVod_name(displayName(subscription));
@@ -689,8 +792,10 @@ public class MediaSubscriptionService {
         if (subscription.getDoubanId() != null) {
             detail.setDbid(subscription.getDoubanId());
         }
-        String remarks = buildRemarks(subscription);
+        String remarks = "";
         MetadataDetails meta = null;
+        Movie douban = subscription.getDoubanId() == null ? null
+                : movieRepository.findById(subscription.getDoubanId()).orElse(null);
         if (StringUtils.isNotBlank(subscription.getMetaProvider()) && StringUtils.isNotBlank(subscription.getMetaId())) {
             try {
                 meta = metadataService.cachedDetails(
@@ -707,10 +812,10 @@ public class MediaSubscriptionService {
                         detail.setType_name(String.join(",", meta.getGenres()));
                     }
                     if (meta.getCountries() != null && !meta.getCountries().isEmpty()) {
-                        detail.setVod_area(String.join(",", meta.getCountries()));
+                        detail.setVod_area(localizeArea(String.join(",", meta.getCountries())));
                     }
                     if (meta.getLanguages() != null && !meta.getLanguages().isEmpty()) {
-                        detail.setVod_lang(String.join(",", meta.getLanguages()));
+                        detail.setVod_lang(localizeLang(String.join(",", meta.getLanguages())));
                     }
                     if (meta.getDirectors() != null && !meta.getDirectors().isEmpty()) {
                         detail.setVod_director(String.join(",", meta.getDirectors()));
@@ -720,9 +825,8 @@ public class MediaSubscriptionService {
                                 .map(CastMember::getName).filter(StringUtils::isNotBlank)
                                 .collect(Collectors.joining(",")));
                     }
-                    if (StringUtils.isNotBlank(meta.getRating())) {
-                        remarks += " · 评分" + meta.getRating();
-                    }
+                    // 评分不进 remarks(手机卡片/部分播放器详情 remarks 显示不全),
+                    // 紧凑单评分统一由 compactRatingSuffix 收口,全量多源评分挪进正文顶部
                 }
             } catch (Exception e) {
                 log.debug("load metadata snapshot for subscription {} failed: {}", subscription.getId(), e.getMessage());
@@ -730,7 +834,115 @@ public class MediaSubscriptionService {
         }
         // 简介整体替换为快照 overview(无快照则清空)—— getPlaylist 对非 web 请求预填的"站点:挂载路径"不外泄
         detail.setVod_content(meta == null ? null : meta.getOverview());
+        // 本地豆瓣库兜底:快照缺失的字段用 douban_id 对应的 Movie 行补齐(只补空,不覆盖快照值)
+        if (douban != null) {
+            if (detail.getVod_year() == null && douban.getYear() != null) {
+                detail.setVod_year(String.valueOf(douban.getYear()));
+            }
+            if (StringUtils.isBlank(detail.getType_name()) && StringUtils.isNotBlank(douban.getGenre())) {
+                detail.setType_name(douban.getGenre());
+            }
+            if (StringUtils.isBlank(detail.getVod_area()) && StringUtils.isNotBlank(douban.getCountry())) {
+                detail.setVod_area(douban.getCountry());
+            }
+            if (StringUtils.isBlank(detail.getVod_lang()) && StringUtils.isNotBlank(douban.getLanguage())) {
+                detail.setVod_lang(douban.getLanguage());
+            }
+            if (StringUtils.isBlank(detail.getVod_director()) && StringUtils.isNotBlank(douban.getDirectors())) {
+                detail.setVod_director(douban.getDirectors());
+            }
+            if (StringUtils.isBlank(detail.getVod_actor()) && StringUtils.isNotBlank(douban.getActors())) {
+                detail.setVod_actor(douban.getActors());
+            }
+            if (StringUtils.isBlank(detail.getVod_pic()) && StringUtils.isNotBlank(douban.getCover())) {
+                detail.setVod_pic(absoluteCover(douban.getCover()));
+            }
+            if (StringUtils.isBlank(detail.getVod_content()) && StringUtils.isNotBlank(douban.getDescription())) {
+                detail.setVod_content(douban.getDescription());
+            }
+        }
+        remarks += compactRatingSuffix(subscription);
+        // 详情 remarks 只放评分(集数进度列表页已有,详情页正文顶部还有全量多源评分行)
+        if (meta != null && meta.getRatings() != null && !meta.getRatings().isEmpty()) {
+            StringBuilder line = new StringBuilder("评分:");
+            for (String source : List.of("douban", "tmdb", "bangumi")) {
+                String score = meta.getRatings().get(source);
+                if (StringUtils.isNotBlank(score)) {
+                    if (line.charAt(line.length() - 1) != ':') {
+                        line.append(" / ");
+                    }
+                    line.append(ratingSourceLabel(source)).append(' ').append(score);
+                }
+            }
+            if (line.length() > 3) {
+                detail.setVod_content(line
+                        + (StringUtils.isBlank(detail.getVod_content()) ? "" : "\n" + detail.getVod_content()));
+            }
+        }
         detail.setVod_remarks(remarks);
+    }
+
+    /** 订阅元数据快照(持久层零网络);无 provider/metaId 或读取失败返回 null。 */
+    private MetadataDetails loadSubscriptionSnapshot(MediaSubscription subscription) {
+        if (StringUtils.isBlank(subscription.getMetaProvider()) || StringUtils.isBlank(subscription.getMetaId())) {
+            return null;
+        }
+        try {
+            return metadataService.cachedDetails(
+                    subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+        } catch (Exception e) {
+            log.debug("load metadata snapshot for subscription {} failed: {}",
+                    subscription.getId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** 紧凑单评分(裸文本,无分隔符;列表拼在进度后,详情单独作 remarks):
+     * 豆瓣(快照 Map → 本地豆瓣库)优先,回落 TMDB → Bangumi → 旧快照单值 rating。 */
+    private String compactRatingSuffix(MediaSubscription subscription) {
+        MetadataDetails meta = loadSubscriptionSnapshot(subscription);
+        Map<String, String> ratings = meta == null ? null : meta.getRatings();
+        String doubanScore = ratings == null ? null : ratings.get("douban");
+        if (StringUtils.isBlank(doubanScore) && subscription.getDoubanId() != null) {
+            Movie douban = movieRepository.findById(subscription.getDoubanId()).orElse(null);
+            doubanScore = douban == null ? null : douban.getDbScore();
+        }
+        if (StringUtils.isNotBlank(doubanScore)) {
+            return "豆瓣 " + doubanScore;
+        }
+        if (ratings != null) {
+            for (String source : List.of("tmdb", "bangumi")) {
+                String score = ratings.get(source);
+                if (StringUtils.isNotBlank(score)) {
+                    return ratingSourceLabel(source) + " " + score;
+                }
+            }
+        }
+        if (meta != null && StringUtils.isNotBlank(meta.getRating())) {
+            return ratingSourceLabel(subscription.getMetaProvider()) + " " + meta.getRating();
+        }
+        return "";
+    }
+
+    /** 评分来源标签:tmdb→TMDB,bangumi→Bangumi(首字母大写),douban→豆瓣。 */
+    private static String ratingSourceLabel(String metaProvider) {
+        if ("douban".equalsIgnoreCase(metaProvider)) {
+            return "豆瓣";
+        }
+        if ("tmdb".equalsIgnoreCase(metaProvider)) {
+            return "TMDB";
+        }
+        return metaProvider.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
+                + metaProvider.substring(1).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** 快照里的国家/语言代码转中文展示(TMDB 存 ISO 码:CN/zh 等)。 */
+    private static String localizeArea(String code) {
+        return "CN".equalsIgnoreCase(code) ? "中国" : code;
+    }
+
+    private static String localizeLang(String code) {
+        return "zh".equalsIgnoreCase(code) || "zh-CN".equalsIgnoreCase(code) ? "中文" : code;
     }
 
     /** 链接解析专用客户端(跟随重定向;String 收包 + UTF-8 默认字符集防中文乱码) */
@@ -947,14 +1159,14 @@ public class MediaSubscriptionService {
         }
     }
 
-    /** 播出时间轴:昨天 → 未来 7 天,每天更新的订阅与媒体播出时间。日程来自 provider 分集日期快照,窗口外退化为 nextAirTime。 */
+    /** 播出时间轴:昨天 → 未来 8 天,每天更新的订阅与媒体播出时间。日程来自 provider 分集日期快照,窗口外退化为 nextAirTime。 */
     public List<Map<String, Object>> schedule(int uid) {
         java.time.ZoneId zone = java.time.ZoneId.of(Constants.ZONE_ID);
         java.time.LocalDate startDate = java.time.LocalDate.now(zone).minusDays(1);
         String[] weekdays = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
         List<Map<String, Object>> days = new ArrayList<>();
         List<List<Map<String, Object>>> dayItems = new ArrayList<>();
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 10; i++) {
             java.time.LocalDate date = startDate.plusDays(i);
             String label = switch (i) {
                 case 0 -> "昨天";
@@ -962,7 +1174,7 @@ public class MediaSubscriptionService {
                 case 2 -> "明天";
                 default -> weekdays[date.getDayOfWeek().getValue() - 1];
             };
-            Map<String, Object> day = new java.util.LinkedHashMap<>();
+            Map<String, Object> day = new LinkedHashMap<>();
             day.put("label", label);
             day.put("date", date.getMonthValue() + "/" + date.getDayOfMonth());
             day.put("today", i == 1);
@@ -1339,6 +1551,7 @@ public class MediaSubscriptionService {
             rewriteEpisodeTitles(subscription, merged, driveLines);
             String[] lines = buildTvBoxPlayLines(subscription.getId(), merged, driveLines,
                     Set.copyOf(checkService.mainDrives(subscription)));
+            appendActionLine(lines, subscription.getId());
             detail.setVod_play_from(lines[0]);
             detail.setVod_play_url(lines[1]);
             kickDriveLines(subscription, driveLines.keySet());
@@ -1408,6 +1621,73 @@ public class MediaSubscriptionService {
             urls.add(String.join("#", line.getValue().values()));
         }
         return new String[]{String.join("$$$", from), String.join("$$$", urls)};
+    }
+
+    /** 详情末尾追加「操作」线路:首条「订阅信息」纯占位零副作用 —— 部分内核切线路会自动触发第 1 条,
+     * 动作必须让位(与片单首条「媒体信息」同款防御);「检查更新」居次,点按同步轻量检查后 msg 回执;
+     * 「立即巡检」居三,点按异步触发完整巡检(搜索/挂载/缺集补全,分钟级),msg 只回执已开始;
+     * 「取消追剧」居末,删除订阅与全部挂载记录 —— 播放器端先弹窗确认,确认后才发请求。 */
+    private static void appendActionLine(String[] lines, int subscriptionId) {
+        lines[0] = lines[0] + "$$$操作";
+        lines[1] = lines[1] + "$$$订阅信息$msubstat-" + subscriptionId
+                + "#检查更新$msubcheck-" + subscriptionId
+                + "#立即巡检$msubinspect-" + subscriptionId
+                + "#取消追剧$msubunsub-" + subscriptionId;
+    }
+
+    /** TVBox 操作线路「订阅信息」:当前状态/进度文本,零网络纯读库。 */
+    public String subscriptionStatusText(int uid, int subId) {
+        MediaSubscription subscription = getOwned(uid, subId);
+        String text = displayName(subscription) + " · " + buildRemarks(subscription);
+        String missing = missingEpisodesSummary(subscription);
+        if (missing != null) {
+            text += "\n" + missing;
+        }
+        return text;
+    }
+
+    /** 订阅信息缺集行(纯读库,不刷元数据):官方已播快照 vs 本地可播集(LISTED/VERIFIED)。
+     *  官方快照缺失返回 null(不臆测);全部同步返回「已全部同步」;缺集列号,超 8 个收敛为区间。 */
+    private String missingEpisodesSummary(MediaSubscription subscription) {
+        int official = subscription.getOfficialEpisodes() == null ? 0 : subscription.getOfficialEpisodes();
+        if (official <= 0) {
+            return null;
+        }
+        Set<Integer> local = new java.util.HashSet<>(episodeSourceRepository
+                .findNumbersBySubscriptionAndStatesIn(subscription.getId(), LIVE_EPISODE_STATES));
+        List<Integer> missing = new ArrayList<>();
+        for (int i = 1; i <= Math.min(official, MAX_EPISODE_ROWS); i++) {
+            if (!local.contains(i)) {
+                missing.add(i);
+            }
+        }
+        if (missing.isEmpty()) {
+            return "官方已播至第 " + official + " 集,本地已全部同步";
+        }
+        String summary = missing.size() <= 8
+                ? missing.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+                : missing.get(0) + "-" + missing.get(missing.size() - 1) + " 等 " + missing.size() + " 集";
+        return "官方已播至第 " + official + " 集,缺第 " + summary + " 集";
+    }
+
+    /** TVBox 操作线路「检查更新」:同步轻量检查(刷新元数据→官方已播 vs 本地已有),返回结论文本。 */
+    public String checkUpdateText(int uid, int subId) {
+        getOwned(uid, subId);
+        return checkService.checkUpdateNow(uid, subId);
+    }
+
+    /** TVBox 操作线路「立即巡检」:异步触发完整巡检(搜索/挂载/缺集补全,分钟级),回执只报已开始。 */
+    public void inspectAsync(int uid, int subId) {
+        getOwned(uid, subId);
+        checkService.checkAsync(uid, subId);
+    }
+
+    /** TVBox 操作线路「取消追剧」:删除订阅及全部挂载(与网页删除同链路),返回回执文本。 */
+    public String unsubscribeText(int uid, int subId) {
+        MediaSubscription subscription = getOwned(uid, subId);
+        String name = displayName(subscription);
+        delete(uid, subId);
+        return "已取消追剧:" + name;
     }
 
     /** TVBox 分集标题美化(Setting {@link #SETTING_EPISODE_TITLES},默认关):`NN. 分集标题(大小)` 替换文件名。
@@ -2178,6 +2458,15 @@ public class MediaSubscriptionService {
         return subscription;
     }
 
+    /** 共享挂载守卫:该 share 仍被其它订阅(主源或资源行)引用时不卸载 —— 内容继续有效,别人还在看。 */
+    private boolean isShareReferencedByOthers(Integer shareId, int subscriptionId) {
+        if (shareId == null) {
+            return false;
+        }
+        return subscriptionRepository.existsByShareIdAndIdNot(shareId, subscriptionId)
+                || resourceRepository.existsByShareIdAndSubscriptionIdNot(shareId, subscriptionId);
+    }
+
     private String buildMountPath(MediaSubscription subscription) {
         String slug = subscription.getName().replaceAll("[\\s/\\\\:*?\"<>|#@$%\\.、,]+", "-");
         slug = StringUtils.strip(slug, "-");
@@ -2193,10 +2482,37 @@ public class MediaSubscriptionService {
         // 季后缀(第 2 季起):同一 TMDB tv id 跨季共用,不带季号时并行多季订阅(含「多季联动」入口)
         // 会生成同一路径互相覆盖挂载;仅创建时定名,存量订阅路径不动
         String seasonSuffix = seasonSuffix(subscription);
+        String base;
         if (tag != null) {
-            return Constants.SUBSCRIPTION_MOUNT_ROOT + slug + " " + tag + seasonSuffix;
+            base = Constants.SUBSCRIPTION_MOUNT_ROOT + slug + " " + tag + seasonSuffix;
+        } else {
+            base = Constants.SUBSCRIPTION_MOUNT_ROOT + subscription.getId() + "-" + slug + seasonSuffix;
         }
-        return Constants.SUBSCRIPTION_MOUNT_ROOT + subscription.getId() + "-" + slug + seasonSuffix;
+        // 挂载(FOLLOW)模式共享挂载路径:多个用户追同一部剧共用同一路径背后的分享挂载,
+        // 播放历史按 uid 隔离互不影响;仅转存(TRANSFER)模式挂的是个人网盘,必须独占路径。
+        // 转存路径构造级带 uid 段(uid>0):跨用户天然不撞,从根上堵并发同路径劫持 —— 不能用库级
+        // 全局唯一索引,FOLLOW 的共享挂载收编(同路径复用主源)要求允许重复 mount_path
+        if (MediaSubscription.MODE_TRANSFER.equals(subscription.getMode())) {
+            String path = subscription.getUid() > 0 ? base + " u" + subscription.getUid() : base;
+            return ensureUniqueMountPath(path, subscription.getUid());
+        }
+        return base;
+    }
+
+    /**
+     * mountPath 唯一化(仅转存模式):转存挂的是个人网盘必须独占路径,被占用时追加 uid 段消歧。
+     * 挂载模式共享路径不经过这里;仅影响新建订阅,存量路径不动。
+     */
+    private String ensureUniqueMountPath(String path, int uid) {
+        if (!subscriptionRepository.existsByMountPath(path)) {
+            return path;
+        }
+        String candidate = path + " u" + uid;
+        int n = 2;
+        while (subscriptionRepository.existsByMountPath(candidate) && n < 100) {
+            candidate = path + " u" + uid + "-" + n++;
+        }
+        return candidate;
     }
 
     /** 挂载目录季后缀:第 2 季起追加 " Sxx",首季/未标注不加(保持既有首季路径形态)。 */
@@ -2364,6 +2680,18 @@ public class MediaSubscriptionService {
         }
     }
 
+    /** 校验手动播出时刻:空=清除(null),"H:mm"/"HH:mm" 归一为 "HH:mm",非法格式拒绝。 */
+    private static String requireAirClock(String clock) {
+        if (StringUtils.isBlank(clock)) {
+            return null;
+        }
+        String normalized = MediaSubscriptionCheckService.normalizeAirClock(clock);
+        if (normalized == null) {
+            throw new BadRequestException("播出时刻格式应为 HH:mm");
+        }
+        return normalized;
+    }
+
     MediaSubscriptionDto toDto(MediaSubscription subscription) {
         MediaSubscriptionDto dto = new MediaSubscriptionDto();
         dto.setId(subscription.getId());
@@ -2392,6 +2720,7 @@ public class MediaSubscriptionService {
         dto.setMissingEpisodes(missingEpisodes(subscription));
         dto.setStallCount(subscription.getStallCount());
         dto.setCheckIntervalHours(subscription.getCheckIntervalHours());
+        dto.setCustomAirClock(subscription.getCustomAirClock());
         dto.setNextCheckTime(subscription.getNextCheckTime());
         dto.setLastCheckTime(subscription.getLastCheckTime());
         dto.setCreatedTime(subscription.getCreatedTime());
