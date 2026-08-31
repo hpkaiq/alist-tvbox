@@ -14,6 +14,8 @@ public class MediaSubscriptionResourceDto {
     private String source;
     private String title;
     private Integer episodesFound;
+    /** 单集平均文件大小(字节,来自已记录的分集集源行;未探测过为 null) */
+    private Long avgFileSize;
     private Integer score;
     /** 挂载生命周期:CANDIDATE(池内)/MOUNTED(已挂载)/RETIRED(已退役)/REJECTED(盘检判死) */
     private String state;
@@ -21,6 +23,8 @@ public class MediaSubscriptionResourceDto {
     private boolean primary;
     /** 手动钉选:换源候选序置顶、归属复核豁免(用户否决自动换源) */
     private boolean pinned;
+    /** 资源级起始集号:该资源第 1 集对应全剧第 N 集(null = 不平移)。季包资源混进连续编号订阅时用 */
+    private Integer startEpisode;
     private Long checkedTime;
     private long createdTime;
 }

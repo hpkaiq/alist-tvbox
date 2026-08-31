@@ -5,7 +5,9 @@ import cn.har01d.alist_tvbox.domain.TaskResult;
 import cn.har01d.alist_tvbox.domain.TaskStatus;
 import cn.har01d.alist_tvbox.dto.MetaDto;
 import cn.har01d.alist_tvbox.dto.Versions;
+import cn.har01d.alist_tvbox.dto.MovieDiffPayload;
 import cn.har01d.alist_tvbox.entity.Alias;
+import cn.har01d.alist_tvbox.entity.TmdbRepository;
 import cn.har01d.alist_tvbox.entity.AliasRepository;
 import cn.har01d.alist_tvbox.entity.Meta;
 import cn.har01d.alist_tvbox.entity.MetaRepository;
@@ -23,6 +25,7 @@ import cn.har01d.alist_tvbox.util.H2SqlConverter;
 import cn.har01d.alist_tvbox.util.TextUtils;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -56,6 +59,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.time.Instant;
+import java.io.IOException;
+import java.util.TreeSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -71,6 +77,10 @@ import static cn.har01d.alist_tvbox.util.Constants.USER_AGENT;
 @Service
 public class DoubanService {
     private static final int BATCH_SIZE = 1000;
+    /** diff 文件失败重试上限(整个文件重放,DELETE+INSERT 幂等)。 */
+    private static final int MAX_DIFF_ATTEMPTS = 3;
+    private static final String DIFF_SUCCESS = "SUCCESS";
+    private static final String DIFF_FAILED = "FAILED";
     private static final Pattern NUMBER = Pattern.compile("Season (\\d{1,2})");
     private static final Pattern NUMBER2 = Pattern.compile("SE(\\d{1,2})");
     private static final Pattern NUMBER3 = Pattern.compile("^S(\\d{1,2})$");
@@ -91,6 +101,8 @@ public class DoubanService {
     private final SiteService siteService;
     private final TaskService taskService;
     private final FileDownloader fileDownloader;
+    private final TmdbRepository tmdbRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private final RestTemplate restTemplate;
     private final JdbcTemplate jdbcTemplate;
@@ -108,6 +120,7 @@ public class DoubanService {
                          SiteService siteService,
                          TaskService taskService,
                          FileDownloader fileDownloader,
+                         TmdbRepository tmdbRepository,
                          RestTemplateBuilder builder,
                          JdbcTemplate jdbcTemplate,
                          Environment environment) {
@@ -119,6 +132,7 @@ public class DoubanService {
         this.siteService = siteService;
         this.taskService = taskService;
         this.fileDownloader = fileDownloader;
+        this.tmdbRepository = tmdbRepository;
         this.restTemplate = builder
                 .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
@@ -130,19 +144,27 @@ public class DoubanService {
     @PostConstruct
     public void setup() {
         try {
-            Path path = Utils.getDataPath("atv", "movie_version");
-            if (Files.exists(path)) {
-                List<String> lines = Files.readAllLines(path);
-                if (!lines.isEmpty()) {
-                    settingRepository.save(new Setting(MOVIE_VERSION, lines.get(0).trim()));
+            // 仅首次启动(Setting 缺失)才从 movie_version 文件播种版本 —— 文件在下载 diff.zip 时
+            // 就被 zip 内的 movie_version 覆盖(先于 apply),无条件回写会把「已下载未应用」永久跳过:
+            // apply 失败/中断/库回滚后,版本号被文件顶到高位,缺的 sql 文件永不补放(线上 1317-1339 整批丢失实证)。
+            if (settingRepository.findById(MOVIE_VERSION).isEmpty()) {
+                Path path = Utils.getDataPath("atv", "movie_version");
+                if (Files.exists(path)) {
+                    List<String> lines = Files.readAllLines(path);
+                    if (!lines.isEmpty()) {
+                        settingRepository.save(new Setting(MOVIE_VERSION, lines.get(0).trim()));
+                    }
                 }
             }
         } catch (Exception e) {
             log.warn("", e);
         }
 
+        // init-xiaoya.sh 在基线升级时解包 data.zip 重灌基线并把镜像的 base_version 拷到 /data/atv/:
+        // 标记存在=基线刚被重灌 → 版本号回到基线、中和 data.sql、清空 movie_diff 让全部 diff 重放。
+        // (曾误读 /tmp/base_version,无人写该路径,分支从不触发 —— 存量部署的破坏性 data.sql 因此每启重放。)
         if (metaRepository.count() > 10000) {
-            Path source = Path.of("/tmp/base_version");
+            Path source = Utils.getDataPath("atv", "base_version");
             if (Files.exists(source)) {
                 try {
                     settingRepository.save(new Setting(MOVIE_VERSION, Files.readString(source).trim()));
@@ -156,13 +178,54 @@ public class DoubanService {
                     log.warn("", e);
                 }
 
-                log.debug("reset data.sql");
+                log.info("movie base restored, reset data.sql and clear movie_diff for full replay");
                 writeText("data.sql", "SELECT 1;");
+                try {
+                    jdbcTemplate.update("DELETE FROM movie_diff");
+                } catch (Exception e) {
+                    log.warn("clear movie_diff after base restore failed", e);
+                }
             }
         }
 
+        neutralizeBaseDataScript();
+
         fixMetaId();
         runCmd();
+        // 开机自检:补放 movie_diff 无记录(历史缺口/新文件)或 FAILED 未达重试上限的 diff 文件。
+        // 表启用前放过的文件也没有记录 → 首次开机会整体重放一遍(DELETE+INSERT 幂等),顺带修复历史缺口。
+        if (Files.exists(Utils.getDataPath("atv", "sql"))) {
+            executor.execute(this::applyPendingDiffFiles);
+        }
+    }
+
+    /**
+     * 中和 xiaoya 基础数据脚本:spring.sql.init 每次启动都执行 data.sql,而它是
+     * DROP+CREATE 全量还原 —— 每次重启把 MOVIE/META 打回基线,diff 行全灭
+     * (线上「diff 应用成功后行消失」「重启后元数据丢失」两个形态的共同根因)。
+     * 基线已载入(库里有数据)就把 data.sql 改写为空操作,后续重启不再破坏;
+     * 本次已被抹掉的行,由清空 movie_diff 让全部 diff 重放来恢复(它们本就是基线之上的增量)。
+     * 要重新灌基线:放回全量 data.sql 并清空 movie_diff。
+     */
+    private void neutralizeBaseDataScript() {
+        try {
+            Path dataSql = Utils.getDataPath("atv", "data.sql");
+            if (!Files.exists(dataSql) || movieRepository.count() < 10000) {
+                return;
+            }
+            String firstLine;
+            try (var reader = Files.newBufferedReader(dataSql)) {
+                firstLine = reader.readLine();
+            }
+            if (firstLine == null || !firstLine.startsWith("DROP TABLE")) {
+                return;
+            }
+            writeText("data.sql", "SELECT 1;");
+            jdbcTemplate.update("DELETE FROM movie_diff");
+            log.info("neutralized base data.sql (was a destructive full restore) and cleared movie_diff for full replay");
+        } catch (Exception e) {
+            log.warn("neutralize base data.sql failed", e);
+        }
     }
 
     private void runCmd() {
@@ -228,7 +291,9 @@ public class DoubanService {
             String local = settingRepository.findById(MOVIE_VERSION).map(Setting::getValue).orElse("0.0").trim();
             String cached = getCachedVersion();
             versions.setCachedMovie(cached);
-            if (!local.equals(remote) && !remote.equals(cached) && !downloading) {
+            // 不再要求 remote != cached:cached 文件只代表「已下载」,local(Setting)才代表「已应用」。
+            // apply 失败后 local<remote 而 cached==remote,若按 cached 跳过会永久漏放(重复下载仅 48KB,可接受)。
+            if (!local.equals(remote) && !downloading) {
                 log.info("local: {} cached: {} remote: {}", local, cached, remote);
                 executor.execute(() -> upgradeMovieData(local, remote));
             } else {
@@ -260,7 +325,7 @@ public class DoubanService {
             Task task = fileDownloader.runTask("movie", remote);
             if (taskService.waitTaskFinish(task.getId(), 60)) {
                 log.info("movie data downloaded");
-                getSqlFiles(local).forEach(this::upgradeSqlFile);
+                applyPendingDiffFiles();
             } else {
                 log.warn("download movie data failed");
             }
@@ -271,11 +336,74 @@ public class DoubanService {
         }
     }
 
-    private Stream<Path> getSqlFiles(String version) throws IOException {
-        double local = Double.parseDouble(version);
-        return Files.list(Utils.getDataPath("atv", "sql"))
-                .filter(e -> Double.compare(getVersionNumber(e), local) > 0)
-                .sorted((a, b) -> Double.compare(getVersionNumber(a), getVersionNumber(b)));
+    /** 应用待执行的 diff 文件:movie_diff 表为「已应用」事实来源 —— 无记录(新文件或历史缺口)、
+     *  或 FAILED 且尝试不足 {@link #MAX_DIFF_ATTEMPTS} 才执行,SUCCESS 跳过。同一版本 json/sql 并存时
+     *  JSON 优先(方言无关、JPA 落库);按版本升序,成功推进版本号。 */
+    private void applyPendingDiffFiles() {
+        Map<Double, Path> jsonFiles = diffFiles("json", ".json");
+        Map<Double, Path> sqlFiles = diffFiles("sql", ".sql");
+        TreeSet<Double> versions = new TreeSet<>(jsonFiles.keySet());
+        versions.addAll(sqlFiles.keySet());
+        for (Double version : versions) {
+            String name = String.valueOf(version);
+            if (!needsApply(name)) {
+                continue;
+            }
+            applyDiff(name, jsonFiles.get(version), sqlFiles.get(version));
+        }
+    }
+
+    /** atv/{dir} 下 {version}{suffix} 文件 → 版本号映射;目录缺失返回空。 */
+    private Map<Double, Path> diffFiles(String dir, String suffix) {
+        Map<Double, Path> result = new HashMap<>();
+        try (Stream<Path> files = Files.list(Utils.getDataPath("atv", dir))) {
+            files.filter(Files::isRegularFile)
+                    .filter(e -> e.getFileName().toString().endsWith(suffix))
+                    .forEach(e -> {
+                        try {
+                            result.put(getVersionNumber(e), e);
+                        } catch (NumberFormatException ignored) {
+                            log.debug("ignore non-versioned diff file: {}", e);
+                        }
+                    });
+        } catch (Exception e) {
+            log.debug("list atv/{} failed: {}", dir, e.getMessage());
+        }
+        return result;
+    }
+
+    /** 无记录 → 执行(新文件 + 表启用前已放过的历史文件,自动补放缺口);FAILED 且尝试<上限 → 重试;SUCCESS → 跳过。 */
+    private boolean needsApply(String version) {
+        try {
+            Integer attempts = diffAttempts(version);
+            if (attempts == null) {
+                return true;
+            }
+            String status = jdbcTemplate.queryForObject(
+                    "SELECT status FROM movie_diff WHERE version = ?", String.class, version);
+            return !DIFF_SUCCESS.equals(status) && attempts < MAX_DIFF_ATTEMPTS;
+        } catch (Exception e) {
+            log.debug("query movie_diff for {} failed, treat as pending: {}", version, e.getMessage());
+            return true;
+        }
+    }
+
+    /** 文件当前已尝试次数;无记录返回 null。 */
+    private Integer diffAttempts(String version) {
+        List<Integer> attempts = jdbcTemplate.queryForList(
+                "SELECT attempts FROM movie_diff WHERE version = ?", Integer.class, version);
+        return attempts.isEmpty() ? null : attempts.get(0);
+    }
+
+    private void recordDiff(String version, boolean success, int statements, int failed, int attempts) {
+        try {
+            jdbcTemplate.update("DELETE FROM movie_diff WHERE version = ?", version);
+            jdbcTemplate.update("INSERT INTO movie_diff (version, status, statements, failed, attempts, updated_time) "
+                    + "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", version,
+                    success ? DIFF_SUCCESS : DIFF_FAILED, statements, failed, attempts);
+        } catch (Exception e) {
+            log.warn("record movie_diff {} failed", version, e);
+        }
     }
 
     private double getVersionNumber(Path path) {
@@ -288,17 +416,101 @@ public class DoubanService {
         return name.substring(0, index);
     }
 
-    private void upgradeSqlFile(Path file) {
+    private void applyDiff(String version, Path json, Path sql) {
+        Integer previous = diffAttempts(version);
+        int attempts = previous == null ? 0 : previous;
+        int applied = 0;
+        int failed = 0;
+        // 失败重试:整个文件重放(upsert 幂等),累计尝试不超过上限
+        while (attempts < MAX_DIFF_ATTEMPTS) {
+            attempts++;
+            try {
+                int[] result = json != null ? applyJsonDiff(json) : executeSqlFile(sql);
+                applied = result[0];
+                failed = result[1];
+            } catch (Exception e) {
+                applied = 0;
+                failed = 1;
+                log.warn("apply diff {} (attempt {}/{}) failed", version, attempts, MAX_DIFF_ATTEMPTS, e);
+            }
+            if (failed == 0) {
+                break;
+            }
+            log.warn("movie data attempt {}/{} for {} failed: {} statements failed, {} ok",
+                    attempts, MAX_DIFF_ATTEMPTS, version, failed, applied);
+        }
+        boolean success = failed == 0;
+        recordDiff(version, success, applied, failed, attempts);
+        if (success) {
+            settingRepository.save(new Setting(MOVIE_VERSION, version));
+            log.info("movie data upgraded: {} ({} rows, {} attempts, {})", version, applied, attempts,
+                    json != null ? "json" : "sql");
+        } else {
+            log.warn("movie data {} still failed after {} attempts ({} ok, {} failed), version not stamped",
+                    version, attempts, applied, failed);
+        }
+    }
+
+    /** JSON diff(json/{version}.json)应用:MOVIE/META 行经 JPA upsert(saveAll)+ 按 id 删除,
+     *  方言无关;任何异常上抛由重试循环按整文件重放。返回 [行数, 0]。 */
+    private int[] applyJsonDiff(Path file) throws IOException {
+        MovieDiffPayload payload =
+                objectMapper.readValue(file.toFile(), cn.har01d.alist_tvbox.dto.MovieDiffPayload.class);
+        int rows = 0;
+        if (payload.movieDeletes() != null && !payload.movieDeletes().isEmpty()) {
+            movieRepository.deleteAllById(payload.movieDeletes());
+            rows += payload.movieDeletes().size();
+        }
+        if (payload.metaDeletes() != null && !payload.metaDeletes().isEmpty()) {
+            metaRepository.deleteAllById(payload.metaDeletes());
+            rows += payload.metaDeletes().size();
+        }
+        if (payload.movieUpserts() != null && !payload.movieUpserts().isEmpty()) {
+            movieRepository.saveAll(payload.movieUpserts());
+            rows += payload.movieUpserts().size();
+        }
+        if (payload.metaUpserts() != null && !payload.metaUpserts().isEmpty()) {
+            metaRepository.saveAll(payload.metaUpserts().stream().map(this::toMeta).toList());
+            rows += payload.metaUpserts().size();
+        }
+        return new int[]{rows, 0};
+    }
+
+    /** META DTO → 实体:movieId/tmdbId 换实体引用(getReferenceById 不发 SQL,关联缺失时落库报错走重试)。 */
+    private Meta toMeta(MovieDiffPayload.MetaPayload row) {
+        Meta meta = new Meta();
+        meta.setId(row.id());
+        meta.setPath(row.path());
+        meta.setName(row.name());
+        meta.setYear(row.year());
+        meta.setScore(row.score());
+        meta.setMovie(row.movieId() == null ? null : movieRepository.getReferenceById(row.movieId()));
+        meta.setType(row.type());
+        meta.setTid(row.tid());
+        meta.setTmId(row.tmId());
+        meta.setTmdb(row.tmdbId() == null || tmdbRepository == null ? null
+                : tmdbRepository.getReferenceById(row.tmdbId()));
+        meta.setSiteId(row.siteId());
+        meta.setDisabled(Boolean.TRUE.equals(row.disabled()));
+        meta.setTime(row.time() == null ? Instant.now() : Instant.ofEpochMilli(row.time()));
+        return meta;
+    }
+
+    /** 执行单个 SQL diff 文件(旧格式回落),返回 [ok, failed];逐条失败降级记录,不中断其它语句。 */
+    private int[] executeSqlFile(Path file) {
+        int applied = 0;
+        int failed = 0;
         try {
-            //jdbcTemplate.execute("RUNSCRIPT FROM '" + file.toString() + "'");
             H2SqlConverter.Dialect dialect = H2SqlConverter.detect(environment);
             List<String> lines = Files.readAllLines(file);
             if (dialect == H2SqlConverter.Dialect.H2) {
                 for (String line : lines) {
                     try {
                         jdbcTemplate.execute(line);
+                        applied++;
                     } catch (Exception e) {
-                        log.debug("execute sql failed: {}", e);
+                        failed++;
+                        log.warn("execute sql failed: {}", line.length() > 120 ? line.substring(0, 120) + "..." : line, e);
                     }
                 }
             } else {
@@ -313,36 +525,46 @@ public class DoubanService {
                     }
                     batch.add(sql);
                     if (batch.size() >= BATCH_SIZE) {
-                        executeBatch(batch);
+                        int size = batch.size();
+                        int batchFailed = executeBatch(batch);
+                        applied += size - batchFailed;
+                        failed += batchFailed;
                     }
                 }
-                executeBatch(batch);
+                int size = batch.size();
+                int batchFailed = executeBatch(batch);
+                applied += size - batchFailed;
+                failed += batchFailed;
             }
-            String version = getVersion(file);
-            settingRepository.save(new Setting(MOVIE_VERSION, version));
-            log.info("movie data upgraded: {}", version);
         } catch (Exception e) {
-            log.warn("upgrade SQL file failed: {}", file, e);
+            log.warn("execute sql file failed: {}", file, e);
         }
+        return new int[]{applied, failed};
     }
 
-    private void executeBatch(List<String> batch) {
+    /** 批量执行,失败降级逐条;返回失败条数。 */
+    private int executeBatch(List<String> batch) {
         if (batch.isEmpty()) {
-            return;
+            return 0;
         }
         try {
             jdbcTemplate.batchUpdate(batch.toArray(new String[0]));
+            batch.clear();
+            return 0;
         } catch (Exception e) {
             log.debug("batch update failed, falling back to per-statement execution", e);
+            int failed = 0;
             for (String sql : batch) {
                 try {
                     jdbcTemplate.execute(sql);
                 } catch (Exception ex) {
-                    log.debug("execute sql failed: {}", ex);
+                    failed++;
+                    log.warn("execute sql failed: {}", sql.length() > 120 ? sql.substring(0, 120) + "..." : sql, ex);
                 }
             }
+            batch.clear();
+            return failed;
         }
-        batch.clear();
     }
 
     public String getAppRemoteVersion() {

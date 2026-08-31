@@ -187,6 +187,10 @@
         <el-form-item label="季">
           <el-input-number v-model="form.season" :min="1" :max="50"/>
         </el-form-item>
+        <el-form-item label="季起始集号">
+          <el-input-number v-model="form.seasonStartEpisode" :min="0" :max="9999"/>
+          <span class="sub-text" style="margin-left:8px">本季第 1 集对应全剧第 N 集 —— 元数据全剧连续集号而网盘按季内编号时用(如一念永恒);0/空 = 关闭;修改后集数记录会重置重扫</span>
+        </el-form-item>
         <el-form-item label="期望集数">
           <el-input-number v-model="form.expectedEpisodes" :min="0" :max="9999"/>
           <span class="sub-text" style="margin-left:8px">0/空 = 用官方总集数,均无则不自动完结</span>
@@ -302,14 +306,18 @@
           </template>
         </el-table-column>
         <el-table-column prop="episodesFound" label="集数" width="70"/>
+        <el-table-column label="单集均大小" width="90">
+          <template #default="scope">{{ formatSize(scope.row.avgFileSize) }}</template>
+        </el-table-column>
         <el-table-column label="角色" width="90">
           <template #default="scope">
             <el-tag v-if="scope.row.primary" size="small" type="success">主源</el-tag>
             <el-tag v-else-if="scope.row.state === 'MOUNTED'" size="small" type="warning">补缺</el-tag>
             <el-tag v-if="scope.row.pinned" size="small" type="danger" style="margin-left: 4px">钉选</el-tag>
+            <el-tag v-if="scope.row.startEpisode" size="small" type="info" style="margin-left: 4px">起{{ scope.row.startEpisode }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column fixed="right" label="操作" width="180">
+        <el-table-column fixed="right" label="操作" width="220">
           <template #default="scope">
             <el-button v-if="scope.row.state === 'CANDIDATE'" link type="primary" size="small"
                        @click="activateResource(scope.row)">启用</el-button>
@@ -319,6 +327,8 @@
                        @click="unpinResource(scope.row)">取消钉选</el-button>
             <el-button v-else link type="danger" size="small"
                        @click="pinResource(scope.row)">钉选</el-button>
+            <el-button link type="warning" size="small"
+                       @click="setResourceStart(scope.row)">起始集号</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -794,6 +804,7 @@ interface SubscriptionDto {
   mainDrives: number[] | null
   keyword: string
   season: number | null
+  seasonStartEpisode: number | null
   doubanId: number | null
   metaProvider: string | null
   metaId: string | null
@@ -843,12 +854,16 @@ interface ResourceDto {
   driveName: string | null
   title: string | null
   episodesFound: number | null
+  /** 单集平均文件大小(字节,未探测过为 null) */
+  avgFileSize: number | null
   score: number | null
   /** 挂载生命周期:CANDIDATE/MOUNTED/RETIRED/REJECTED(可用性由集源行聚合,不再落在资源上) */
   state: string | null
   primary: boolean
   /** 手动钉选:换源候选序置顶、归属复核豁免(用户否决自动换源) */
   pinned: boolean
+  /** 资源级起始集号:该资源第 1 集对应全剧第 N 集(null = 不平移) */
+  startEpisode: number | null
 }
 
 interface EventDto {
@@ -1280,6 +1295,7 @@ const handleAdd = () => {
     name: '',
     keyword: '',
     season: 1,
+    seasonStartEpisode: null,
     doubanId: null,
     metaProvider: null,
     metaId: null,
@@ -1313,6 +1329,7 @@ const handleEdit = (row: SubscriptionDto) => {
     name: row.name,
     keyword: row.keyword,
     season: row.season ?? 1,
+    seasonStartEpisode: row.seasonStartEpisode ?? null,
     doubanId: row.doubanId,
     metaProvider: row.metaProvider,
     metaId: row.metaId,
@@ -1413,6 +1430,7 @@ const buildBody = () => ({
   name: form.value.name,
   keyword: form.value.keyword,
   season: form.value.season,
+  seasonStartEpisode: form.value.seasonStartEpisode ?? 0,
   doubanId: form.value.doubanId,
   metaProvider: form.value.metaProvider,
   metaId: form.value.metaId,
@@ -1593,6 +1611,26 @@ const unpinResource = (resource: ResourceDto) => {
     ElMessage.success('已取消钉选,恢复自动换源')
     schedule(loadResources, 2000)
   })
+}
+
+/** 资源级起始集号:该资源第 1 集对应全剧第 N 集(季包资源混进连续编号订阅时手动对齐) */
+const setResourceStart = (resource: ResourceDto) => {
+  if (!current.value) return
+  ElMessageBox.prompt(
+      '该资源第 1 集对应全剧第几集?(如完结季包实为全剧 153 起填 153;0 = 清除)。修改后该资源的集数记录会重扫',
+      '起始集号 - ' + (resource.title || ''), {
+        inputValue: resource.startEpisode ? String(resource.startEpisode) : '',
+        inputPattern: /^\d{0,4}$/,
+        inputErrorMessage: '请输入 0-9999 的数字',
+      }).then(({value}) => {
+    const startEpisode = parseInt(value, 10)
+    axios.post(`/api/media-subscriptions/${current.value!.id}/resources/${resource.id}/episode-start`,
+        {startEpisode: isNaN(startEpisode) ? 0 : startEpisode}).then(() => {
+      ElMessage.success('起始集号已更新,该资源集数记录将重扫')
+      schedule(loadResources, 2000)
+      schedule(loadAll, 8000)
+    })
+  }).catch(() => {})
 }
 
 const showEpisodes = (row: SubscriptionDto) => {
@@ -2023,6 +2061,14 @@ const matrixStateLabel = (src: { state: string }) => {
   }
 }
 
+/** 单集平均文件大小(字节)转可读文本;null = 该资源还没探测过 */
+const formatSize = (bytes: number | null) => {
+  if (!bytes) return '-'
+  if (bytes >= 1024 * 1024 * 1024) return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+  return Math.round(bytes / 1024) + ' KB'
+}
+
 const stateLabel = (state: string | null) => {
   switch (state) {
     case 'MOUNTED': return '已挂载'
@@ -2075,9 +2121,24 @@ const eventDetail = (event: EventDto) => {
   return eventTypeName(event.type) + ':' + (event.detail || '')
 }
 
+/** 连续集号压成区间:107-131,135-140;区间过多时截断并附总数 */
 const compactNumbers = (numbers: number[]) => {
-  if (numbers.length <= 6) return numbers.join(',')
-  return numbers.slice(0, 6).join(',') + ` 等${numbers.length}集`
+  if (numbers.length === 0) return ''
+  const sorted = [...numbers].sort((a, b) => a - b)
+  const ranges: string[] = []
+  let start = sorted[0]
+  let prev = sorted[0]
+  for (let i = 1; i <= sorted.length; i++) {
+    if (sorted[i] === prev + 1) {
+      prev = sorted[i]
+      continue
+    }
+    ranges.push(start === prev ? `${start}` : `${start}-${prev}`)
+    start = prev = sorted[i]
+  }
+  const display = ranges.slice(0, 6)
+  if (ranges.length > 6) return display.join(',') + ` 等${numbers.length}集`
+  return ranges.join(',')
 }
 
 /** 进度分母:官方总集数滞后于资源现实时(长番官方 1212/本地已到 1270)以观测最大集号兜底,避免 1243/1212 倒挂 */
