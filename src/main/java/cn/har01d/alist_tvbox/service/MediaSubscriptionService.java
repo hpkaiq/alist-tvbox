@@ -215,6 +215,8 @@ public class MediaSubscriptionService {
             subscription.setMetaId(String.valueOf(subscription.getDoubanId()));
         }
         subscription.setExpectedEpisodes(request.getExpectedEpisodes());
+        subscription.setManualTotalEpisodes(request.getManualTotalEpisodes() != null && request.getManualTotalEpisodes() > 0
+                ? request.getManualTotalEpisodes() : null);
         subscription.setSeasonStartEpisode(request.getSeasonStartEpisode() != null && request.getSeasonStartEpisode() > 1
                 ? request.getSeasonStartEpisode() : null);
         subscription.setMode(StringUtils.isBlank(request.getMode()) ? MediaSubscription.MODE_FOLLOW : request.getMode());
@@ -288,6 +290,11 @@ public class MediaSubscriptionService {
         }
         if (request.getExpectedEpisodes() != null) {
             subscription.setExpectedEpisodes(request.getExpectedEpisodes());
+        }
+        if (request.getManualTotalEpisodes() != null) {
+            // ≤0 = 清除(回退官方总集数口径)
+            subscription.setManualTotalEpisodes(request.getManualTotalEpisodes() > 0
+                    ? request.getManualTotalEpisodes() : null);
         }
         if (request.getMode() != null) {
             subscription.setMode(request.getMode());
@@ -491,6 +498,78 @@ public class MediaSubscriptionService {
         log.info("media subscription {} resource {} episode start set to {}: inventory reset", id, resourceId, start);
     }
 
+    /**
+     * 手动添加候选资源:用户自己找到的分享链接直接入候选池 —— 不挂载、不动当前主源
+     * (与「启用/钉选」的转主源语义分开,回应"一启用就变主资源"),下轮巡检按需探测,
+     * 可参与补缺/换源;手动源豁免自动门禁(盘白名单/年份/标题/排除词),候选序置顶(同 follow 的 1000 档)。
+     * <p>
+     * 同链幂等:候选/已挂载只更新提取码;REMOVED/RETIRED/REJECTED 复活回候选
+     * (手动事实优先于既有判定,restoreResource 同款语义)。
+     */
+    public Map<String, Object> addResource(int uid, int id, String link, String password) {
+        getOwned(uid, id);
+        String normalized = StringUtils.trimToEmpty(link);
+        if (StringUtils.isBlank(normalized)) {
+            throw new BadRequestException("缺少分享链接");
+        }
+        normalized = StringUtils.abbreviate(normalized, 1000); // 列 VARCHAR(1024)
+        cn.har01d.alist_tvbox.entity.Share probe = shareService.parseShareLink(normalized);
+        if (probe == null || probe.getType() == null || !MediaSubscriptionCheckService.supportedDriveType(probe.getType())) {
+            throw new BadRequestException("无法识别的网盘分享链接(支持夸克/UC/阿里/百度/115/天翼/移动/123/迅雷/光鸭)");
+        }
+        MediaSubscriptionResource resource =
+                resourceRepository.findBySubscriptionIdAndLink(id, normalized).orElse(null);
+        boolean existed = resource != null;
+        boolean revived = false;
+        if (resource == null) {
+            resource = new MediaSubscriptionResource();
+            resource.setSubscriptionId(id);
+            resource.setLink(normalized);
+            resource.setCreatedTime(System.currentTimeMillis());
+        } else if (MediaSubscriptionResource.STATE_CANDIDATE.equals(resource.getState())
+                || MediaSubscriptionResource.STATE_MOUNTED.equals(resource.getState())) {
+            // 幂等:已在池/已挂载,只补提取码(挂载/状态一概不动)
+        } else {
+            // REMOVED/RETIRED/REJECTED:用户手动加 = 明确要它,复活回候选并允许下轮重探
+            resource.setState(MediaSubscriptionResource.STATE_CANDIDATE);
+            resource.setCheckedTime(null);
+            resource.setMountPath(null);
+            resource.setShareId(null);
+            revived = true;
+        }
+        resource.setType(probe.getType());
+        resource.setSource(MediaSubscriptionResource.SOURCE_MANUAL);
+        if (StringUtils.isNotBlank(password)) {
+            resource.setPassword(StringUtils.abbreviate(password.trim(), 128)); // 列 VARCHAR(128)
+        }
+        if (!existed) {
+            resource.setTitle(null); // 探测后按目录内容呈现,展示时回落链接
+            resource.setScore(1000); // 手动提供的源:换源/探测候选序置顶(与 follow「订阅即所见」同档)
+            resource.setState(MediaSubscriptionResource.STATE_CANDIDATE);
+        }
+        resourceRepository.save(resource);
+        addPoolEvent(id, existed
+                ? "手动添加:链接已在资源池" + (StringUtils.isNotBlank(password) ? ",已更新提取码" : "")
+                : "已手动添加候选:" + normalized + "(不挂载不动主源,巡检/补缺时自动探测)");
+        log.info("media subscription {} manually added resource candidate {} (existed={}, revived={})",
+                id, resource.getId(), existed, revived);
+        return Map.of("success", true, "resourceId", resource.getId(), "existed", existed, "revived", revived);
+    }
+
+    /** 资源池事件(不发通知):手动添加/恢复这类管理动作只进页面时间线。 */
+    private void addPoolEvent(int subscriptionId, String detail) {
+        try {
+            MediaSubscriptionEvent event = new MediaSubscriptionEvent();
+            event.setSubscriptionId(subscriptionId);
+            event.setType(MediaSubscriptionEvent.TYPE_POOL_FILLED);
+            event.setDetail(detail);
+            event.setCreatedTime(System.currentTimeMillis());
+            eventRepository.save(event);
+        } catch (Exception e) {
+            log.warn("add pool event failed: {}", e.getMessage());
+        }
+    }
+
     public List<MediaSubscriptionResourceDto> resources(int uid, int id) {
         MediaSubscription subscription = getOwned(uid, id);
         Set<String> allowedDrives = checkService.allowedCandidateDrives(subscription);
@@ -502,8 +581,10 @@ public class MediaSubscriptionService {
         }
         return all.stream()
                 // 已挂载的照常展示(供流中,用户需要可见/可停用);其余行按候选盘白名单收敛,
-                // 白名单外的存量候选不再被探测/换源,展示出来只会误导"有个源躺着没用"
+                // 白名单外的存量候选不再被探测/换源,展示出来只会误导"有个源躺着没用";
+                // 手动添加的豁免(用户明确要的源,加进来却看不见等于白加)
                 .filter(r -> MediaSubscriptionResource.STATE_MOUNTED.equals(r.getState())
+                        || MediaSubscriptionCheckService.manuallyAdded(r)
                         || MediaSubscriptionCheckService.driveAllowed(allowedDrives,
                         r.getType() == null ? null : DriveId.toDrive(r.getType())))
                 .map(r -> {
@@ -910,8 +991,7 @@ public class MediaSubscriptionService {
                 : movieRepository.findById(subscription.getDoubanId()).orElse(null);
         if (StringUtils.isNotBlank(subscription.getMetaProvider()) && StringUtils.isNotBlank(subscription.getMetaId())) {
             try {
-                meta = metadataService.cachedDetails(
-                        subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+                meta = subscriptionMetadata(subscription);
                 if (meta != null) {
                     String year = meta.getYear();
                     if (StringUtils.isBlank(year) && StringUtils.length(meta.getFirstAirDate()) >= 4) {
@@ -996,12 +1076,31 @@ public class MediaSubscriptionService {
 
     /** 订阅元数据快照(持久层零网络);无 provider/metaId 或读取失败返回 null。 */
     private MetadataDetails loadSubscriptionSnapshot(MediaSubscription subscription) {
+        return subscriptionMetadata(subscription);
+    }
+
+    /**
+     * 订阅元数据读取(持久层零网络,视图/快照统一口径):TMDB 单季装全剧(totalSeasons==1)
+     * 的剧订阅第 N&gt;1 季时回落读第 1 季行 —— 第 N 季行只有剧集级字段,分集标题/播出日程
+     * 只在全剧口径的第 1 季行(绝对集号空间)。形态未知(快照缺失/多季)原样返回,与巡检侧
+     * effectiveMetaSeason 同语义但不打外网:第 1 季快照由巡检 refreshMetadata 落库。
+     */
+    private MetadataDetails subscriptionMetadata(MediaSubscription subscription) {
         if (StringUtils.isBlank(subscription.getMetaProvider()) || StringUtils.isBlank(subscription.getMetaId())) {
             return null;
         }
         try {
-            return metadataService.cachedDetails(
+            MetadataDetails details = metadataService.cachedDetails(
                     subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+            if (details != null && details.getTotalSeasons() != null && details.getTotalSeasons() == 1
+                    && (subscription.getSeason() == null || subscription.getSeason() > 1)) {
+                MetadataDetails whole = metadataService.cachedDetails(
+                        subscription.getMetaProvider(), subscription.getMetaId(), 1);
+                if (whole != null) {
+                    return whole;
+                }
+            }
+            return details;
         } catch (Exception e) {
             log.debug("load metadata snapshot for subscription {} failed: {}",
                     subscription.getId(), e.getMessage());
@@ -1586,8 +1685,7 @@ public class MediaSubscriptionService {
             return false;
         }
         try {
-            MetadataDetails details = metadataService.cachedDetails(
-                    subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+            MetadataDetails details = subscriptionMetadata(subscription);
             List<String> countries = details == null ? null : details.getCountries();
             if (countries == null || countries.isEmpty()) {
                 return false;
@@ -1766,13 +1864,21 @@ public class MediaSubscriptionService {
      *  官方快照缺失返回 null(不臆测);全部同步返回「已全部同步」;缺集列号,超 8 个收敛为区间。 */
     private String missingEpisodesSummary(MediaSubscription subscription) {
         int official = subscription.getOfficialEpisodes() == null ? 0 : subscription.getOfficialEpisodes();
+        int totalCap = subscription.effectiveTotalEpisodes();
+        if (totalCap > 0 && official > totalCap) {
+            // 已播数不可能超过总集数(手动锁定口径),超出是上游污染 —— 与 computeMissing 夹紧同规
+            official = totalCap;
+        }
         if (official <= 0) {
             return null;
         }
         Set<Integer> local = new java.util.HashSet<>(episodeSourceRepository
                 .findNumbersBySubscriptionAndStatesIn(subscription.getId(), LIVE_EPISODE_STATES));
         List<Integer> missing = new ArrayList<>();
-        for (int i = 1; i <= Math.min(official, MAX_EPISODE_ROWS); i++) {
+        // 季起始集号下界:分季订阅对齐后季前旧集不在缺口口径(与 computeMissing 同规)
+        int lower = subscription.getSeasonStartEpisode() != null && subscription.getSeasonStartEpisode() > 1
+                ? subscription.getSeasonStartEpisode() : 1;
+        for (int i = lower; i <= Math.min(official, MAX_EPISODE_ROWS); i++) {
             if (!local.contains(i)) {
                 missing.add(i);
             }
@@ -1833,8 +1939,7 @@ public class MediaSubscriptionService {
             return Map.of();
         }
         try {
-            MetadataDetails details = metadataService.cachedDetails(
-                    subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+            MetadataDetails details = subscriptionMetadata(subscription);
             if (details == null || details.getEpisodes() == null) {
                 return Map.of();
             }
@@ -2055,14 +2160,23 @@ public class MediaSubscriptionService {
         if (!deadByEpisode.isEmpty()) {
             base = Math.max(base, deadByEpisode.keySet().stream().max(Integer::compareTo).orElse(0));
         }
+        int observedBase = base;
         if (subscription.getOfficialEpisodes() != null) {
             base = Math.max(base, subscription.getOfficialEpisodes());
         }
         if (subscription.getExpectedEpisodes() != null) {
             base = Math.max(base, subscription.getExpectedEpisodes());
         }
+        int totalCap = subscription.effectiveTotalEpisodes();
+        if (totalCap > 0 && base > totalCap) {
+            // 手动锁定总集数是未播占位的上界;观测真实文件不参与夹紧(与 computeMissing 同规)
+            base = Math.max(totalCap, observedBase);
+        }
         List<Map<String, Object>> result = new ArrayList<>();
-        for (int i = 1; i <= Math.min(base, MAX_EPISODE_ROWS); i++) {
+        // 季起始集号下界:分季订阅对齐后本季从全剧第 N 集开始,季前旧集不属于本订阅(与 computeMissing 同规)
+        int lower = subscription.getSeasonStartEpisode() != null && subscription.getSeasonStartEpisode() > 1
+                ? subscription.getSeasonStartEpisode() : 1;
+        for (int i = lower; i <= Math.min(base, MAX_EPISODE_ROWS); i++) {
             String source = sources.get(i);
             boolean present = source != null; // 可用性只认 LIVE 行;"源损坏"是展示文案,不是已有
             if (source == null && deadByEpisode.containsKey(i)) {
@@ -2090,7 +2204,7 @@ public class MediaSubscriptionService {
 
         MetadataDetails details = null;
         if (StringUtils.isNotBlank(subscription.getMetaProvider()) && StringUtils.isNotBlank(subscription.getMetaId())) {
-            details = metadataService.cachedDetails(subscription.getMetaProvider(), subscription.getMetaId(), subscription.getSeason());
+            details = subscriptionMetadata(subscription);
             if (details == null) {
                 checkService.prewarmCoverAsync(subscription); // 后台拉首轮元数据落库,不打断本次响应
             }
@@ -2144,8 +2258,13 @@ public class MediaSubscriptionService {
         // 上游污染(瑞克 S9 总 10/已播 11),"已播 11 / 共 10"同样是倒挂
         int observedMax = subscription.getMaxEpisode() == null ? 0 : subscription.getMaxEpisode();
         int metaTotal = details == null || details.getTotalEpisodes() == null ? 0 : details.getTotalEpisodes();
-        int total = Math.max(Math.max(metaTotal,
-                subscription.getOfficialTotal() == null ? 0 : subscription.getOfficialTotal()), observedMax);
+        // 生效总集数(手动锁定优先)夹住官方侧;观测不夹(与巡检 computeMissing 同规)
+        int officialish = Math.max(metaTotal, subscription.getOfficialTotal() == null ? 0 : subscription.getOfficialTotal());
+        int totalCap = subscription.effectiveTotalEpisodes();
+        if (totalCap > 0 && officialish > totalCap) {
+            officialish = totalCap;
+        }
+        int total = Math.max(officialish, observedMax);
         media.put("totalEpisodes", total);
         int metaAired = details == null || details.getAiredEpisodes() == null ? 0 : details.getAiredEpisodes();
         media.put("airedEpisodes", Math.min(Math.max(Math.max(metaAired,
@@ -2185,7 +2304,10 @@ public class MediaSubscriptionService {
                                 subscription.getExpectedEpisodes() == null ? 0 : subscription.getExpectedEpisodes())));
         long now = System.currentTimeMillis();
         List<Map<String, Object>> episodeItems = new ArrayList<>();
-        for (int i = 1; i <= Math.min(base, MAX_EPISODE_ROWS); i++) {
+        // 季起始集号下界:分季订阅对齐后本季从全剧第 N 集开始,季前旧集不属于本订阅(与 computeMissing 同规)
+        int lower = subscription.getSeasonStartEpisode() != null && subscription.getSeasonStartEpisode() > 1
+                ? subscription.getSeasonStartEpisode() : 1;
+        for (int i = lower; i <= Math.min(base, MAX_EPISODE_ROWS); i++) {
             Map<String, Object> local = localByEpisode.get(i);
             cn.har01d.alist_tvbox.dto.EpisodeInfo info = metaEpisodes.get(i);
             MediaSubscriptionEpisode row = rows.get(i);
@@ -2717,10 +2839,18 @@ public class MediaSubscriptionService {
     private String buildRemarks(MediaSubscription subscription) {
         int current = subscription.getCurrentEpisodes() == null ? 0 : subscription.getCurrentEpisodes();
         int expected = subscription.getExpectedEpisodes() == null ? 0 : subscription.getExpectedEpisodes();
-        // 总数口径与 web 列表一致:手填期望(expected=0 表示跟随官方) > 官方总集数;均无才退「已更新至 N 集」
-        int total = expected > 0 ? expected
-                : (subscription.getOfficialTotal() != null && subscription.getOfficialTotal() > 0
-                ? subscription.getOfficialTotal() : 0);
+        // 总数口径与 web 列表一致:手填期望(expected=0 表示跟随官方) > 官方总集数;均无才退「已更新至 N 集」。
+        // 分季订阅对齐(seasonStartEpisode)的在播季<b>不显示自动分母</b>:官方总集数是全剧连续空间且
+        // 登记滞后(一念永恒 TMDB 200 vs 腾讯 181 都不可信),腾讯分季登记数还会随播出继续长 ——
+        // 推出来的本季体量都是假精度(35/16 两版都被否),完结(status=ENDED)后直接「N集完结」
+        Integer start = subscription.getSeasonStartEpisode();
+        boolean windowed = start != null && start > 1;
+        int manual = subscription.getManualTotalEpisodes() == null ? 0 : subscription.getManualTotalEpisodes();
+        int officialTotal = subscription.getOfficialTotal() == null ? 0 : subscription.getOfficialTotal();
+        // 总数口径:手填期望(主观目标)> 手动锁定(官方总数的纠正)> 官方总集数;分季在播季
+        // 无手动值时不显示自动分母(官方全剧连续空间+登记滞后,推本季体量是假精度,见下);
+        // 手动锁定的分母是用户明确给的数,不受分季抑制
+        int total = expected > 0 ? expected : (manual > 0 ? manual : (windowed ? 0 : officialTotal));
         boolean ended = MediaSubscription.STATUS_ENDED.equals(subscription.getStatus())
                 || (expected > 0 && current >= expected)
                 || (total > 0 && subscription.isSeasonAiredOut() && current >= total);
@@ -2849,6 +2979,7 @@ public class MediaSubscriptionService {
         dto.setMainDrives(parseMainDrives(subscription.getMainDrives()));
         dto.setStatus(subscription.getStatus());
         dto.setExpectedEpisodes(subscription.getExpectedEpisodes());
+        dto.setManualTotalEpisodes(subscription.getManualTotalEpisodes());
         dto.setCurrentEpisodes(subscription.getCurrentEpisodes());
         dto.setMaxEpisode(subscription.getMaxEpisode());
         dto.setMissingEpisodes(missingEpisodes(subscription));
@@ -2902,8 +3033,8 @@ public class MediaSubscriptionService {
         int projected = Math.max(
                 subscription.getOfficialEpisodes() == null ? 0 : subscription.getOfficialEpisodes(),
                 subscription.getExpectedEpisodes() == null ? 0 : subscription.getExpectedEpisodes());
-        Integer total = subscription.getOfficialTotal();
-        if (total != null && total > 0) {
+        int total = subscription.effectiveTotalEpisodes();
+        if (total > 0) {
             projected = Math.min(projected, total);
         }
         base = Math.max(base, projected);

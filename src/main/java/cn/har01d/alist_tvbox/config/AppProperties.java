@@ -107,8 +107,6 @@ public class AppProperties {
         private int searchSize = 50;
         /** 追更搜索聚合模式:盘搜/TG-Search/电报网页同时跑并合并(而非回退链"够用即停") */
         private boolean aggregateSearch = true;
-        /** 站点源(玩偶/盘链/观影/蜗牛)加分:标题结构化,归属匹配与集数解析比 TG 自由文本可靠 */
-        private int siteSourceBonus = 12;
         /** 池枯竭(无任何可用候选)时的搜索条数:把召回面拉宽,别守着一池死判定 */
         private int exhaustedSearchSize = 150;
         /** 网盘限流后的退避(分钟):期内不再试挂该盘候选 */
@@ -145,10 +143,18 @@ public class AppProperties {
          *  完全无日程的订阅除常规间隔外,取 min(常规间隔, 下一档位) 排程 —— 国产平台午间档 12:00 /
          *  黄金档 19:00-20:00 双高峰,国漫晨间簇 11:00(4567 实例 15 个有日程订阅实测分布)。 */
         private java.util.List<String> primeCheckTimes = java.util.List.of("11:15", "12:15", "19:15", "20:15");
+        /** 完结剧(ENDED)凌晨巡检档位("HH:mm" 列表,北京时间):仍在追看的完结剧完整巡检取
+         *  min(常规间隔, 下一凌晨档)、看完的每周轻查对齐凌晨档 —— 高峰档的"新集上线多查"语义
+         *  对完结剧是反向负载(无上线时效,播放失败另有即时信号兜底),反而挤进晚间观看/播后短轮/
+         *  网盘外部高峰;默认避开 06:00 清理与 22:00 索引构建。 */
+        private java.util.List<String> nightCheckTimes = java.util.List.of("03:15");
         /** 追更中(官方状态 RETURNING)无新集退避封顶(小时);完结/无元数据维持 24h */
         private int returningBackoffCapHours = 12;
         /** BAD 候选冷却(天):超期允许重探一次(误标自愈),再失败重新计时 */
         private int badCooldownDays = 7;
+        /** 瞬时失败候选的短冷却(小时):瞬时故障连击达上限退役的候选按此重探 —— 网盘窗口性抖动
+         *  攒满连击不等于链接死,7 天冷却会把好源白白关在池外 */
+        private int transientReprobeHours = 24;
         /** 字节级流探测:对直链 Range 请求的字节上限(解析成功后再拉一小段,验证 CDN 真出流) */
         private int streamProbeMaxBytes = 4096;
         /** 字节级流探测:HTTP 超时(秒) */

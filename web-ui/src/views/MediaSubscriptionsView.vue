@@ -98,13 +98,13 @@
           </el-table-column>
           <el-table-column label="进度" width="170">
             <template #default="scope">
-              <span>{{ scope.row.currentEpisodes ?? 0 }}{{ progressTotal(scope.row) ? ' / ' + progressTotal(scope.row) : '' }} 集</span>
+              <span>{{ progressTotal(scope.row) ? `${scope.row.currentEpisodes ?? 0} / ${progressTotal(scope.row)} 集` : `已更新至 ${scope.row.currentEpisodes ?? 0} 集` }}</span>
               <div class="sub-text danger" v-if="scope.row.missingEpisodes && scope.row.missingEpisodes.length">
                 缺第 {{ compactNumbers(scope.row.missingEpisodes) }} 集
               </div>
-              <div class="sub-text" v-else-if="scope.row.officialEpisodes && scope.row.officialEpisodes > (scope.row.currentEpisodes ?? 0)
-                  && scope.row.officialEpisodes <= (progressTotal(scope.row) ?? scope.row.officialEpisodes)">
-                官方已播 {{ scope.row.officialEpisodes }} 集
+              <div class="sub-text" v-else-if="scope.row.officialEpisodes && airedInSeason(scope.row) > (scope.row.currentEpisodes ?? 0)
+                  && airedInSeason(scope.row) <= (progressTotal(scope.row) ?? airedInSeason(scope.row))">
+                官方已播 {{ airedInSeason(scope.row) }} 集
               </div>
             </template>
           </el-table-column>
@@ -195,6 +195,10 @@
           <el-input-number v-model="form.expectedEpisodes" :min="0" :max="9999"/>
           <span class="sub-text" style="margin-left:8px">0/空 = 用官方总集数,均无则不自动完结</span>
         </el-form-item>
+        <el-form-item label="总集数锁定">
+          <el-input-number v-model="form.manualTotalEpisodes" :min="0" :max="9999"/>
+          <span class="sub-text" style="margin-left:8px">官方总集数不可信时(桥接污染/反复横跳)手动纠正:缺集/完结/分母以此为准;0/空 = 跟随官方</span>
+        </el-form-item>
         <el-form-item label="资源模式">
           <el-radio-group v-model="form.mode">
             <el-radio value="FOLLOW">挂载追更(免账号)</el-radio>
@@ -249,11 +253,11 @@
         </el-form-item>
         <el-form-item label="单集下限(MB)">
           <el-input-number v-model="form.minEpisodeSizeMb" :min="0" :max="100000"/>
-          <span class="sub-text" style="margin-left:8px">过滤预告/花絮</span>
+          <span class="sub-text" style="margin-left:8px">0 = 跟随全局({{ globalMinEpisodeSizeLabel }});过滤预告/花絮</span>
         </el-form-item>
         <el-form-item label="单集上限(MB)">
           <el-input-number v-model="form.maxEpisodeSizeMb" :min="0" :max="1000000"/>
-          <span class="sub-text" style="margin-left:8px">0 = 不限;过滤捆绑包/异常大文件</span>
+          <span class="sub-text" style="margin-left:8px">0 = 跟随全局({{ globalMaxEpisodeSizeLabel }});过滤捆绑包/异常大文件</span>
         </el-form-item>
         <el-collapse style="width:100%">
           <el-collapse-item title="打分权重(高级,留空用默认)">
@@ -288,6 +292,10 @@
     </el-dialog>
 
     <el-drawer v-model="resourcesVisible" :title="'候选资源 - ' + (current?.name || '')" size="62%">
+      <div class="resources-toolbar">
+        <el-button size="small" type="primary" plain @click="openAddResource">添加资源</el-button>
+        <span class="sub-text">粘贴分享链接只入候选池,不挂载不动主源;巡检/补缺时自动探测,想立即挂载点「启用」(只挂为补缺源,不动主源;换主源用「转主源」)</span>
+      </div>
       <el-table :data="resources" border v-loading="resourcesLoading">
         <el-table-column prop="title" label="资源" min-width="240" show-overflow-tooltip>
           <template #default="scope">
@@ -295,6 +303,7 @@
             <a v-if="scope.row.link?.startsWith('http')" :href="scope.row.link" target="_blank" rel="noopener"
                class="resource-link">{{ scope.row.title || scope.row.link }}</a>
             <span v-else>{{ scope.row.title || scope.row.link }}</span>
+            <el-tag v-if="scope.row.source === 'manual'" size="small" type="info" style="margin-left: 4px">手动</el-tag>
             <span v-if="scope.row.password" class="resource-passcode">提取码 {{ scope.row.password }}</span>
           </template>
         </el-table-column>
@@ -317,22 +326,45 @@
             <el-tag v-if="scope.row.startEpisode" size="small" type="info" style="margin-left: 4px">起{{ scope.row.startEpisode }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column fixed="right" label="操作" width="220">
+        <el-table-column fixed="right" label="操作" width="320">
           <template #default="scope">
             <el-button v-if="scope.row.state === 'CANDIDATE'" link type="primary" size="small"
-                       @click="activateResource(scope.row)">启用</el-button>
+                       @click="enableResource(scope.row)">启用</el-button>
             <el-button v-else-if="scope.row.state === 'MOUNTED' && !scope.row.primary" link type="primary" size="small"
                        @click="activateResource(scope.row)">转主源</el-button>
             <el-button v-if="scope.row.pinned" link type="danger" size="small"
                        @click="unpinResource(scope.row)">取消钉选</el-button>
-            <el-button v-else link type="danger" size="small"
+            <el-button v-else-if="scope.row.state !== 'REMOVED'" link type="danger" size="small"
                        @click="pinResource(scope.row)">钉选</el-button>
-            <el-button link type="warning" size="small"
+            <el-button v-if="scope.row.state !== 'REMOVED'" link type="warning" size="small"
                        @click="setResourceStart(scope.row)">起始集号</el-button>
+            <el-button v-if="scope.row.state === 'REMOVED'" link type="primary" size="small"
+                       @click="restoreResource(scope.row)">恢复</el-button>
+            <el-button v-else-if="!scope.row.primary" link type="danger" size="small"
+                       @click="removeResource(scope.row)">移除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-drawer>
+
+    <el-dialog v-model="addResourceVisible" title="手动添加候选资源" width="560">
+      <el-form label-width="70px" @submit.prevent>
+        <el-form-item label="分享链接">
+          <el-input v-model="addResourceForm.link" type="textarea" :rows="3" placeholder="网盘分享链接(夸克/UC/阿里/百度/115/天翼/移动/123/迅雷/光鸭)"
+                    :disabled="addResourceSaving"/>
+        </el-form-item>
+        <el-form-item label="提取码">
+          <el-input v-model="addResourceForm.password" placeholder="无提取码可留空" :disabled="addResourceSaving"/>
+        </el-form-item>
+      </el-form>
+      <div class="sub-text">
+        只加入候选池:不挂载、不替换当前主源。巡检补缺/换源时自动探测(候选序置顶);要立即挂载,请在列表点「启用」(只挂为补缺源,不动主源;换主源用「转主源/钉选」)。
+      </div>
+      <template #footer>
+        <el-button @click="addResourceVisible = false">取消</el-button>
+        <el-button type="primary" :loading="addResourceSaving" @click="submitAddResource">添加</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer v-model="episodesVisible" :title="'集数清单 - ' + (current?.name || '')" size="52%">
       <div class="episode-filter">
@@ -541,6 +573,10 @@
               <el-input v-model="notifyForm.chatId" placeholder="与 bot 对话后获取"/>
               <span v-if="!store.admin" class="sub-text">个人 TG 通知渠道:留空时沿用管理员配置的全局渠道</span>
             </el-form-item>
+            <el-form-item label="免打扰时段">
+              <el-input v-model="notifyForm.quietHours" placeholder="23:00-08:00,留空立即发送"/>
+              <span class="sub-text">时段内(可跨零点)巡检通知推迟到时段结束合并送达;凌晨巡检不半夜响铃</span>
+            </el-form-item>
             <el-form-item v-if="store.admin" label="Bot 交互">
               <el-switch v-model="notifyForm.botEnabled"/>
               <span class="sub-text" style="margin-left:8px">允许在 Telegram 里与 Bot 对话(查订阅/搜索/追剧/退订);只需收通知不需要对话时可关闭</span>
@@ -560,7 +596,7 @@
               </el-select>
               <span class="sub-text">对应网盘的候选资源打分 +15(已配置账号本身 +8),如夸克 SVIP/百度 SVIP/115 会员</span>
             </el-form-item>
-            <span v-if="store.admin" class="sub-text">玩偶聚合搜索源默认开启无需配置(wanou-enabled 可关);盘链/观影/蜗牛在各自标签页配置,无凭证的源自动关闭</span>
+            <span v-if="store.admin" class="sub-text">玩偶聚合搜索源默认开启无需配置(wanou-enabled 可关);盘聚是项目内命名,实际站点为 SeedHub 系聚合站,免登录无需配置;盘链/观影/蜗牛在各自标签页配置,无凭证的源自动关闭</span>
           </el-tab-pane>
           <el-tab-pane label="资源筛选" name="poolFilter">
             <el-form-item label="清晰度门槛">
@@ -818,6 +854,7 @@ interface SubscriptionDto {
   accountId: number | null
   accountIds: string[] | null
   expectedEpisodes: number | null
+  manualTotalEpisodes: number | null
   currentEpisodes: number | null
   maxEpisode: number | null
   missingEpisodes: number[]
@@ -859,6 +896,8 @@ interface ResourceDto {
   score: number | null
   /** 挂载生命周期:CANDIDATE/MOUNTED/RETIRED/REJECTED(可用性由集源行聚合,不再落在资源上) */
   state: string | null
+  /** 入池来源:manual = 用户手动粘贴链接(豁免盘白名单/年份/标题等自动门禁) */
+  source: string | null
   primary: boolean
   /** 手动钉选:换源候选序置顶、归属复核豁免(用户否决自动换源) */
   pinned: boolean
@@ -975,6 +1014,38 @@ const globalMainDrivesLabel = computed(() => globalMainDrives.value.length
     ? `(${globalMainDrives.value.map(code => driveOptions.find(d => d.value === code)?.label || code).join('/')})`
     : '(未配置)')
 
+// 全局单集体积上下限(订阅表单「0 = 跟随全局」的展示值):管理员读全局 msub_pool_filter,
+// 普通用户读用户级设置(后端读取回退全局),均未配置时后端兜底(下限 20MB/上限不限)
+const globalPoolMinEpisodeSizeMb = ref(0)
+const globalPoolMaxEpisodeSizeMb = ref(0)
+
+const loadGlobalPoolFilter = () => {
+  const apply = (raw: string) => {
+    const poolFilter = parsePoolFilter(raw || '')
+    globalPoolMinEpisodeSizeMb.value = poolFilter.minEpisodeSizeMb || 0
+    globalPoolMaxEpisodeSizeMb.value = poolFilter.maxEpisodeSizeMb || 0
+  }
+  if (store.admin) {
+    axios.get('/api/settings').then(response => {
+      apply((response.data || {})['msub_pool_filter'] || '')
+    }).catch(() => {
+    })
+  } else {
+    axios.get('/api/user-settings/msub_pool_filter').then(response => {
+      apply(response.data?.value || '')
+    }).catch(() => {
+    })
+  }
+}
+
+const globalMinEpisodeSizeLabel = computed(() => globalPoolMinEpisodeSizeMb.value > 0
+    ? `当前 ${globalPoolMinEpisodeSizeMb.value}MB`
+    : '未配置时默认 20MB')
+
+const globalMaxEpisodeSizeLabel = computed(() => globalPoolMaxEpisodeSizeMb.value > 0
+    ? `当前 ${globalPoolMaxEpisodeSizeMb.value}MB`
+    : '未配置时不限')
+
 const subscriptions = ref<SubscriptionDto[]>([])
 // 状态筛选(100+ 订阅规模):列表页按状态收敛;全选/批量操作天然只作用于过滤后的可见行
 const statusFilter = ref('')
@@ -1013,6 +1084,10 @@ const notifySaving = ref(false)
 const resourcesVisible = ref(false)
 const resourcesLoading = ref(false)
 const resources = ref<ResourceDto[]>([])
+// 手动添加候选资源:只入候选池不挂载不动主源(与「转主源/钉选」的换主源分开)
+const addResourceVisible = ref(false)
+const addResourceSaving = ref(false)
+const addResourceForm = ref({link: '', password: ''})
 const episodesVisible = ref(false)
 const episodesLoading = ref(false)
 const episodeItems = ref<any[]>([])
@@ -1071,6 +1146,7 @@ const loadPanSouAuth = () => {
 const notifyForm = ref({
   botToken: '',
   chatId: '',
+  quietHours: '',
   botEnabled: true,
   doubanCookie: '',
   archiveDays: 0,
@@ -1150,6 +1226,7 @@ const navPending = ref<any>(null)
 onMounted(() => {
   loadAll()
   loadGlobalMainDrives()
+  loadGlobalPoolFilter()
   axios.get('/api/pan/accounts').then(response => {
     accounts.value = response.data || []
   }).catch(() => {
@@ -1300,6 +1377,7 @@ const handleAdd = () => {
     metaProvider: null,
     metaId: null,
     expectedEpisodes: null,
+    manualTotalEpisodes: null,
     mode: 'FOLLOW',
     accountId: null,
     accountIds: [] as string[],
@@ -1311,7 +1389,7 @@ const handleAdd = () => {
     qualities: [],
     includeKeywords: [],
     excludeKeywords: [],
-    minEpisodeSizeMb: 20,
+    minEpisodeSizeMb: 0,
     maxEpisodeSizeMb: 0,
     weights: {} as Record<string, number | null>,
   }
@@ -1334,6 +1412,7 @@ const handleEdit = (row: SubscriptionDto) => {
     metaProvider: row.metaProvider,
     metaId: row.metaId,
     expectedEpisodes: row.expectedEpisodes,
+    manualTotalEpisodes: row.manualTotalEpisodes,
     mode: row.mode,
     accountId: null,
     accountIds: row.accountIds?.length ? row.accountIds : (row.accountId ? ['pan:' + row.accountId] : []),
@@ -1345,7 +1424,7 @@ const handleEdit = (row: SubscriptionDto) => {
     qualities: row.filter?.qualities || [],
     includeKeywords: row.filter?.includeKeywords || [],
     excludeKeywords: row.filter?.excludeKeywords || [],
-    minEpisodeSizeMb: row.filter?.minEpisodeSizeMb ?? 20,
+    minEpisodeSizeMb: row.filter?.minEpisodeSizeMb ?? 0,
     maxEpisodeSizeMb: row.filter?.maxEpisodeSizeMb ?? 0,
     weights: { ...(row.filter?.weights || {}) },
   }
@@ -1435,6 +1514,7 @@ const buildBody = () => ({
   metaProvider: form.value.metaProvider,
   metaId: form.value.metaId,
   expectedEpisodes: form.value.expectedEpisodes,
+  manualTotalEpisodes: form.value.manualTotalEpisodes ?? 0,
   mode: form.value.mode,
   accountId: form.value.accountId,
   accountIds: form.value.accountIds,
@@ -1587,6 +1667,49 @@ const loadResources = () => {
   })
 }
 
+/** 手动添加候选资源:只入池不挂载不动主源(用户反馈"一启用就变主资源"的解法 ——
+ *  添加与启用两个动作分开;同链幂等,曾移除/判死的复活回候选池)。 */
+const openAddResource = () => {
+  addResourceForm.value = {link: '', password: ''}
+  addResourceVisible.value = true
+}
+
+const submitAddResource = () => {
+  if (!current.value) return
+  const link = addResourceForm.value.link.trim()
+  if (!link) {
+    ElMessage.warning('请粘贴分享链接')
+    return
+  }
+  addResourceSaving.value = true
+  axios.post(`/api/media-subscriptions/${current.value.id}/resources`, {
+    link,
+    password: addResourceForm.value.password.trim() || null,
+  }).then(response => {
+    if (response.data?.existed) {
+      ElMessage.success('该链接已在资源池中,提取码已按填写更新')
+    } else {
+      ElMessage.success(response.data?.revived ? '已复活为候选(下轮巡检重探)' : '已加入候选池,巡检/补缺时自动探测')
+    }
+    addResourceVisible.value = false
+    loadResources()
+  }).finally(() => {
+    addResourceSaving.value = false
+  })
+}
+
+/** 启用候选(挂为补缺源,不动主源):探测落集源行 → 挂到 .sources/ → 自动触发一轮巡检。
+ *  与「转主源」分开 —— 回应"点启用就变成主源"。 */
+const enableResource = (resource: ResourceDto) => {
+  if (!current.value) return
+  axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/mount`).then(() => {
+    ElMessage.success('已开始挂载为补缺源(主源不动),稍后刷新')
+    schedule(loadResources, 6000)
+    schedule(loadAll, 8000)
+  })
+}
+
+/** 转主源(已挂载的补缺源升级/手动换源):删旧挂载换到订阅固定路径。 */
 const activateResource = (resource: ResourceDto) => {
   if (!current.value) return
   axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/activate`).then(() => {
@@ -1610,6 +1733,30 @@ const unpinResource = (resource: ResourceDto) => {
   axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/unpin`).then(() => {
     ElMessage.success('已取消钉选,恢复自动换源')
     schedule(loadResources, 2000)
+  })
+}
+
+/** 手动移除资源:误挂的异剧源(同名短剧冒领集位)/不想要的源 —— 卸载挂载、清集源行、
+ *  墓碑防下轮搜索重新入池;主源不可移除(先换源)。误移除可用「恢复」回候选池。 */
+const removeResource = (resource: ResourceDto) => {
+  if (!current.value) return
+  ElMessageBox.confirm(
+      `确定移除「${resource.title || resource.link}」?将卸载其挂载并清除集数记录,之后不再自动入池(可恢复)。`,
+      '移除资源', {type: 'warning'}).then(() => {
+    axios.delete(`/api/media-subscriptions/${current.value!.id}/resources/${resource.id}`).then(() => {
+      ElMessage.success('已移除')
+      loadResources()
+      if (episodesVisible.value) showEpisodes(current.value!)
+      schedule(loadAll, 2000)
+    })
+  }).catch(() => {})
+}
+
+const restoreResource = (resource: ResourceDto) => {
+  if (!current.value) return
+  axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/restore`).then(() => {
+    ElMessage.success('已恢复为候选')
+    loadResources()
   })
 }
 
@@ -1808,10 +1955,12 @@ const openNotify = () => {
     Promise.all([
       axios.get('/api/user-settings/msub_telegram_bot_token'),
       axios.get('/api/user-settings/msub_telegram_chat_id'),
+      axios.get('/api/user-settings/msub_notify_quiet_hours'),
       axios.get('/api/user-settings/msub_pool_filter'),
-    ]).then(([token, chat, pool]) => {
+    ]).then(([token, chat, quiet, pool]) => {
       notifyForm.value.botToken = token.data?.value || ''
       notifyForm.value.chatId = chat.data?.value || ''
+      notifyForm.value.quietHours = quiet.data?.value || ''
       const poolFilter = parsePoolFilter(pool.data?.value || '')
       notifyForm.value.poolMinQuality = poolFilter.minQuality
       notifyForm.value.poolIncludeKeywords = poolFilter.includeKeywords
@@ -1830,6 +1979,7 @@ const openNotify = () => {
     const settings = response.data || {}
     notifyForm.value.botToken = settings['msub_telegram_bot_token'] || ''
     notifyForm.value.chatId = settings['msub_telegram_chat_id'] || ''
+    notifyForm.value.quietHours = settings['msub_notify_quiet_hours'] || ''
     notifyForm.value.botEnabled = settings['msub_telegram_bot_enabled'] !== 'false'
     notifyForm.value.doubanCookie = settings['douban_cookie'] || ''
     notifyForm.value.tmdbApiKey = settings['tmdb_api_key'] || ''
@@ -1896,6 +2046,7 @@ const saveNotify = () => {
   const saves = store.admin ? [
     axios.post('/api/settings', {name: 'msub_telegram_bot_token', value: notifyForm.value.botToken}),
     axios.post('/api/settings', {name: 'msub_telegram_chat_id', value: notifyForm.value.chatId}),
+    axios.post('/api/settings', {name: 'msub_notify_quiet_hours', value: notifyForm.value.quietHours.trim()}),
     axios.post('/api/settings', {name: 'msub_telegram_bot_enabled', value: String(notifyForm.value.botEnabled)}),
     axios.post('/api/settings', {name: 'douban_cookie', value: notifyForm.value.doubanCookie}),
     axios.post('/api/settings', {name: 'tmdb_api_key', value: notifyForm.value.tmdbApiKey}),
@@ -1953,6 +2104,7 @@ const saveNotify = () => {
     const saves = [
       axios.put('/api/user-settings/msub_telegram_bot_token', {name: 'msub_telegram_bot_token', value: notifyForm.value.botToken}),
       axios.put('/api/user-settings/msub_telegram_chat_id', {name: 'msub_telegram_chat_id', value: notifyForm.value.chatId}),
+      axios.put('/api/user-settings/msub_notify_quiet_hours', {name: 'msub_notify_quiet_hours', value: notifyForm.value.quietHours.trim()}),
     ]
     if (poolFilterValue !== userPoolRaw.value) {
       saves.push(axios.put('/api/user-settings/msub_pool_filter', {name: 'msub_pool_filter', value: poolFilterValue}))
@@ -1968,6 +2120,7 @@ const saveNotify = () => {
     } else {
       ElMessage.success('已保存(下轮巡检生效)')
       notifyVisible.value = false
+      loadGlobalPoolFilter() // 全局单集下限变了,新建订阅表单「跟随全局」的展示值同步刷新
     }
   }).finally(() => {
     notifySaving.value = false
@@ -2014,6 +2167,7 @@ const stateType = (state: string | null) => {
   if (state === 'MOUNTED') return 'success'
   if (state === 'RETIRED') return 'danger'
   if (state === 'REJECTED') return 'danger'
+  if (state === 'REMOVED') return 'info'
   return 'info'
 }
 
@@ -2031,6 +2185,11 @@ const weightDefs: { key: string; label: string; value: number }[] = [
   { key: 'drive.main', label: '主网盘', value: 15 },
   { key: 'account', label: '已配账号', value: 8 },
   { key: 'account.vip', label: 'VIP账号', value: 15 },
+  { key: 'source.wanou', label: '玩偶源', value: 22 },
+  { key: 'source.woniu', label: '蜗牛源', value: 20 },
+  { key: 'source.panlian', label: '盘链源', value: 12 },
+  { key: 'source.panju', label: '盘聚源(SeedHub)', value: 12 },
+  { key: 'source.guanying', label: '观影源', value: 12 },
   { key: 'baidu.free', label: '百度免会员', value: 17 },
   { key: 'pan115', label: '115追更弱', value: -10 },
   { key: 'pack.complete', label: '完结包', value: -6 },
@@ -2074,6 +2233,7 @@ const stateLabel = (state: string | null) => {
     case 'MOUNTED': return '已挂载'
     case 'RETIRED': return '已退役'
     case 'REJECTED': return '已拒绝'
+    case 'REMOVED': return '已移除'
     default: return '候选'
   }
 }
@@ -2142,8 +2302,20 @@ const compactNumbers = (numbers: number[]) => {
 }
 
 /** 进度分母:官方总集数滞后于资源现实时(长番官方 1212/本地已到 1270)以观测最大集号兜底,避免 1243/1212 倒挂 */
-const progressTotal = (row: SubscriptionDto): number | null =>
-    Math.max(row.officialTotal ?? 0, row.expectedEpisodes ?? 0, row.maxEpisode ?? 0) || null
+// 分季订阅对齐(seasonStartEpisode)的在播季不显示自动分母:officialTotal/maxEpisode 是全剧连续
+// 集号空间且登记滞后(TMDB 200 vs 腾讯 181 都不可信),腾讯分季登记数还会随播出继续长,推本季体量
+// 都是假精度 —— 分母只认手填期望集数;完结显示「N集完结」,与 TVBox buildRemarks 同口径
+const seasonWindowed = (row: SubscriptionDto): boolean => (row.seasonStartEpisode ?? 0) > 1
+const progressTotal = (row: SubscriptionDto): number | null => {
+    if (seasonWindowed(row)) {
+        return (row.expectedEpisodes ?? 0) || null
+    }
+    return Math.max(row.officialTotal ?? 0, row.expectedEpisodes ?? 0, row.maxEpisode ?? 0) || null
+}
+// 官方已播的季内计数(与 currentEpisodes 同空间比较;绝对集号空间里的官方已播数要平移)
+const seasonOffset = (row: SubscriptionDto): number =>
+    (row.seasonStartEpisode ?? 0) > 1 ? (row.seasonStartEpisode ?? 0) - 1 : 0
+const airedInSeason = (row: SubscriptionDto): number => (row.officialEpisodes ?? 0) - seasonOffset(row)
 
 const formatTime = (time: number | null) => {
   if (!time) return '-'
@@ -2487,6 +2659,13 @@ const formatClock = (time: number) => {
   margin-left: 6px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.resources-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .meta-search {

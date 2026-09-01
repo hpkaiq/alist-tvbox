@@ -121,9 +121,27 @@ public class MediaSubscriptionController {
         return subscriptionService.resources(currentUid(), id);
     }
 
+    /** 手动添加候选资源:粘贴网盘分享链接直接入候选池(不挂载、不动主源),巡检/补缺时自动探测;
+     *  与 activate/pin(转主源)分开,回应"一启用就变主资源"。body {link, password?}。 */
+    @PostMapping("/{id}/resources")
+    public Map<String, Object> addResource(@PathVariable int id, @RequestBody Map<String, String> body) {
+        return subscriptionService.addResource(currentUid(), id,
+                body == null ? null : body.get("link"),
+                body == null ? null : body.get("password"));
+    }
+
+    /** 手动换源(转主源):删旧挂载换到订阅固定路径,主源顶替。候选行的"启用"走 mount(只挂补缺不动主源)。 */
     @PostMapping("/{id}/resources/{resourceId}/activate")
     public Map<String, Object> activate(@PathVariable int id, @PathVariable int resourceId) {
         checkService.activateAsync(currentUid(), id, resourceId);
+        return Map.of("started", true);
+    }
+
+    /** 手动启用候选:探测落集源行 → 挂为补缺源(.sources/,不动主源)→ 触发一轮巡检。
+     *  与 activate/pin(转主源)分开,回应"点启用就变成主源"。 */
+    @PostMapping("/{id}/resources/{resourceId}/mount")
+    public Map<String, Object> mount(@PathVariable int id, @PathVariable int resourceId) {
+        checkService.mountAsync(currentUid(), id, resourceId);
         return Map.of("started", true);
     }
 
@@ -138,6 +156,21 @@ public class MediaSubscriptionController {
     @PostMapping("/{id}/resources/{resourceId}/unpin")
     public Map<String, Object> unpin(@PathVariable int id, @PathVariable int resourceId) {
         checkService.unpinAsync(currentUid(), id, resourceId);
+        return Map.of("success", true);
+    }
+
+    /** 手动移除资源:误挂的异剧源(同名短剧冒领)/不想要的源 —— 卸载补缺挂载、清集源行、
+     *  墓碑防自动重入池;主源拒绝(换源走钉选/转主源,整体下线走删除订阅)。 */
+    @DeleteMapping("/{id}/resources/{resourceId}")
+    public Map<String, Object> removeResource(@PathVariable int id, @PathVariable int resourceId) {
+        checkService.removeResource(currentUid(), id, resourceId);
+        return Map.of("success", true);
+    }
+
+    /** 恢复手动移除的资源:墓碑行回到候选池。 */
+    @PostMapping("/{id}/resources/{resourceId}/restore")
+    public Map<String, Object> restoreResource(@PathVariable int id, @PathVariable int resourceId) {
+        checkService.restoreResource(currentUid(), id, resourceId);
         return Map.of("success", true);
     }
 

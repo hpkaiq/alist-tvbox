@@ -57,6 +57,26 @@ class MediaSubscriptionRemarksTest {
     // ---------- 「最近更新」虚拟分类(updatedTime 近 7 天) ----------
 
     @Test
+    void airingSeasonWindowedShowsNoAutoDenominator() {
+        // 分季订阅对齐的在播季不显示自动分母:全剧总集数(TMDB 200)与腾讯分季登记数都不可信,
+        // 推本季体量是假精度 —— 「已更新至 N 集」;完结(status=ENDED)后「N集完结」
+        subscription.setCurrentEpisodes(9);
+        subscription.setOfficialTotal(200);
+        subscription.setSeasonStartEpisode(166);
+        Mockito.when(subscriptionRepository.findByUidOrderByCreatedTimeDesc(1)).thenReturn(List.of(subscription));
+
+        assertEquals("已更新至 9 集", service.contentList(1).getList().getFirst().getVod_remarks());
+
+        // 手填期望集数仍是唯一合法的自动分母来源
+        subscription.setExpectedEpisodes(16);
+        assertEquals("9/16集", service.contentList(1).getList().getFirst().getVod_remarks());
+
+        subscription.setExpectedEpisodes(0);
+        subscription.setStatus(MediaSubscription.STATUS_ENDED);
+        assertEquals("9集完结", service.contentList(1).getList().getFirst().getVod_remarks());
+    }
+
+    @Test
     void recentCategoryKeepsRecentlyUpdatedSubscriptions() {
         MediaSubscription stale = subscription();
         stale.setId(8);
