@@ -233,6 +233,64 @@ class MediaSubscriptionCheckServiceTest {
         assertEquals(20, service.parseEpisode("某剧.更新至20集", null));
     }
 
+    // ---------- 综艺期号回归(线上:心动的信号 第九季) ----------
+    // 正片标题拖长文案(「第2期上:告白夜来临～如益CP十指相扣」),文案数字(188男大=身高)
+    // 被末号规则当集号:第 3 期纯享解析成 188、先导片 60fps 解析成 60,假集号推高观测上限,
+    // missing 一路列到 188,补缺逐集空转、真资源与假缺口无交集被跳过探测。
+
+    @Test
+    void varietyEpisodeMarkAnchorsOverTrailingCopyNumbers() {
+        assertEquals(3, service.parseEpisode("2025-08-18 第3期上纯享：元气辣妹主动贴贴188男大.mkv", null));
+        assertEquals(2, service.parseEpisode("2026.08.10-第2期上：告白夜来临～如益CP十指相扣.mkv", null));
+        assertEquals(5, service.parseEpisode("2026.09.01 第5期下(1).mp4", null));
+        // 「更新至N集」不带「第」字,仍走末号规则,不受锚定影响
+        assertEquals(20, service.parseEpisode("某剧.更新至20集", null));
+    }
+
+    @Test
+    void fpsFrameRateIsNotAnEpisodeNumber() {
+        assertEquals(1, service.parseEpisode("剧名 第01集 2160p 50fps.mkv", null));
+        assertEquals(2, service.parseEpisode("2026.08.08 第02期 60fps 4K.mp4", null));
+    }
+
+    @Test
+    void varietyShareYieldsOnlyMainEpisodeNumbers() {
+        // 线上「心动的信号 第九季 更0902」分享全量文件名:正片(第N期上/中/下)只产集号,
+        // 陪看/纯享/加更/先导/花絮/彩蛋全剔,先导片的 60fps 不再产出 60
+        List<String> files = List.of(
+                "2026.07.31-先导片上.mp4", "2026.07.31-先导片下.mp4",
+                "2026.08.07-第1期陪看上.mp4", "2026.08.07-先导陪看上.mp4",
+                "2026.08.08-第1期陪看下.mp4", "2026.08.08-先导陪看下.mp4",
+                "2026.08.10-第2期上.mp4", "2026.08.10-第2期上纯享.mp4", "2026.08.10-第2期中.mp4",
+                "2026.08.10-第2期中纯享.mp4", "2026.08.11-第2期下.mp4", "2026.08.11-第2期下纯享.mp4",
+                "2026.08.13-第2期加更上.mp4", "2026.08.13-第2期加更下.mp4",
+                "2026.08.14-第2期陪看上.mp4", "2026.08.15-第2期陪看下.mp4",
+                "2026.08.16-花絮特辑.mp4",
+                "2026.08.17-第3期上.mp4", "2026.08.17-第3期上纯享.mp4", "2026.08.17-第3期中（上）.mp4",
+                "2026.08.17-第3期中（上）纯享.mp4", "2026.08.18-第3期下.mp4", "2026.08.18-第3期中（下）(1).mp4",
+                "2026.08.18-第3期中（下）.mp4", "2026.08.18-第3期中（下）纯享.mp4",
+                "2026.08.23-花絮特辑-4K.高码率.mp4", "2026.08.26-超前彩蛋-4K.高码率.mp4",
+                "2026.08.24-第4期上.mp4", "2026.08.24-第4期中（上）.mp4", "2026.08.27-第4期加更下.mp4",
+                "2026.08.27第4期加更上.mp4", "2026.08.28-第4期陪看上.mp4", "2026.08.28-第4期陪看中.mp4",
+                "2026.08.29-第4期陪看下.mp4", "2026.08.30花絮特辑-4K.高码率.mp4",
+                "2026.08.31-第5期上.mp4", "2026.08.31-第5期上纯享.mp4", "2026.08.31-第5期中上.mp4",
+                "2026.08.31-第5期中上纯享.mp4", "2026.09.01-第5期下(1).mp4", "2026.09.01-第5期下.mp4",
+                "2026.09.01-第5期中（下）.mp4", "2026.09.01-第5期中（下）纯享.mp4",
+                "2026.09.02-超前彩蛋-4K.高码率.mp4", "2026.09.02-第5期下纯享.mp4",
+                "20260812(超前彩蛋).mp4", "20260825(第4期下).mp4", "20260825(第4期中（下）).mp4");
+        String[] extras = {"先导", "陪看", "纯享", "加更", "花絮", "彩蛋"};
+        Set<Integer> episodes = new TreeSet<>();
+        for (String file : files) {
+            boolean extra = java.util.Arrays.stream(extras).anyMatch(file::contains);
+            int parsed = extra ? -1 : service.parseEpisode(file, 9);
+            if (!extra && parsed > 0) {
+                episodes.add(parsed);
+            }
+        }
+        // 该分享实缺第 1 期正片(只有第 1 期陪看),正片期号 2-5 全部干净识别
+        assertEquals(Set.of(2, 3, 4, 5), episodes);
+    }
+
     @Test
     void trailingNumber() {
         assertEquals(7, service.parseEpisode("剧名.E07.mkv", null));
@@ -268,6 +326,28 @@ class MediaSubscriptionCheckServiceTest {
         // 不能矫枉过正:日期之外的数字仍按末号规则取
         assertEquals(12, service.parseEpisode("剧名.2024.1080p.第12集.mkv", null));
         assertEquals(5, service.parseEpisode("Show.S01E05.2160p.mkv", 1));
+    }
+
+    // ---------- 广告域名水印(2026-09-02):下载站推广尾巴毒化末号规则 ----------
+    // 线上事故(醒来 01-06 合集磁力,itorrents 实拉种子):六个集文件全部带
+    // [最新电影www.dyg7.com] 水印,域名里的 7 是末号规则取到的最后一个可信数字 ——
+    // 01~06 全部解析成第 7 集:磁力预筛缺 1-6 集时匹配不到,缺第 7 集时误匹配
+    // (1-6 的合集被当第 7 集提交,收割后六文件又塌成一个集源行)。
+
+    @Test
+    void adDomainWatermarkInBracketsIsNotMistakenForEpisode() {
+        assertEquals(1, service.parseEpisode("01.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv", null));
+        assertEquals(4, service.parseEpisode("04.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv", null));
+        assertEquals(6, service.parseEpisode("06.1080p.HD国语中字无水印[最新电影www.dyg7.com].mkv", null));
+        // 无 www 前缀的域名形态同样剥离
+        assertEquals(2, service.parseEpisode("醒来02[电影天堂dygod.net].mkv", null));
+    }
+
+    @Test
+    void adDomainWatermarkStrippingKeepsRealMarks() {
+        // 显式集号段(BRACKET_EPISODE_MARK 守卫优先于域名信号)与发布组标签不受影响
+        assertEquals(5, service.parseEpisode("剧名[第05集 1080P].mkv", null));
+        assertEquals(3, service.parseEpisode("Show[SubsPlease]S01E03.1080p.mkv", 1));
     }
 
     // ---------- 四位数集号(2026-08-27):长寿动漫集号早已过千,999 上限整目录拒识 ----------
@@ -427,13 +507,54 @@ class MediaSubscriptionCheckServiceTest {
     }
 
     @Test
+    void fillPoolAllKeywordsStopsWhenPrimaryFoundCandidates() {
+        // 主词已搜到候选入池 → 自定义词不再搜索(扩展召回面只服务"主词召回不足",不为备胎翻倍烧请求)
+        Fixture fixture = new Fixture();
+        fixture.subscription.setName("苍兰诀");
+        fixture.subscription.setCustomKeywords("英文名");
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
+                .thenReturn(List.of(message("https://pan.quark.cn/s/ok", "苍兰诀 第01-08集 1080P")));
+        MediaSubscriptionResource admitted = new MediaSubscriptionResource();
+        admitted.setLink("https://pan.quark.cn/s/ok");
+        admitted.setState(MediaSubscriptionResource.STATE_CANDIDATE);
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1))
+                .thenReturn(List.of()) // 主词填池前:池空
+                .thenReturn(List.of(admitted)); // 自定义词填池前:主词已入池 → 闸门生效
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(1, "https://pan.quark.cn/s/ok"))
+                .thenReturn(Optional.empty());
+
+        fixture.service.fillPoolAllKeywords(fixture.subscription, true, null);
+
+        Mockito.verify(fixture.telegramService, Mockito.times(1))
+                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any());
+    }
+
+    @Test
+    void fillPoolAllKeywordsContinuesWhenPrimaryExhausted() {
+        // 主词搜不到任何候选(池仍枯竭)→ 自定义词逐个补搜
+        Fixture fixture = new Fixture();
+        fixture.subscription.setName("苍兰诀");
+        fixture.subscription.setCustomKeywords("英文名\n别名");
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
+                .thenReturn(List.of());
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+
+        fixture.service.fillPoolAllKeywords(fixture.subscription, true, null);
+
+        ArgumentCaptor<String> keywords = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(fixture.telegramService, Mockito.times(3))
+                .searchAggregated(keywords.capture(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any());
+        assertEquals(List.of("苍兰诀", "英文名", "别名"), keywords.getAllValues());
+    }
+
+    @Test
     void fillPoolAppliesGlobalFilterGates() {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_POOL_FILTER))
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_POOL_FILTER,
                         "{\"includeKeywords\":[\"国语\"],\"excludeKeywords\":[\"短剧\"],\"minQuality\":\"fhd\"}")));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(
                         message("https://pan.quark.cn/s/ok", "苍兰诀 第01-08集 国语 1080P"),
                         message("https://pan.quark.cn/s/no-kw", "苍兰诀 第01-08集 4K"),
@@ -462,7 +583,7 @@ class MediaSubscriptionCheckServiceTest {
         fixture.subscription.setName("苍兰诀");
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_POOL_FILTER))
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_POOL_FILTER, "{\"minQuality\":\"uhd\"}")));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(
                         message("https://pan.quark.cn/s/plain", "苍兰诀 第01-08集 国语"),
                         message("https://pan.quark.cn/s/hd", "苍兰诀 第01-08集 720P")));
@@ -485,7 +606,7 @@ class MediaSubscriptionCheckServiceTest {
         fixture.subscription.setFilterConfig("{\"excludeKeywords\":[\"抢先版\"]}");
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_POOL_FILTER))
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_POOL_FILTER, "{\"excludeKeywords\":[\"短剧\"]}")));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(
                         message("https://pan.quark.cn/s/ok", "苍兰诀 第01-08集 1080P"),
                         message("https://pan.quark.cn/s/drama", "苍兰诀 短剧合集"),
@@ -507,7 +628,7 @@ class MediaSubscriptionCheckServiceTest {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
         fixture.subscription.setFilterConfig("{\"qualities\":[\"杜比视界\"]}");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(
                         message("https://pan.quark.cn/s/dv", "苍兰诀 第01-08集 4K 杜比视界"),
                         message("https://pan.quark.cn/s/plain", "苍兰诀 第01-08集 4K")));
@@ -572,7 +693,7 @@ class MediaSubscriptionCheckServiceTest {
         Fixture fixture = new Fixture();
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_POOL_FILTER))
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_POOL_FILTER, "{\"excludeKeywords\":[\"短剧\"]}")));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(
                         message("https://pan.quark.cn/s/ok", "苍兰诀 第01-08集 4K"),
                         message("https://pan.quark.cn/s/drama", "苍兰诀 短剧合集")));
@@ -581,6 +702,59 @@ class MediaSubscriptionCheckServiceTest {
 
         assertEquals(1, result.size());
         assertEquals("https://pan.quark.cn/s/ok", result.get(0).get("link"));
+    }
+
+    @Test
+    void previewFreshUpdateOutscoresMonthOldPeer() {
+        // 3 天内更新的最新档(recency.fresh 叠加在 recent 之上):同盘同文案的两条候选,
+        // 只差发布时间 —— 线上「更0902」(消息 9/1 深夜,内容更新到 9/2 播出)此前与 8/5
+        // 旧包同 +30 拉不开,时间必须成为显式加分项
+        Fixture fixture = new Fixture();
+        Message fresh = message("https://pan.quark.cn/s/fresh", "测试剧 全集");
+        Message stale = message("https://pan.quark.cn/s/stale", "测试剧 全集");
+        stale.setTime(Instant.now().minus(java.time.Duration.ofDays(10)));
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
+                .thenReturn(List.of(fresh, stale));
+
+        List<Map<String, Object>> result = fixture.service.preview("测试剧", null, null);
+
+        Map<String, Object> freshRow = result.stream()
+                .filter(r -> "https://pan.quark.cn/s/fresh".equals(r.get("link"))).findFirst().orElseThrow();
+        Map<String, Object> staleRow = result.stream()
+                .filter(r -> "https://pan.quark.cn/s/stale".equals(r.get("link"))).findFirst().orElseThrow();
+        assertTrue(String.valueOf(freshRow.get("reasons")).contains("3天内更新"), String.valueOf(freshRow.get("reasons")));
+        assertFalse(String.valueOf(staleRow.get("reasons")).contains("3天内更新"), String.valueOf(staleRow.get("reasons")));
+        assertEquals(20, (int) freshRow.get("score") - (int) staleRow.get("score"),
+                "fresh 档应恰好拉大 20 分:" + freshRow.get("score") + " vs " + staleRow.get("score"));
+    }
+
+    @Test
+    void previewMainDriveExemptFromOutsidePenalty() {
+        // 订阅盘偏好 [UC,123] 与全局主盘 [百度,夸克] 冲突:主盘夸克不再吃「偏好外盘 -10」
+        //(此前与 drive.main +15 对冲后仍比不配偏好时低 10 分,订阅偏好的存在净惩罚主盘候选);
+        // 非主盘非偏好的盘照常降权,偏好语义对非主盘不变
+        Fixture fixture = new Fixture();
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "10,5")));
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES, "9")));
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
+                .thenReturn(List.of(
+                        message("https://pan.quark.cn/s/main", "测试剧 全集", "5"),
+                        message("https://cloud.189.cn/s/out", "测试剧 全集", "9")));
+        MediaSubscriptionFilter filter = new MediaSubscriptionFilter();
+        filter.setDriveTypes(List.of(7, 3));
+
+        List<Map<String, Object>> result = fixture.service.preview("测试剧", null, filter);
+
+        assertEquals(2, result.size());
+        Map<String, Object> quark = result.stream()
+                .filter(r -> "https://pan.quark.cn/s/main".equals(r.get("link"))).findFirst().orElseThrow();
+        Map<String, Object> tianyi = result.stream()
+                .filter(r -> "https://cloud.189.cn/s/out".equals(r.get("link"))).findFirst().orElseThrow();
+        assertFalse(String.valueOf(quark.get("reasons")).contains("偏好外盘"), String.valueOf(quark.get("reasons")));
+        assertTrue(String.valueOf(quark.get("reasons")).contains("主网盘"), String.valueOf(quark.get("reasons")));
+        assertTrue(String.valueOf(tianyi.get("reasons")).contains("偏好外盘"), String.valueOf(tianyi.get("reasons")));
     }
 
     private static MediaSubscriptionResource resource(String title) {
@@ -1012,6 +1186,51 @@ class MediaSubscriptionCheckServiceTest {
         assertEquals("测试剧 第5集", service.gapSearchKeyword(subscription, Set.of(5), 2));
     }
 
+    // ---------- 自定义搜索词:解析、补搜轮转、归属匹配 ----------
+
+    @Test
+    void customKeywordsSplitTrimsDedupesAndLimits() {
+        List<String> split = MediaSubscriptionCheckService.splitCustomKeywords(
+                " 英文名 \n英文2，别名、Alias\n\n英文2 \n 第五 \n第六 \n第七 \n第八");
+        assertEquals(List.of("英文名", "英文2", "别名", "Alias", "第五"), split, "多分隔符+trim+去重,至多 5 个");
+        assertEquals(List.of(), MediaSubscriptionCheckService.splitCustomKeywords(null));
+        assertEquals(List.of(), MediaSubscriptionCheckService.splitCustomKeywords(" \n ,,、"));
+    }
+
+    @Test
+    void customKeywordsDropsPrimaryWord() {
+        MediaSubscription subscription = subscription(); // keyword = "测试剧 4K"
+        subscription.setCustomKeywords("测试剧 4K\n英文名\n测试剧");
+        // 与主搜索词相同的词剔除(重复搜索纯浪费);与剧名相同但主词不同时保留(剧名兜底词仍要独立成路)
+        assertEquals(List.of("英文名", "测试剧"), MediaSubscriptionCheckService.customKeywords(subscription));
+        assertEquals(List.of(), MediaSubscriptionCheckService.customKeywords(new MediaSubscription()));
+    }
+
+    @Test
+    void gapSearchKeywordInsertsCustomKeywordRoundsBeforeEpisodeDegrade() {
+        MediaSubscription subscription = subscription();
+        subscription.setNextAirTime(System.currentTimeMillis() - 13 * 3600_000L);
+        subscription.setOfficialEpisodes(5);
+        subscription.setCustomKeywords("英文名\n别名");
+        Set<Integer> missing = new TreeSet<>(Set.of(3, 5));
+        assertEquals("测试剧 4K", service.gapSearchKeyword(subscription, missing, 1)); // 首轮整季主词
+        assertEquals("英文名", service.gapSearchKeyword(subscription, missing, 2)); // 自定义词轮
+        assertEquals("别名", service.gapSearchKeyword(subscription, missing, 3));
+        assertEquals("测试剧 第3集", service.gapSearchKeyword(subscription, missing, 4)); // 单集降级起点推后
+        assertEquals("测试剧 第5集", service.gapSearchKeyword(subscription, missing, 5));
+    }
+
+    @Test
+    void matchNamesIncludeCustomKeywords() {
+        MediaSubscription subscription = subscription();
+        subscription.setCustomKeywords("The Test Drama\n测试剧别名");
+        List<String> names = service.matchNames(subscription);
+        assertTrue(names.contains("The Test Drama"));
+        assertTrue(names.contains("测试剧别名"));
+        // 自定义词召回的资源标题(不含剧名本名)须过剧名门禁,否则多词召回被整条误杀
+        assertTrue(MediaSubscriptionCheckService.matchesTitle(names, "The Test Drama 4K 全集"));
+    }
+
     // ---------- ENDED 重开判定(本地集数 = 集源行 LIVE 并集) ----------
 
     @Test
@@ -1132,6 +1351,96 @@ class MediaSubscriptionCheckServiceTest {
         assertClose(now + 15 * 60_000L, fixture.subscription.getNextCheckTime());
         Mockito.verify(fixture.resourceRepository, Mockito.never())
                 .save(Mockito.any()); // 未换源未退役(主源解析查询不算换源)
+    }
+
+    @Test
+    void baiduSekeyExpiredListingDoesNotInvalidate() {
+        // 线上事故(2026-09-03):分享在网盘 App 里可正常访问,巡检列目录撞百度 sekey 会话过期
+        // (errno -9「提取码验证失败,请重试」,瞬时态、重验证可自愈)。错误 JSON 携带 "expired_type":0
+        // 字段名(值 0=非过期),曾被 GONE_ERROR 的无边界 expired 误判死链:主源 RETIRED + 90 天黑名单,
+        // 换不出候选后订阅落 ERROR(「已退役」+「异常」)。会话过期须退避重试,不退役不换源。
+        Fixture fixture = new Fixture();
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new RuntimeException("{\"errno\":-9,\"request_id\":9149375969895791869,"
+                        + "\"server_time\":1788395979,\"cfrom_id\":0,\"hitrisk\":0,\"appeal_status\":0,"
+                        + "\"is_zombie\":0,\"vip_point\":9779,\"vip_level\":4,\"svip10_id\":\"\","
+                        + "\"vip_type\":2,\"sharetype\":1,\"expired_type\":0,\"newno\":\"100000010001\","
+                        + "\"show_msg\":\"提取码验证失败,请重试\"}"));
+        long now = System.currentTimeMillis();
+        fixture.service.check(1);
+        assertEquals(MediaSubscription.STATUS_ACTIVE, fixture.subscription.getStatus(), "会话过期不是主源失效");
+        assertClose(now + 15 * 60_000L, fixture.subscription.getNextCheckTime());
+        Mockito.verify(fixture.resourceRepository, Mockito.never()).save(Mockito.any()); // 不退役不换源
+    }
+
+    @Test
+    void quarkRiskControlShareAliveDoesNotInvalidate() {
+        // 线上事故(2026-09-03,别的用户实例):夸克分享用户可正常访问,但 AList 挂载列目录报
+        // 「分享地址已失效」被无条件判死(主源 RETIRED + 90 天黑名单 + 订阅 ERROR)。
+        // 夸克对真死链与风控目标(挂载路径带的兜底 Cookie 被风控)返回同文案 —— 游客匿名
+        // token 探测是独立第二信源(实测同机活链 code:0 ok),分享活着就不能判死。
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource primary = new MediaSubscriptionResource();
+        primary.setId(11);
+        primary.setSubscriptionId(1);
+        primary.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        primary.setMountPath("/追剧/1-测试剧");
+        primary.setLink("https://pan.quark.cn/s/riskcontrolled");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of(primary));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/追剧/1-测试剧"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new RuntimeException("failed get share files: 分享地址已失效"));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(new FsResponse());
+        fixture.service.quarkTokenFetcher = (pwdId, passcode) ->
+                "{\"status\":200,\"code\":0,\"message\":\"ok\",\"data\":{\"stoken\":\"fresh\",\"share_type\":0}}";
+        long now = System.currentTimeMillis();
+        fixture.service.check(1);
+        assertEquals(MediaSubscription.STATUS_ACTIVE, fixture.subscription.getStatus(), "游客探测分享活着,不判主源失效");
+        assertClose(now + 15 * 60_000L, fixture.subscription.getNextCheckTime());
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, primary.getState(), "不退役");
+        Mockito.verify(fixture.deadLinkRepository, Mockito.never()).save(Mockito.any()); // 不进黑名单
+    }
+
+    @Test
+    void quarkGuestDeadVerdictStillRetires() {
+        // 对照:游客探测确认死链(code 410xx 家族)时第二信源不拦截,原判死换源路径照走
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource primary = new MediaSubscriptionResource();
+        primary.setId(11);
+        primary.setSubscriptionId(1);
+        primary.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        primary.setMountPath("/追剧/1-测试剧");
+        primary.setLink("https://pan.quark.cn/s/really-dead");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of(primary));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/追剧/1-测试剧"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new RuntimeException("failed get share files: 分享地址已失效"));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(new FsResponse());
+        fixture.service.quarkTokenFetcher = (pwdId, passcode) ->
+                "{\"status\":404,\"code\":41012,\"message\":\"好友已取消了分享\"}";
+        fixture.service.check(1);
+        assertEquals(MediaSubscriptionResource.STATE_RETIRED, primary.getState(), "确认死链照常退役");
+        assertEquals(MediaSubscription.STATUS_ERROR, fixture.subscription.getStatus()); // 池空且搜索无果
+    }
+
+    @Test
+    void quarkShareAliveVerdictClassification() {
+        // 响应分类:code 0 + stoken = 活;410xx = 死;其它/网络异常(null)= 无结论
+        Fixture alive = new Fixture();
+        alive.service.quarkTokenFetcher = (p, c) -> "{\"status\":200,\"code\":0,\"message\":\"ok\",\"data\":{\"stoken\":\"fresh\"}}";
+        assertEquals(Boolean.TRUE, alive.service.quarkShareAlive("https://pan.quark.cn/s/abcd1234efgh", ""));
+        Fixture dead = new Fixture();
+        dead.service.quarkTokenFetcher = (p, c) -> "{\"status\":404,\"code\":41012,\"message\":\"好友已取消了分享\"}";
+        assertEquals(Boolean.FALSE, dead.service.quarkShareAlive("https://pan.quark.cn/s/x", ""));
+        Fixture weird = new Fixture();
+        weird.service.quarkTokenFetcher = (p, c) -> "{\"status\":429,\"code\":4294967,\"message\":\"too many\"}";
+        assertNull(weird.service.quarkShareAlive("https://pan.quark.cn/s/x", ""), "非 410xx 错误=无结论");
+        assertNull(new Fixture().service.quarkShareAlive("https://pan.baidu.com/s/1xyz", ""), "非夸克链接不探测");
     }
 
     @Test
@@ -1533,7 +1842,7 @@ class MediaSubscriptionCheckServiceTest {
     void fillPoolFiltersIrrelevantResults() {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/other", "乘风破浪 全12集 4K"),
                         message("https://pan.quark.cn/s/mine", "苍兰诀 第01-08集 4K")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
@@ -1556,7 +1865,7 @@ class MediaSubscriptionCheckServiceTest {
         // 失效黑名单(dead_link):其它订阅已用取链事实判死过的分享不再入池
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/dead", "苍兰诀 第01-08集 4K"),
                         message("https://pan.quark.cn/s/alive", "苍兰诀 第01-08集 4K")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
@@ -1579,7 +1888,7 @@ class MediaSubscriptionCheckServiceTest {
         Setting mainDrives = setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "5,10"); // 全局主网盘:夸克/百度
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES))
                 .thenReturn(Optional.of(mainDrives));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/q", "苍兰诀 第01-08集 4K"),
                         message("https://pan.baidu.com/s/b", "苍兰诀 第01-08集 4K", "10"),
                         message("https://115.com/s/x", "苍兰诀 第01-08集 4K", "8")));
@@ -1591,11 +1900,11 @@ class MediaSubscriptionCheckServiceTest {
 
         ArgumentCaptor<MediaSubscriptionResource> captor = ArgumentCaptor.forClass(MediaSubscriptionResource.class);
         Mockito.verify(fixture.resourceRepository, Mockito.times(2)).save(captor.capture());
-        // 共同底分:近期+30 4K+25 归属+15 = 70;主网盘(夸克/百度)+15,百度另有免会员+17(含夸克易和谐加成)
+        // 共同底分:近期30+3天内更新20 4K+25 归属+15 = 90;主网盘(夸克/百度)+15,百度另有免会员+17(含夸克易和谐加成)
         int quark = captor.getAllValues().stream().filter(r -> r.getLink().endsWith("/q")).findFirst().orElseThrow().getScore();
         int baidu = captor.getAllValues().stream().filter(r -> r.getLink().endsWith("/b")).findFirst().orElseThrow().getScore();
-        assertEquals(85, quark, "主网盘夸克 = 70 + 主网盘15");
-        assertEquals(102, baidu, "主网盘百度 = 70 + 主网盘15 + 免会员17");
+        assertEquals(105, quark, "主网盘夸克 = 90 + 主网盘15");
+        assertEquals(122, baidu, "主网盘百度 = 90 + 主网盘15 + 免会员17");
         assertTrue(captor.getAllValues().stream().noneMatch(r -> r.getLink().endsWith("/x")),
                 "未配置扩展网盘:非主网盘 115 不入候选池(默认只有主网盘的源)");
     }
@@ -1609,7 +1918,7 @@ class MediaSubscriptionCheckServiceTest {
         MediaSubscriptionResource candidate = new MediaSubscriptionResource();
         candidate.setState(MediaSubscriptionResource.STATE_CANDIDATE);
         candidate.setLink("https://pan.quark.cn/s/pooled");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/ok", "一念永恒 完结季 4K")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1))
                 .thenReturn(List.of(candidate));
@@ -1619,11 +1928,11 @@ class MediaSubscriptionCheckServiceTest {
         fixture.service.fillPool(fixture.subscription, true, null);
         fixture.service.fillPool(fixture.subscription, true, "一念永恒");
         Mockito.verify(fixture.telegramService, Mockito.times(1))
-                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean());
+                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any());
 
         fixture.service.fillPool(fixture.subscription, true, "一念永恒 第9集");
         Mockito.verify(fixture.telegramService, Mockito.times(2))
-                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean());
+                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any());
     }
 
     @Test
@@ -1635,7 +1944,7 @@ class MediaSubscriptionCheckServiceTest {
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "5,10")));
         Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES))
                 .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES, "8")));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/q", "苍兰诀 第01-08集 4K"),
                         message("https://pan.baidu.com/s/b", "苍兰诀 第01-08集 4K", "10"),
                         message("https://115.com/s/x", "苍兰诀 第01-08集 4K", "8")));
@@ -1648,7 +1957,7 @@ class MediaSubscriptionCheckServiceTest {
         ArgumentCaptor<MediaSubscriptionResource> captor = ArgumentCaptor.forClass(MediaSubscriptionResource.class);
         Mockito.verify(fixture.resourceRepository, Mockito.times(3)).save(captor.capture());
         int pan115 = captor.getAllValues().stream().filter(r -> r.getLink().endsWith("/x")).findFirst().orElseThrow().getScore();
-        assertEquals(60, pan115, "扩展盘 115 = 70 - 追更弱10(无主网盘加分)");
+        assertEquals(80, pan115, "扩展盘 115 = 90 - 追更弱10(无主网盘加分)");
     }
 
     private static Setting setting(String name, String value) {
@@ -1664,7 +1973,7 @@ class MediaSubscriptionCheckServiceTest {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
         fixture.subscription.setFilterConfig("{\"weights\":{\"quality.uhd\":0,\"match.title\":30}}"); // 4K 不加分,标题归属加到 30
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/q", "苍兰诀 第01-08集 4K")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(1, "https://pan.quark.cn/s/q"))
@@ -1674,8 +1983,8 @@ class MediaSubscriptionCheckServiceTest {
 
         ArgumentCaptor<MediaSubscriptionResource> captor = ArgumentCaptor.forClass(MediaSubscriptionResource.class);
         Mockito.verify(fixture.resourceRepository).save(captor.capture());
-        // 底分 = 近期30 + 归属30(权重表覆盖 15) ;4K 默认 25 被调没
-        assertEquals(60, captor.getValue().getScore(), "权重表覆盖打分:quality.uhd=0 不加分,match.title=30");
+        // 底分 = 近期30+3天内更新20 + 归属30(权重表覆盖 15) ;4K 默认 25 被调没
+        assertEquals(80, captor.getValue().getScore(), "权重表覆盖打分:quality.uhd=0 不加分,match.title=30");
         assertEquals(MediaSubscriptionResource.STATE_CANDIDATE, captor.getValue().getState());
     }
 
@@ -1684,7 +1993,7 @@ class MediaSubscriptionCheckServiceTest {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
         fixture.subscription.setSeason(2);
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/s1", "苍兰诀 第一季 全36集"),
                         message("https://pan.quark.cn/s/s2", "苍兰诀 第二季 更新至08集")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
@@ -1793,7 +2102,7 @@ class MediaSubscriptionCheckServiceTest {
         }
         results.add(message("https://115.com/s/x0", "测试剧 第01-08集", "8"));
         results.add(message("https://115.com/s/x1", "测试剧 第01-08集", "8"));
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean())).thenReturn(results);
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any())).thenReturn(results);
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(Mockito.eq(1), Mockito.anyString()))
                 .thenReturn(Optional.empty());
@@ -1819,7 +2128,7 @@ class MediaSubscriptionCheckServiceTest {
         for (int i = 0; i < 8; i++) {
             results.add(message("https://pan.quark.cn/s/q" + i, "测试剧 第01-08集 4K"));
         }
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean())).thenReturn(results);
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any())).thenReturn(results);
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(Mockito.eq(1), Mockito.anyString()))
                 .thenReturn(Optional.empty());
@@ -1902,6 +2211,59 @@ class MediaSubscriptionCheckServiceTest {
         assertTrue(row1.getState().equals(MediaSubscriptionEpisodeSource.STATE_LISTED)
                 || row1.getState().equals(MediaSubscriptionEpisodeSource.STATE_VERIFIED));
         assertEquals(2, aux.getEpisodesFound(), "行数与目录观测一致");
+    }
+
+    @Test
+    void baiduSekeyExpiredAuxMountNotRetired() {
+        // 线上事故(2026-09-03)同因:补缺挂载刷新撞 errno -9(sekey 过期,expired_type 字段名
+        // 曾命中无边界 expired)被整源退役+拉黑 —— 分享与文件都活着,挂载必须原样保留
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource aux = new MediaSubscriptionResource();
+        aux.setId(9);
+        aux.setSubscriptionId(1);
+        aux.setLink("https://pan.baidu.com/s/live");
+        aux.setType(10);
+        aux.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        aux.setShareId(7);
+        aux.setMountPath("/追剧/.sources/1-测试剧-补1");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of(aux));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new IllegalStateException("{\"errno\":-9,\"expired_type\":0,"
+                        + "\"show_msg\":\"提取码验证失败,请重试\"}"));
+
+        fixture.service.refreshAuxMounts(fixture.subscription);
+
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, aux.getState(), "会话过期不退役");
+        Mockito.verify(fixture.shareService, Mockito.never()).deleteShare(Mockito.anyInt());
+        Mockito.verify(fixture.deadLinkRepository, Mockito.never()).save(Mockito.any());
+    }
+
+    @Test
+    void quarkRiskControlAuxMountNotRetired() {
+        // 夸克「分享地址已失效」同路:游客探测证实分享活着时,补缺挂载原样保留
+        // (本机实证:事件「补缺源失效已退役:早春晴朗(分享地址已失效)」,分享页实际可访问)
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource aux = new MediaSubscriptionResource();
+        aux.setId(9);
+        aux.setSubscriptionId(1);
+        aux.setLink("https://pan.quark.cn/s/riskcontrolled");
+        aux.setType(5);
+        aux.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        aux.setShareId(7);
+        aux.setMountPath("/追剧/.sources/1-测试剧-补1");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of(aux));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new IllegalStateException("failed get share files: 分享地址已失效"));
+        fixture.service.quarkTokenFetcher = (p, c) ->
+                "{\"status\":200,\"code\":0,\"message\":\"ok\",\"data\":{\"stoken\":\"fresh\"}}";
+
+        fixture.service.refreshAuxMounts(fixture.subscription);
+
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, aux.getState(), "分享活着不退役");
+        Mockito.verify(fixture.shareService, Mockito.never()).deleteShare(Mockito.anyInt());
+        Mockito.verify(fixture.deadLinkRepository, Mockito.never()).save(Mockito.any());
     }
 
     // ---------- 集源行生命周期:syncInventory ----------
@@ -2071,12 +2433,22 @@ class MediaSubscriptionCheckServiceTest {
     void probeFailureClassification() {
         assertEquals(MediaSubscriptionCheckService.ProbeFailure.THROTTLED,
                 MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("{\"errno\":-62}")));
+        assertEquals(MediaSubscriptionCheckService.ProbeFailure.TRANSIENT,
+                MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException(
+                        "{\"errno\":-9,\"expired_type\":0,\"show_msg\":\"提取码验证失败,请重试\"}")),
+                "百度 sekey 过期(errno -9)是瞬时态,不判死");
         assertEquals(MediaSubscriptionCheckService.ProbeFailure.GONE,
                 MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("failed get link: 参数错误")));
         assertEquals(MediaSubscriptionCheckService.ProbeFailure.GONE,
                 MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("分享已失效")));
         assertEquals(MediaSubscriptionCheckService.ProbeFailure.GONE,
                 MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("object not found")));
+        assertEquals(MediaSubscriptionCheckService.ProbeFailure.GONE,
+                MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("share link is expired")),
+                "真死链英文文案仍判死(词边界不粘连)");
+        assertEquals(MediaSubscriptionCheckService.ProbeFailure.TRANSIENT,
+                MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("{\"expired_type\":0}")),
+                "expired_type 是字段名(值 0=非过期),不得当死链证据");
         assertEquals(MediaSubscriptionCheckService.ProbeFailure.TRANSIENT,
                 MediaSubscriptionCheckService.classifyProbeFailure(new RuntimeException("connect timed out")));
         // 未识别错误默认按瞬时:误判瞬时只晚一轮,误判失效会 RETIRED + 跨订阅黑名单
@@ -2192,7 +2564,7 @@ class MediaSubscriptionCheckServiceTest {
         // 黑名单窗口(默认 90 天):过期判死记录不再拦截入池,该链可重新试错
         Fixture fixture = new Fixture();
         fixture.subscription.setName("苍兰诀");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/dead", "苍兰诀 第01-08集 4K"),
                         message("https://pan.quark.cn/s/alive", "苍兰诀 第01-08集 4K")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
@@ -2694,7 +3066,7 @@ class MediaSubscriptionCheckServiceTest {
     void fillPoolAdmitsOwnSeasonPackTitles() {
         Fixture fixture = new Fixture();
         stubAbsoluteSeries(fixture, "一念永恒");
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/s1", "一念永恒 完结季(2026) 【更08集】【4K】"),
                         message("https://pan.quark.cn/s/s2", "一念永恒 第四季 4K [更新至08集]"),
                         message("https://pan.quark.cn/s/s3", "一念永恒 第1-4季 合集 2160P")));
@@ -2715,7 +3087,7 @@ class MediaSubscriptionCheckServiceTest {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("悬案");
         fixture.subscription.setSeason(1);
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/s1", "悬案 第三季(2026) 全8集")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(Mockito.anyInt(), Mockito.anyString()))
@@ -2793,7 +3165,7 @@ class MediaSubscriptionCheckServiceTest {
         fixture.subscription.setSeason(4);
         fixture.subscription.setOfficialEpisodes(173);
         stubTencentSeasons(fixture);
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/s9", "一念永恒 完结季（2026） 4K 臻彩 S01E01 - E08 HIF")));
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
         Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(Mockito.anyInt(), Mockito.anyString()))
@@ -2844,7 +3216,7 @@ class MediaSubscriptionCheckServiceTest {
                 fixture.metadataService, Mockito.mock(AutoUpdateExecutor.class), fixture.historyRepository,
                 appProperties, new ObjectMapper(), fixture.transferService, null);
         service.setPanLinkCheckService(remote);
-        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean()))
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
                 .thenReturn(List.of(message("https://pan.quark.cn/s/tg1", "悬案 (2026) 4K [全8集]")));
         Mockito.when(wanou.search("悬案")).thenReturn(List.of(
                 message("https://pan.quark.cn/s/w1", "悬案 (2026) 4K 更新至08集"),
@@ -2889,6 +3261,137 @@ class MediaSubscriptionCheckServiceTest {
                 .thenReturn(List.of(finale, s4));
         fixture.service.purgeForeignSeasonResources(fixture.subscription);
         Mockito.verify(fixture.resourceRepository, Mockito.never()).delete(Mockito.any(MediaSubscriptionResource.class));
+    }
+
+    // ---------- 搜索定向(docs/msub-search-drive-targeting.md):订阅生效盘 + 磁力兜底开关 ----------
+
+    @Test
+    void fillPoolPassesSearchTargetsToSources() {
+        Fixture fixture = new Fixture();
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "5")));
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_EXTENDED_DRIVES, "8")));
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+
+        fixture.service.fillPool(fixture.subscription, true, null);
+
+        ArgumentCaptor<cn.har01d.alist_tvbox.domain.SearchTargets> targets =
+                ArgumentCaptor.forClass(cn.har01d.alist_tvbox.domain.SearchTargets.class);
+        Mockito.verify(fixture.telegramService)
+                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), targets.capture());
+        assertEquals(Set.of("quark", "115"), targets.getValue().drives(), "定向集 = 主∪扩展(夸克/115)");
+        assertFalse(targets.getValue().offlineIncluded(), "离线服务未注入(兜底不生效):magnet/ed2k 不并入");
+    }
+
+    @Test
+    void fillPoolIncludesOfflineTypesWhenMagnetFallbackEnabled() {
+        Fixture fixture = new Fixture();
+        fixture.subscription.setMode(MediaSubscription.MODE_TRANSFER);
+        fixture.subscription.setMagnetOffline(true);
+        OfflineDownloadService offline = Mockito.mock(OfflineDownloadService.class);
+        Mockito.when(offline.isConfigured()).thenReturn(true);
+        fixture.service.setOfflineDownloadService(offline);
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "5")));
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+
+        fixture.service.fillPool(fixture.subscription, true, null);
+
+        ArgumentCaptor<cn.har01d.alist_tvbox.domain.SearchTargets> targets =
+                ArgumentCaptor.forClass(cn.har01d.alist_tvbox.domain.SearchTargets.class);
+        Mockito.verify(fixture.telegramService)
+                .searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), targets.capture());
+        assertTrue(targets.getValue().offlineIncluded(), "磁力兜底生效(开关+TRANSFER+离线已配置):并入 magnet/ed2k");
+        assertEquals(Set.of("quark"), targets.getValue().drives());
+    }
+
+    @Test
+    void fillPoolHarvestsSiteSourceMagnetsIntoFallbackPool() {
+        // 站点源(观影 downlist / 盘聚 seed)产出的 magnet/ed2k:兜底生效时经定向集闸门,
+        // fillPool 的 NON_PAN 收割进磁力候选池(供 submitMagnetForEpisode 优先消费),不入池
+        Fixture fixture = new Fixture();
+        fixture.subscription.setName("难哄");
+        fixture.subscription.setMode(MediaSubscription.MODE_TRANSFER);
+        fixture.subscription.setMagnetOffline(true);
+        OfflineDownloadService offline = Mockito.mock(OfflineDownloadService.class);
+        Mockito.when(offline.isConfigured()).thenReturn(true);
+        fixture.service.setOfflineDownloadService(offline);
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+        Mockito.when(fixture.guanYingSearchService.search(Mockito.anyString())).thenReturn(List.of(
+                message("magnet:?xt=urn:btih:abc123&dn=%E9%9A%BE%E5%93%8404", "难哄 04集 1080P", "magnet")));
+        Mockito.when(fixture.panjuSearchService.search(Mockito.anyString(), Mockito.anyBoolean())).thenReturn(List.of(
+                message("ed2k://|file|难哄.EP05.mp4|123456|hash|/", "难哄 第05集", "ed2k")));
+
+        fixture.service.fillPool(fixture.subscription, true, null);
+
+        List<Message> pool = fixture.service.magnetCandidatesOf(1);
+        assertEquals(2, pool.size(), "两源磁力/ed2k 都收割进兜底候选池");
+        assertTrue(pool.stream().anyMatch(m -> m.getLink().startsWith("magnet:?")));
+        assertTrue(pool.stream().anyMatch(m -> m.getLink().startsWith("ed2k://")));
+        Mockito.verify(fixture.resourceRepository, Mockito.never()).save(Mockito.any(MediaSubscriptionResource.class));
+    }
+
+    @Test
+    void fillPoolDropsSiteSourceMagnetsWhenFallbackDisabled() {
+        // 兜底未开(开关关/离线未配置):magnet 在站点源闸门(盘检送检之前)即剔除,不进候选池
+        Fixture fixture = new Fixture();
+        fixture.subscription.setName("难哄");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+        Mockito.when(fixture.guanYingSearchService.search(Mockito.anyString())).thenReturn(List.of(
+                message("magnet:?xt=urn:btih:abc123", "难哄", "magnet")));
+
+        fixture.service.fillPool(fixture.subscription, true, null);
+
+        assertTrue(fixture.service.magnetCandidatesOf(1).isEmpty(), "兜底未开:闸门剔除,零收割");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void siteSourcesOffWhitelistDroppedBeforeLinkCheck() {
+        // 定向集的站点源闸门:白名单以外的盘在盘检送检之前剔除 —— 域外盘不烧盘检配额,
+        // 也不会借盘检结果混进候选(fillPool 的 OFF_POOL 只是纵深防御)
+        Fixture fixture = new Fixture();
+        fixture.subscription.setName("悬案");
+        Mockito.when(fixture.settingRepository.findById(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES))
+                .thenReturn(Optional.of(setting(MediaSubscriptionCheckService.MSUB_MAIN_DRIVES, "5"))); // 主盘只认夸克
+        WanouSearchService wanou = Mockito.mock(WanouSearchService.class);
+        PanLinkCheckService remote = Mockito.mock(PanLinkCheckService.class);
+        AppProperties appProperties = new AppProperties();
+        appProperties.setFormats(Set.of("mkv", "mp4"));
+        appProperties.getSubscription().setPrimeCheckTimes(java.util.List.of());
+        MediaSubscriptionCheckService service = new MediaSubscriptionCheckService(
+                fixture.subscriptionRepository, fixture.resourceRepository, fixture.eventRepository,
+                fixture.episodeRepository, fixture.episodeSourceRepository, fixture.deadLinkRepository,
+                fixture.shareRepository, fixture.siteRepository,
+                Mockito.mock(DriverAccountRepository.class), Mockito.mock(IndexTemplateRepository.class),
+                fixture.settingRepository, fixture.shareService, fixture.aListService,
+                fixture.telegramService, wanou, null, null, null, null,
+                fixture.metadataService, Mockito.mock(AutoUpdateExecutor.class), fixture.historyRepository,
+                appProperties, new ObjectMapper(), fixture.transferService, null);
+        service.setPanLinkCheckService(remote);
+        Mockito.when(fixture.telegramService.searchAggregated(Mockito.anyString(), Mockito.anyInt(), Mockito.anyBoolean(), Mockito.any()))
+                .thenReturn(List.of(message("https://pan.quark.cn/s/tg1", "悬案 (2026) 4K [全8集]")));
+        Mockito.when(wanou.search("悬案")).thenReturn(List.of(
+                message("https://pan.quark.cn/s/w1", "悬案 (2026) 4K 更新至08集"),
+                message("https://pan.baidu.com/s/w2?pwd=xx", "悬案 (2026) 1080P 全8集", "10")));
+        Mockito.when(remote.filterInvalidPanSouLinks(Mockito.anyList())).thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of());
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdAndLink(Mockito.anyInt(), Mockito.anyString()))
+                .thenReturn(Optional.empty());
+
+        service.fillPool(fixture.subscription, true, null);
+
+        ArgumentCaptor<List<Message>> checked = ArgumentCaptor.forClass((Class<List<Message>>) (Class<?>) List.class);
+        Mockito.verify(remote).filterInvalidPanSouLinks(checked.capture());
+        assertEquals(List.of("https://pan.quark.cn/s/w1"),
+                checked.getValue().stream().map(Message::getLink).toList(),
+                "百度不在定向集:盘检送检前已剔除,只送夸克");
+        ArgumentCaptor<MediaSubscriptionResource> saved = ArgumentCaptor.forClass(MediaSubscriptionResource.class);
+        Mockito.verify(fixture.resourceRepository, Mockito.times(2)).save(saved.capture());
+        assertEquals(Set.of("https://pan.quark.cn/s/tg1", "https://pan.quark.cn/s/w1"),
+                saved.getAllValues().stream().map(MediaSubscriptionResource::getLink).collect(java.util.stream.Collectors.toSet()),
+                "telegram/玩偶的夸克结果各 1 条入池,百度不占席位");
     }
 
     @Test
@@ -5152,6 +5655,10 @@ class MediaSubscriptionCheckServiceTest {
         final SettingRepository settingRepository = Mockito.mock(SettingRepository.class);
         final AListService aListService = Mockito.mock(AListService.class);
         final TelegramService telegramService = Mockito.mock(TelegramService.class);
+        final cn.har01d.alist_tvbox.service.sitesearch.GuanYingSearchService guanYingSearchService =
+                Mockito.mock(cn.har01d.alist_tvbox.service.sitesearch.GuanYingSearchService.class);
+        final cn.har01d.alist_tvbox.service.sitesearch.PanjuSearchService panjuSearchService =
+                Mockito.mock(cn.har01d.alist_tvbox.service.sitesearch.PanjuSearchService.class);
     final ShareService shareService = Mockito.mock(ShareService.class);
     final MetadataService metadataService = Mockito.mock(MetadataService.class);
     final cn.har01d.alist_tvbox.entity.HistoryRepository historyRepository =
@@ -5169,7 +5676,7 @@ class MediaSubscriptionCheckServiceTest {
                     episodeRepository, episodeSourceRepository, deadLinkRepository,
                     shareRepository, siteRepository, Mockito.mock(DriverAccountRepository.class),
                     Mockito.mock(IndexTemplateRepository.class), settingRepository,
-                    shareService, aListService, telegramService, null, null, null, null, null,
+                    shareService, aListService, telegramService, null, null, guanYingSearchService, null, panjuSearchService,
                     metadataService, Mockito.mock(AutoUpdateExecutor.class),
                     historyRepository,
                     appProperties, new ObjectMapper(), transferService, null);
@@ -5178,6 +5685,8 @@ class MediaSubscriptionCheckServiceTest {
             subscription.setStatus(MediaSubscription.STATUS_ACTIVE);
             subscription.setMountPath("/追剧/1-测试剧");
             subscription.setShareId(5);
+            // 游客 token 探测默认无结论桩:存量判死路径测试零网络依赖,需要测活/死的用例显式换桩
+            service.quarkTokenFetcher = (pwdId, passcode) -> null;
             Mockito.when(subscriptionRepository.findById(1)).thenReturn(Optional.of(subscription));
             Mockito.when(shareRepository.findById(5)).thenReturn(Optional.of(new Share()));
             Mockito.when(siteRepository.findById(1)).thenReturn(Optional.of(new Site()));
