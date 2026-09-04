@@ -213,7 +213,9 @@
           </span>
         </el-form-item>
         <el-form-item label="TMDB 线路">
-          <el-select v-model="tmdbApiHost" style="width: 320px">
+          <el-select v-model="tmdbApiHost" style="width: 320px"
+                    filterable allow-create default-first-option
+                    placeholder="选择预设,或输入自定义 CF Worker 反代地址">
             <el-option v-for="opt in tmdbApiHostOptions" :key="opt.value" :label="opt.label" :value="opt.value"/>
           </el-select>
           <el-button type="primary" @click="updateTmdbApiHost">更新</el-button>
@@ -443,12 +445,9 @@ const aliSecret = ref('')
 const tmdbApiKey = ref('')
 const tmdbApiHost = ref('')
 const tmdbApiHostOptions = [
-  {label: '官方 API - https://api.themoviedb.org', value: ''},
-  {label: 'Worker 轮询池 - 3 个全用,round robin 分摊每日限额', value: 'https://tmdb.8866033.xyz,https://tmdb.swust-oj.workers.dev,https://tmdb.8866033.workers.dev'},
-  {label: 'Worker - https://tmdb.8866033.xyz', value: 'https://tmdb.8866033.xyz'},
-  {label: 'Worker - https://tmdb.swust-oj.workers.dev', value: 'https://tmdb.swust-oj.workers.dev'},
-  {label: 'Worker - https://tmdb.8866033.workers.dev', value: 'https://tmdb.8866033.workers.dev'},
-  {label: 'NAStool - https://tmdb.nastool.org (API) + img.nastool.org (图床)', value: 'https://tmdb.nastool.org'},
+  {label: '官方 API(直连)', value: ''},
+  {label: 'Worker 轮询池 - round robin 分摊每日限额', value: 'https://tmdb.8866033.xyz,https://tmdb.swust-oj.workers.dev,https://tmdb.8866033.workers.dev,https://tmdb.power348045.workers.dev,https://tmdb.harold348047.workers.dev,https://tmdb.ai-09b.workers.dev,https://tmdb.root-df0.workers.dev,https://tmdb.atv-8c1.workers.dev,https://tmdb.odd-math-a42b.workers.dev,https://tmdb.test-d2c.workers.dev,https://tmdb.code-a96.workers.dev,https://tmdb.claude-b79.workers.dev'},
+  {label: 'NAStool(API + 图床分线路,自动配置)', value: 'https://tmdb.nastool.org'},
 ]
 const userAgent = ref('')
 const atvPass = ref('')
@@ -546,12 +545,11 @@ const updateTmdbApiKey = () => {
 
 const updateTmdbApiHost = () => {
   const posts: { name: string, value: string }[] = [{name: 'tmdb_api_host', value: tmdbApiHost.value}]
-  // 图床与 API 分线路的预设(NAStool)落 tmdb_image_host;切回官方时一并清掉;Worker 单键走后端回落跟随
-  if (tmdbApiHost.value === 'https://tmdb.nastool.org') {
-    posts.push({name: 'tmdb_image_host', value: 'https://img.nastool.org'})
-  } else if (tmdbApiHost.value === '') {
-    posts.push({name: 'tmdb_image_host', value: ''})
-  }
+  // 图床与 API 分线路的预设(NAStool)落 tmdb_image_host,其余(官方/Worker 型,含自定义地址)一律清空走后端跟随 API 池
+  posts.push({
+    name: 'tmdb_image_host',
+    value: tmdbApiHost.value === 'https://tmdb.nastool.org' ? 'https://img.nastool.org' : '',
+  })
   Promise.all(posts.map(post => axios.post('/api/settings', post))).then(() => {
     ElMessage.success('更新成功')
   })

@@ -342,7 +342,9 @@
           <template #default="scope">
             <el-button v-if="scope.row.state === 'CANDIDATE'" link type="primary" size="small"
                        @click="enableResource(scope.row)">启用</el-button>
-            <el-button v-else-if="scope.row.state === 'MOUNTED' && !scope.row.primary" link type="primary" size="small"
+            <!-- 转主源一步直达:候选行也要有(线上反馈"不缺的候补无法变主源"——此前只有已挂载补缺行才有此按钮,候选换主源得先启用再转两步,或用语义不直白的钉选) -->
+            <el-button v-if="scope.row.state === 'CANDIDATE' || (scope.row.state === 'MOUNTED' && !scope.row.primary)"
+                       link type="primary" size="small"
                        @click="activateResource(scope.row)">转主源</el-button>
             <el-button v-if="scope.row.pinned" link type="danger" size="small"
                        @click="unpinResource(scope.row)">取消钉选</el-button>
@@ -722,10 +724,12 @@
               </span>
             </el-form-item>
             <el-form-item label="TMDB 线路">
-              <el-select v-model="notifyForm.tmdbApiHost" style="width: 100%">
+              <el-select v-model="notifyForm.tmdbApiHost" style="width: 100%"
+                        filterable allow-create default-first-option
+                        placeholder="选择预设,或输入自定义 CF Worker 反代地址">
                 <el-option v-for="opt in tmdbApiHostOptions" :key="opt.value" :label="opt.label" :value="opt.value"/>
               </el-select>
-              <span class="sub-text">国内直连官方不通时切换反代;Worker 轮询池分摊各 worker 每日限额,Worker 型 API 与封面同域,NAStool 型自动分开配置图床(系统设置页同一配置)</span>
+              <span class="sub-text">国内直连官方不通时切换反代;Worker 轮询池分摊各 worker 每日限额,Worker 型 API 与封面同域,NAStool 型自动分开配置图床(系统设置页同一配置);可直接输入自建 CF Worker 反代地址(https://... 开头),多个地址逗号分隔自动轮询</span>
             </el-form-item>
           </el-tab-pane>
           <el-tab-pane v-if="store.admin" label="盘链" name="panlian">
@@ -1353,12 +1357,9 @@ const panSouLinkCheckTypeOptions = [
   {label: '123网盘', value: '123'},
 ]
 const tmdbApiHostOptions = [
-  {label: '官方 API - https://api.themoviedb.org', value: ''},
-  {label: 'Worker 轮询池 - 3 个全用,round robin 分摊每日限额', value: 'https://tmdb.8866033.xyz,https://tmdb.swust-oj.workers.dev,https://tmdb.8866033.workers.dev'},
-  {label: 'Worker - https://tmdb.8866033.xyz', value: 'https://tmdb.8866033.xyz'},
-  {label: 'Worker - https://tmdb.swust-oj.workers.dev', value: 'https://tmdb.swust-oj.workers.dev'},
-  {label: 'Worker - https://tmdb.8866033.workers.dev', value: 'https://tmdb.8866033.workers.dev'},
-  {label: 'NAStool - https://tmdb.nastool.org (API) + img.nastool.org (图床)', value: 'https://tmdb.nastool.org'},
+  {label: '官方 API(直连)', value: ''},
+  {label: 'Worker 轮询池 - round robin 分摊每日限额', value: 'https://tmdb.8866033.xyz,https://tmdb.swust-oj.workers.dev,https://tmdb.8866033.workers.dev,https://tmdb.power348045.workers.dev,https://tmdb.harold348047.workers.dev,https://tmdb.ai-09b.workers.dev,https://tmdb.root-df0.workers.dev,https://tmdb.atv-8c1.workers.dev,https://tmdb.odd-math-a42b.workers.dev,https://tmdb.test-d2c.workers.dev,https://tmdb.code-a96.workers.dev,https://tmdb.claude-b79.workers.dev'},
+  {label: 'NAStool(API + 图床分线路,自动配置)', value: 'https://tmdb.nastool.org'},
 ]
 const navigationVisible = ref(false)
 const navCategories = ref<{ type_id: string, type_name: string }[]>([])
@@ -2352,12 +2353,10 @@ const saveNotify = () => {
     axios.post('/api/settings', {name: 'douban_cookie', value: notifyForm.value.doubanCookie}),
     axios.post('/api/settings', {name: 'tmdb_api_key', value: notifyForm.value.tmdbApiKey}),
     axios.post('/api/settings', {name: 'tmdb_api_host', value: notifyForm.value.tmdbApiHost}),
-    // 图床与 API 分线路的预设(NAStool)落 tmdb_image_host;切回官方时一并清掉;Worker 单键走后端回落跟随
+    // 图床与 API 分线路的预设(NAStool)落 tmdb_image_host,其余(官方/Worker 型,含自定义地址)一律清空走后端跟随 API 池
     ...(notifyForm.value.tmdbApiHost === 'https://tmdb.nastool.org'
         ? [axios.post('/api/settings', {name: 'tmdb_image_host', value: 'https://img.nastool.org'})]
-        : notifyForm.value.tmdbApiHost === ''
-            ? [axios.post('/api/settings', {name: 'tmdb_image_host', value: ''})]
-            : []),
+        : [axios.post('/api/settings', {name: 'tmdb_image_host', value: ''})]),
     axios.post('/api/settings', {name: 'msub_archive_days', value: String(notifyForm.value.archiveDays)}),
     axios.post('/api/settings', {name: 'msub_magnet_episode_quota', value: String(notifyForm.value.magnetEpisodeQuota)}),
     axios.post('/api/settings', {name: 'msub_magnet_subscription_quota', value: String(notifyForm.value.magnetSubscriptionQuota)}),
