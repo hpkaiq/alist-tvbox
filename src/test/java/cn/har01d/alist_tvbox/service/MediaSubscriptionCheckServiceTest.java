@@ -964,6 +964,96 @@ class MediaSubscriptionCheckServiceTest {
         assertClose(now + 6 * 3600_000L, subscription.getNextCheckTime(), "1h 内的档位不算,回常规间隔");
     }
 
+    // ---------- 手动更新日(airWeekdays):官方日程缺失/不可信时只在配置周几查 ----------
+
+    /** 北京时间固定时刻(2026-09 参照:09-09 周三、09-10 周四、09-16 下周三)。 */
+    private static long atBeijing(int year, int month, int day, int hour, int minute) {
+        return java.time.ZonedDateTime.of(year, month, day, hour, minute, 0, 0,
+                java.time.ZoneId.of(cn.har01d.alist_tvbox.util.Constants.ZONE_ID)).toInstant().toEpochMilli();
+    }
+
+    @Test
+    void nextManualAirSlotPicksNearestConfiguredDay() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("2,4"); // 周二/周四
+        assertEquals(atBeijing(2026, 9, 10, 20, 0),
+                service.nextManualAirSlot(subscription, atBeijing(2026, 9, 9, 10, 0)),
+                "周三 10:00 → 最近的更新日是明天(周四)20:00");
+    }
+
+    @Test
+    void nextManualAirSlotTodayWhenClockAhead() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("3"); // 周三
+        assertEquals(atBeijing(2026, 9, 9, 20, 0),
+                service.nextManualAirSlot(subscription, atBeijing(2026, 9, 9, 10, 0)),
+                "更新日当天、播出时刻未到 → 今天 20:00");
+    }
+
+    @Test
+    void nextManualAirSlotPastClockRollsToNextWeek() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("3");
+        assertEquals(atBeijing(2026, 9, 16, 20, 0),
+                service.nextManualAirSlot(subscription, atBeijing(2026, 9, 9, 21, 0)),
+                "更新日当天 20:00 已过 → 下周三 20:00");
+    }
+
+    @Test
+    void nextManualAirSlotHonorsCustomClock() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("2,4");
+        subscription.setCustomAirClock("00:30"); // 追番凌晨档
+        assertEquals(atBeijing(2026, 9, 10, 0, 30),
+                service.nextManualAirSlot(subscription, atBeijing(2026, 9, 9, 10, 0)));
+    }
+
+    @Test
+    void nextManualAirSlotEndedAndUnconfiguredReturnZero() {
+        MediaSubscription subscription = subscription();
+        assertEquals(0, service.nextManualAirSlot(subscription, System.currentTimeMillis()), "未配置返回 0");
+        subscription.setAirWeekdays("2");
+        subscription.setStatus(MediaSubscription.STATUS_ENDED);
+        assertEquals(0, service.nextManualAirSlot(subscription, System.currentTimeMillis()), "完结剧不接管");
+    }
+
+    @Test
+    void scheduleNextManualWeekdaysTakesOverOfficialAir() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("2,4");
+        long now = System.currentTimeMillis();
+        subscription.setNextAirTime(now + 5 * 3600_000L); // 官方日程落在非更新日:被手动更新日接管
+        service.scheduleNext(subscription);
+        long manualSlot = service.nextManualAirSlot(subscription, now);
+        assertEquals(manualSlot, subscription.getNextAirTime(), "nextAirTime 接管为下一更新日(详情页/时间轴同口径)");
+        assertEquals(manualSlot + 15 * 60_000L, subscription.getNextCheckTime(), "休眠到更新日播出时刻+15min");
+    }
+
+    @Test
+    void scheduleNextManualWeekdaysGapDoesNotWaitForUpdateDay() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("1"); // 周一:远近随跑测时刻变,断言用 min 表达式稳健
+        long now = System.currentTimeMillis();
+        subscription.setOfficialEpisodes(10);
+        subscription.setCurrentEpisodes(9); // 已播集有缺口:不死等更新日
+        service.scheduleNext(subscription);
+        long manualSlot = service.nextManualAirSlot(subscription, now);
+        assertEquals(Math.min(now + 6 * 3600_000L, manualSlot + 15 * 60_000L), subscription.getNextCheckTime(),
+                "缺口按常规退避尽快补,但不睡穿更新日");
+    }
+
+    @Test
+    void scheduleNextManualWeekdaysEndedKeepsOfficialAir() {
+        MediaSubscription subscription = subscription();
+        subscription.setAirWeekdays("2");
+        subscription.setStatus(MediaSubscription.STATUS_ENDED);
+        long now = System.currentTimeMillis();
+        long officialAir = now + 5 * 3600_000L;
+        subscription.setNextAirTime(officialAir);
+        service.scheduleNext(subscription);
+        assertEquals(officialAir, subscription.getNextAirTime(), "完结剧不被更新日接管(周轻查继续)");
+    }
+
     // ---------- 完结剧凌晨档:巡检避开高峰期 ----------
 
     @Test
@@ -2237,6 +2327,41 @@ class MediaSubscriptionCheckServiceTest {
         assertEquals(MediaSubscriptionResource.STATE_MOUNTED, aux.getState(), "会话过期不退役");
         Mockito.verify(fixture.shareService, Mockito.never()).deleteShare(Mockito.anyInt());
         Mockito.verify(fixture.deadLinkRepository, Mockito.never()).save(Mockito.any());
+    }
+
+    @Test
+    void baiduRateLimitAuxMountNotRetired() {
+        // 线上事故(2026-09-04,4567 一晚 7 起):百度 IP 级风控 errno -19「访问频率太快」的中文
+        // show_msg 是 \\uXXXX 转义,「请稍后/访问频繁」等中文限流词全部匹配不到,errno 数字又无
+        // ASCII 模式 —— 补缺挂载刷新撞 -19 被当死链整源退役 + 90 天黑名单,而分享与文件都活着
+        // (用户反馈:资源很全、评分最高的分享被退役,游客实测列目录 errno=0)
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource aux = new MediaSubscriptionResource();
+        aux.setId(9);
+        aux.setSubscriptionId(1);
+        aux.setLink("https://pan.baidu.com/s/ratelimited");
+        aux.setType(10);
+        aux.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        aux.setShareId(7);
+        aux.setMountPath("/追剧/.sources/1-测试剧-补1");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1)).thenReturn(List.of(aux));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenThrow(new IllegalStateException("{\"errno\":-19,\"show_msg\":"
+                        + "\"\\u8bbf\\u95ee\\u9891\\u7387\\u592a\\u5feb\\u5566\\uff0c\\u8bf7\\u7a0d\\u540e\\u518d\\u8bd5\"}"));
+
+        fixture.service.refreshAuxMounts(fixture.subscription);
+
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, aux.getState(), "盘级限流不退役");
+        Mockito.verify(fixture.shareService, Mockito.never()).deleteShare(Mockito.anyInt());
+        Mockito.verify(fixture.deadLinkRepository, Mockito.never()).save(Mockito.any());
+        assertTrue(MediaSubscriptionCheckService.isThrottleError(
+                "{\"errno\":-19,\"show_msg\":\"\\u8bbf\\u95ee\\u9891\\u7387\\u592a\\u5feb\\u5566\\uff0c\\u8bf7\\u7a0d\\u540e\\u518d\\u8bd5\"}"),
+                "errno -19 转义形态必须命中限流(中文词全转义,只有 ASCII errno 可识别)");
+        assertTrue(MediaSubscriptionCheckService.isThrottleError(
+                "{\"errno\":-65,\"show_msg\":\"\\u64cd\\u4f5c\\u9891\\u7e41\"}"), "errno -65 同族");
+        assertTrue(MediaSubscriptionCheckService.isThrottleError("访问频率太快,请稍后重试(errno=-19)"),
+                "驱动翻译后的明文案也要命中");
     }
 
     @Test

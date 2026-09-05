@@ -239,6 +239,13 @@
                           placeholder="自动(官方日程/平台桥接,默认 20:00)" clearable style="width: 160px"/>
           <span class="sub-text" style="margin-left:8px">官方只给日期没给时刻的剧按 20:00 兜底;确认实际排播后手动校正,清空恢复自动</span>
         </el-form-item>
+        <el-form-item label="更新日">
+          <el-select v-model="form.airWeekdays" multiple placeholder="不限制(按官方日程/巡检周期)">
+            <el-option v-for="(label, idx) in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']"
+                       :key="idx" :label="label" :value="idx + 1"/>
+          </el-select>
+          <span class="sub-text" style="margin-left:8px">固定周几更新(欧美剧/追番):巡检只落在这些天的播出时刻,官方日程缺失/不准时用;清空恢复自动</span>
+        </el-form-item>
         <el-form-item label="主网盘(覆盖)">
           <el-select v-model="form.mainDrives" multiple clearable :placeholder="`跟随全局${globalMainDrivesLabel}`">
             <el-option v-for="drive in driveOptions" :key="drive.value" :label="driveLabel(drive)" :value="drive.value"/>
@@ -723,13 +730,15 @@
                 <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">到官网获取 →</a>
               </span>
             </el-form-item>
-            <el-form-item label="TMDB 线路">
+            <el-form-item label="TMDB 代理">
               <el-select v-model="notifyForm.tmdbApiHost" style="width: 100%"
                         filterable allow-create default-first-option
                         placeholder="选择预设,或输入自定义 CF Worker 反代地址">
                 <el-option v-for="opt in tmdbApiHostOptions" :key="opt.value" :label="opt.label" :value="opt.value"/>
               </el-select>
-              <span class="sub-text">国内直连官方不通时切换反代;Worker 轮询池分摊各 worker 每日限额,Worker 型 API 与封面同域,NAStool 型自动分开配置图床(系统设置页同一配置);可直接输入自建 CF Worker 反代地址(https://... 开头),多个地址逗号分隔自动轮询</span>
+              <span class="sub-text">可以手动输入代理地址，立即生效;多个地址逗号分隔自动轮询;
+                <a href="/tmdb_proxy_worker.js" target="_blank" rel="noopener">自建 Worker 参考代码 →</a>
+              </span>
             </el-form-item>
           </el-tab-pane>
           <el-tab-pane v-if="store.admin" label="盘链" name="panlian">
@@ -905,10 +914,10 @@
       </div>
       <div class="nav-grid" v-loading="navLoading">
         <div v-for="item in navList" :key="item.vod_id" class="nav-card">
-          <el-image :src="item.vod_pic" fit="cover" class="nav-cover" lazy>
-            <template #error><div class="nav-cover nav-cover-placeholder">{{ (item.vod_name || '?').charAt(0) }}</div></template>
+          <el-image :src="item.vod_pic" fit="cover" class="nav-cover cover-click" lazy @click="showNavDetail(item)">
+            <template #error><div class="nav-cover nav-cover-placeholder cover-click" @click="showNavDetail(item)">{{ (item.vod_name || '?').charAt(0) }}</div></template>
           </el-image>
-          <div class="nav-title" :title="item.vod_name">{{ item.vod_name }}</div>
+          <div class="nav-title name-link" :title="item.vod_name" @click="showNavDetail(item)">{{ item.vod_name }}</div>
           <div class="nav-meta">
             <span v-if="item.vod_remarks">{{ item.vod_remarks }}</span>
             <span v-if="item.vod_year">{{ item.vod_year }}</span>
@@ -922,6 +931,43 @@
         <el-pagination background layout="prev, pager, next" :total="navTotal" :page-size="24"
                        :current-page="navPage" @current-change="onNavPageChange"/>
       </div>
+    </el-dialog>
+
+    <el-dialog v-model="navDetailVisible" title="媒体详情" width="680">
+      <div class="nav-detail" v-loading="navDetailLoading">
+        <template v-if="navDetail">
+          <el-image :src="navDetailPoster" fit="cover" class="nav-detail-poster">
+            <template #error>
+              <div class="nav-detail-poster cover-placeholder">{{ (navDetail.vod_name || '?').charAt(0) }}</div>
+            </template>
+          </el-image>
+          <div class="nav-detail-info">
+            <div class="nav-detail-title">
+              {{ navDetail.vod_name }}
+              <span v-if="navDetail.vod_year" class="sub-text">({{ navDetail.vod_year }})</span>
+            </div>
+            <div class="nav-detail-tags">
+              <el-tag v-for="genre in navDetailGenres" :key="genre" size="small" effect="plain">{{ genre }}</el-tag>
+              <el-tag v-if="navDetail.vod_remarks" size="small" type="warning">{{ navDetail.vod_remarks }}</el-tag>
+              <el-tag v-for="season in navDetailSeasons" :key="'s' + season" size="small" type="info">第{{ season }}季</el-tag>
+            </div>
+            <div v-if="navDetail.vod_director" class="sub-text">导演:{{ navDetail.vod_director }}</div>
+            <div v-if="navDetail.vod_actor" class="sub-text">演员:{{ navDetail.vod_actor }}</div>
+            <div v-if="navDetail.vod_area || navDetail.vod_lang" class="sub-text">
+              <template v-if="navDetail.vod_area">{{ navDetail.vod_area }}</template>
+              <template v-if="navDetail.vod_area && navDetail.vod_lang"> / </template>
+              <template v-if="navDetail.vod_lang">{{ navDetail.vod_lang }}</template>
+            </div>
+            <div v-if="navDetail.vod_content" class="nav-detail-overview">{{ navDetail.vod_content }}</div>
+            <div v-else class="sub-text">暂无简介,点击「追更」按标题订阅</div>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="navDetailVisible = false">关闭</el-button>
+        <el-button v-if="navDetailItem && isNavSubscribed(navDetailItem)" disabled>已追更</el-button>
+        <el-button v-else type="primary" @click="navDetailSubscribe">追更</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -981,6 +1027,7 @@ interface SubscriptionDto {
   stallCount: number
   checkIntervalHours: number | null
   customAirClock: string | null
+  airWeekdays: number[] | null
   nextCheckTime: number | null
   lastCheckTime: number | null
   resourceCount: number
@@ -1358,8 +1405,9 @@ const panSouLinkCheckTypeOptions = [
 ]
 const tmdbApiHostOptions = [
   {label: '官方 API(直连)', value: ''},
-  {label: 'Worker 轮询池 - round robin 分摊每日限额', value: 'https://tmdb.8866033.xyz,https://tmdb.swust-oj.workers.dev,https://tmdb.8866033.workers.dev,https://tmdb.power348045.workers.dev,https://tmdb.harold348047.workers.dev,https://tmdb.ai-09b.workers.dev,https://tmdb.root-df0.workers.dev,https://tmdb.atv-8c1.workers.dev,https://tmdb.odd-math-a42b.workers.dev,https://tmdb.test-d2c.workers.dev,https://tmdb.code-a96.workers.dev,https://tmdb.claude-b79.workers.dev'},
-  {label: 'NAStool(API + 图床分线路,自动配置)', value: 'https://tmdb.nastool.org'},
+  {label: 'Worker 轮询池 - round robin', value: 'worker-pool'},
+  {label: 'itv666 代理', value: 'http://tmdb.itv666.cc'},
+  {label: 'NAStool 代理', value: 'https://tmdb.nastool.org'},
 ]
 const navigationVisible = ref(false)
 const navCategories = ref<{ type_id: string, type_name: string }[]>([])
@@ -1375,6 +1423,42 @@ const navLoading = ref(false)
 const navSubscribed = ref<Set<string>>(new Set())
 /** 从片单追更打开新建对话框的条目:创建成功后标记"已追更",对话框关闭即解除 */
 const navPending = ref<any>(null)
+
+/** 片单条目媒体详情:打开即用榜单卡片数据垫底,后端详情(TMDB 直取/豆瓣本地库富化)回来整体替换 */
+const navDetailVisible = ref(false)
+const navDetailLoading = ref(false)
+const navDetail = ref<any>(null)
+const navDetailItem = ref<any>(null)
+let navDetailSeq = 0
+
+const navDetailPoster = computed(() => navDetail.value?.vod_pic || navDetailItem.value?.vod_pic || '')
+/** 类型(type_name)各源分隔符不一(TMDB " / "、豆瓣逗号),统一拆成 tag 列表 */
+const navDetailGenres = computed(() => {
+  const source = navDetail.value?.type_name || navDetailItem.value?.type_name || ''
+  return String(source).split(/[/,、]/).map((s: string) => s.trim()).filter(Boolean)
+})
+/** TMDB 剧集季号清单(ext 数组,已滤特典与未开播占位季);电影/豆瓣条目为空 */
+const navDetailSeasons = computed(() => Array.isArray(navDetail.value?.ext) ? navDetail.value.ext : [])
+
+const showNavDetail = (item: any) => {
+  navDetailItem.value = item
+  navDetail.value = {vod_name: item.vod_name, vod_pic: item.vod_pic, vod_year: item.vod_year,
+    type_name: item.type_name, vod_remarks: item.vod_remarks}
+  navDetailVisible.value = true
+  navDetailLoading.value = true
+  const my = ++navDetailSeq
+  axios.get('/api/media-subscriptions/navigation/detail', {params: {id: item.vod_id}}).then(response => {
+    if (my !== navDetailSeq) return
+    navDetail.value = response.data || null
+  }).catch(() => ElMessage.error('媒体详情加载失败')).finally(() => {
+    if (my === navDetailSeq) navDetailLoading.value = false
+  })
+}
+
+const navDetailSubscribe = () => {
+  navDetailVisible.value = false
+  if (navDetailItem.value) navSubscribe(navDetailItem.value)
+}
 
 onMounted(() => {
   loadAll()
@@ -1540,6 +1624,7 @@ const handleAdd = () => {
     magnetOffline: false,
     checkIntervalHours: 6,
     customAirClock: null,
+    airWeekdays: [] as number[],
     mainDrives: [] as number[],
     driveTypes: [],
     qualities: [],
@@ -1578,6 +1663,7 @@ const handleEdit = (row: SubscriptionDto) => {
     magnetOffline: !!row.magnetOffline,
     checkIntervalHours: row.checkIntervalHours ?? 6,
     customAirClock: row.customAirClock ?? null,
+    airWeekdays: row.airWeekdays || [],
     mainDrives: row.mainDrives || [],
     driveTypes: row.filter?.driveTypes || [],
     qualities: row.filter?.qualities || [],
@@ -1682,6 +1768,7 @@ const buildBody = () => ({
   magnetOffline: form.value.magnetOffline,
   checkIntervalHours: form.value.checkIntervalHours,
   customAirClock: form.value.customAirClock || '',
+  airWeekdays: [...new Set(form.value.airWeekdays || [])],
   mainDrives: [...new Set(form.value.mainDrives || [])].slice(0, 2),
   filter: {
     driveTypes: form.value.driveTypes,
@@ -2633,7 +2720,12 @@ const airedInSeason = (row: SubscriptionDto): number => (row.officialEpisodes ??
 const formatTime = (time: number | null) => {
   if (!time) return '-'
   // 与后端日程分桶同口径(北京时间):非东八区浏览器上避免「今天」格子与钟点互相矛盾
-  return new Date(time).toLocaleString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'})
+  // 带周几(欧美剧/追番周播,「周六 04:00」一眼对上更新日);秒无信息量,去掉换列宽
+  return new Date(time).toLocaleString('zh-CN', {
+    hour12: false, timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    weekday: 'short', hour: '2-digit', minute: '2-digit',
+  })
 }
 
 const formatClock = (time: number) => {
@@ -3079,6 +3171,47 @@ const formatClock = (time: number) => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   min-height: 18px;
+}
+
+.nav-detail {
+  display: flex;
+  gap: 18px;
+  min-height: 260px;
+}
+
+.nav-detail-poster {
+  width: 180px;
+  aspect-ratio: 2 / 3;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: var(--el-fill-color);
+}
+
+.nav-detail-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.nav-detail-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.nav-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nav-detail-overview {
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .nav-pager {
