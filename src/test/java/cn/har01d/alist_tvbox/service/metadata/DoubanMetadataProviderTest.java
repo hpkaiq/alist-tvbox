@@ -88,6 +88,39 @@ class DoubanMetadataProviderTest {
     }
 
     @Test
+    void mergeTmdbClampsAiredOverDoubanTotal() {
+        // 线上事故(瑞克 S9):桥接上游把 S1 口径的已播 11 灌进总 10 的 S9 条目,「已播 11/共 10」
+        // 自相矛盾快照外流到订阅完结判定。豆瓣总数是条目身份(权威):TMDB 已播超总数 = 桥接污染,夹住
+        MetadataDetails douban = new MetadataDetails();
+        douban.setName("瑞克和莫蒂 第九季");
+        douban.setTotalEpisodes(10);
+        MetadataDetails tmdb = new MetadataDetails();
+        tmdb.setTotalEpisodes(10);
+        tmdb.setAiredEpisodes(11);
+        DoubanMetadataProvider.mergeTmdbDetails(douban, tmdb);
+        assertEquals(10, douban.getAiredEpisodes());
+
+        // 豆瓣总数缺位、TMDB 总数补位后已播与总数一致:不是污染,不夹
+        MetadataDetails noDoubanTotal = new MetadataDetails();
+        noDoubanTotal.setName("柯南");
+        MetadataDetails tmdbSelf = new MetadataDetails();
+        tmdbSelf.setTotalEpisodes(11);
+        tmdbSelf.setAiredEpisodes(11);
+        DoubanMetadataProvider.mergeTmdbDetails(noDoubanTotal, tmdbSelf);
+        assertEquals(11, noDoubanTotal.getTotalEpisodes());
+        assertEquals(11, noDoubanTotal.getAiredEpisodes());
+
+        // 已播 ≤ 总数:透传
+        MetadataDetails normal = new MetadataDetails();
+        normal.setName("三体");
+        normal.setTotalEpisodes(24);
+        MetadataDetails tmdbNormal = new MetadataDetails();
+        tmdbNormal.setAiredEpisodes(6);
+        DoubanMetadataProvider.mergeTmdbDetails(normal, tmdbNormal);
+        assertEquals(6, normal.getAiredEpisodes());
+    }
+
+    @Test
     void mergeTmdbToleratesNullSource() {
         MetadataDetails douban = new MetadataDetails();
         douban.setName("三体");

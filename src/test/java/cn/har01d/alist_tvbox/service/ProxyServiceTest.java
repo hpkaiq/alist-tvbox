@@ -168,4 +168,28 @@ interface ProxyCase {
             }
         }
     }
+
+    // ---------- 服务端自取回源地址(UC/百度/夸克等 proxy 驱动) ----------
+
+    /** 线上(4567 docker):播放器从宿主机 127.0.0.1 连入,旧实现沿用请求 host+externalPort(ALIST_PORT=5344,
+     *  宿主映射端口)拼出 127.0.0.1:5344 —— 容器内无人监听(AList 听 5244)→ Connection refused,
+     *  UC/百度/夸克全灭;externalPort 只对客户端直连有效,服务端自取必须打 internalPort。 */
+    @Test
+    void localProxyUrlTargetsInternalPortForServerSideFetch() {
+        AListLocalService aListLocalService = mock(AListLocalService.class);
+        when(aListLocalService.getInternalPort()).thenReturn(5244);
+        when(aListLocalService.getExternalPort()).thenReturn(5344);
+        ProxyService proxyService = new ProxyService(null, playUrlRepository, null, null, aListLocalService, null);
+        Site localSite = site();
+        localSite.setUrl("http://localhost:5244");
+
+        String url = proxyService.buildAListProxyUrl(localSite,
+                "/追剧/.sources/醒来 [dbid-1]-补2/09.mkv", "abc=:0");
+
+        assertThat(url)
+                .startsWith("http://localhost:5244/p/%E8%BF%BD%E5%89%A7/.sources/"
+                        + "%E9%86%92%E6%9D%A5%20%5Bdbid-1%5D-%E8%A1%A52/09.mkv?sign=")
+                .endsWith("abc=:0")
+                .doesNotContain("5344");
+    }
 }

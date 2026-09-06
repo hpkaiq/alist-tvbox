@@ -576,7 +576,12 @@ public class DoubanMetadataProvider implements MetadataProvider {
             douban.setTotalEpisodes(tmdb.getTotalEpisodes());
         }
         if (tmdb.getAiredEpisodes() != null) {
-            douban.setAiredEpisodes(tmdb.getAiredEpisodes());
+            // 桥接季错配防护:TMDB 补的已播先对豆瓣总数(条目身份,总集数权威)夹住 ——
+            // 季错配把 S1 的已播 11 灌进总 10 的 S9 条目即此形态,自相矛盾的快照不得外流
+            // 到订阅完结判定/详情页。上游修正总数后自然放开
+            int aired = tmdb.getAiredEpisodes();
+            Integer total = douban.getTotalEpisodes();
+            douban.setAiredEpisodes(total != null && total > 0 && aired > total ? total : aired);
         }
         if (tmdb.getNextAirTime() != null) {
             douban.setNextAirTime(tmdb.getNextAirTime());

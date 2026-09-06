@@ -115,6 +115,7 @@ public class MediaSubscriptionService {
     private final ObjectMapper objectMapper;
     private final ProxyService proxyService;
     private final cn.har01d.alist_tvbox.entity.SiteRepository siteRepository;
+    private final cn.har01d.alist_tvbox.service.sitesearch.EpisodeFallbackService episodeFallbackService;
 
     public MediaSubscriptionService(MediaSubscriptionRepository subscriptionRepository,
                                     MediaSubscriptionResourceRepository resourceRepository,
@@ -133,7 +134,8 @@ public class MediaSubscriptionService {
                                     AppProperties appProperties,
                                     ObjectMapper objectMapper,
                                     ProxyService proxyService,
-                                    cn.har01d.alist_tvbox.entity.SiteRepository siteRepository) {
+                                    cn.har01d.alist_tvbox.entity.SiteRepository siteRepository,
+                                    cn.har01d.alist_tvbox.service.sitesearch.EpisodeFallbackService episodeFallbackService) {
         this.subscriptionRepository = subscriptionRepository;
         this.resourceRepository = resourceRepository;
         this.eventRepository = eventRepository;
@@ -152,6 +154,7 @@ public class MediaSubscriptionService {
         this.objectMapper = objectMapper;
         this.proxyService = proxyService;
         this.siteRepository = siteRepository;
+        this.episodeFallbackService = episodeFallbackService;
     }
 
     /** 订阅 token → 归属用户:凭证形态(u-{username}-{secret})验真或裸 u-{username} → 该用户;
@@ -474,6 +477,7 @@ public class MediaSubscriptionService {
         List<Integer> resourceIds = resources.stream().map(MediaSubscriptionResource::getId).toList();
         episodeSourceRepository.deleteByResourceIdIn(resourceIds);
         episodeRepository.deleteBySubscriptionId(id);
+        episodeFallbackService.deleteForSubscription(id); // 兜底覆盖层行 + 负缓存等内存态随行清理
         resourceRepository.deleteBySubscriptionId(id);
         eventRepository.deleteBySubscriptionId(id);
         subscriptionRepository.deleteById(id);
@@ -950,10 +954,29 @@ public class MediaSubscriptionService {
             merged.put(episode, logicalEpisodeTitle(episode, titles.get(episode), sizeByEpisode.get(episode))
                     + "$msubep-" + id + '-' + episode);
         }
+        // 采集源兜底覆盖层并入:已垫底的缺集进逻辑线路可点可播(msubep 播放期走覆盖层快路径),
+        // 真源恢复后 putIfAbsent 让位 —— 覆盖层只补洞,不覆盖真源条目(裸实例测试可注入 null,同 CheckService 守卫)
+        List<cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeFallback> overlayRows =
+                episodeFallbackService == null ? List.of() : episodeFallbackService.activeRows(id);
+        for (cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeFallback row : overlayRows) {
+            if (row.getEpisode() <= 0) {
+                continue;
+            }
+            merged.putIfAbsent(row.getEpisode(), logicalEpisodeTitle(row.getEpisode(), titles.get(row.getEpisode()), 0)
+                    + "$msubep-" + id + '-' + row.getEpisode());
+        }
         if (merged.isEmpty()) {
             return null;
         }
         rewriteEpisodeTitles(subscription, merged, driveLines);
+        // 缺集占位(与巡检 computeMissing/网页缺集同口径,不受采集兜底开关影响):缺失集在逻辑线路
+        // 可见可点 —— 兜底开着则播放期同步救活,关着则如实报「暂无可用播放源」,不再整集隐身。
+        // 放在 rewriteEpisodeTitles 之后:标题改写器会重建条目文本,(缺源)标记不能被改掉;
+        // putIfAbsent 让真源/覆盖层条目优先,占位只补洞。
+        for (Integer episode : missingEpisodes(subscription)) {
+            merged.putIfAbsent(episode,
+                    logicalEpisodeTitle(episode, titles.get(episode), 0) + "(缺源)$msubep-" + id + '-' + episode);
+        }
         String[] lines = buildTvBoxPlayLines(id, merged, driveLines, Set.copyOf(checkService.mainDrives(subscription)));
         appendActionLine(lines, id);
         MovieDetail detail = new MovieDetail();
@@ -1677,6 +1700,7 @@ public class MediaSubscriptionService {
             try {
                 Map<String, Object> result = tvBoxService.getPlayUrl(1, file.dir() + "/" + file.name(), getSub, client, type);
                 kickPreheatAhead(uid, subscriptionId, episode);
+                kickCollectionFallback(uid, subscriptionId, episode);
                 return result;
             } catch (Exception e) {
                 log.info("subscription {} episode {} via {} failed: {}", subscriptionId, episode, file.dir(), e.getMessage());
@@ -1693,12 +1717,26 @@ public class MediaSubscriptionService {
                 Map<String, Object> result = tvBoxService.getPlayUrl(1, path, getSub, client, type);
                 checkService.recordPlaySuccess(candidate.source());
                 kickPreheatAhead(uid, subscriptionId, episode);
+                kickCollectionFallback(uid, subscriptionId, episode);
                 return result;
             } catch (Exception e) {
                 log.info("subscription {} episode {} via {} failed: {}", subscriptionId, episode, path, e.getMessage());
                 errors.add(path + ": " + e.getMessage());
                 checkService.recordPlayFailure(subscription, candidate);
             }
+        }
+        // 采集源兜底(播放链路最后一级):候选全灭(含零候选缺集 —— attempted 不涨)才介入,
+        // 开关关闭时零调用;补集只落覆盖层不改写本订阅数据,失败继续走既有巡检补救路径
+        try {
+            Map<String, Object> rescued = episodeFallbackService.resolveEpisodeFallback(subscription, episode, client, type);
+            if (rescued != null) {
+                kickCollectionFallback(uid, subscriptionId, episode);
+                kickPreheatAhead(uid, subscriptionId, episode);
+                return rescued;
+            }
+        } catch (Exception e) {
+            log.debug("collection fallback for subscription {} episode {} failed: {}",
+                    subscriptionId, episode, e.getMessage());
         }
         // 全部候选都播不了:播放期是信噪比最高的失效信号,不能只记个失败就完事——
         // 立刻异步补救(先查池换源,池空才搜索),否则用户重试多少次都是同一个死源。
@@ -1722,6 +1760,16 @@ public class MediaSubscriptionService {
             checkService.preheatAheadAsync(uid, subscriptionId, episode);
         } catch (Exception e) {
             log.debug("trigger preheat ahead for subscription {} failed: {}", subscriptionId, e.getMessage());
+        }
+    }
+
+    /** 播放成功后后台补齐「当前集+后3集」缺口的采集源覆盖层(类注释口径:当前集正常起播时补齐不阻塞)。
+     *  窗口无缺口时零开销(一次集号查询),开关/负缓存/10min 限频在 EpisodeFallbackService 内部自查。 */
+    private void kickCollectionFallback(int uid, int subscriptionId, int episode) {
+        try {
+            episodeFallbackService.fillWindowAsync(uid, subscriptionId, episode);
+        } catch (Exception e) {
+            log.debug("trigger collection fallback fill for subscription {} failed: {}", subscriptionId, e.getMessage());
         }
     }
 
@@ -2204,6 +2252,25 @@ public class MediaSubscriptionService {
                 matrix.computeIfAbsent(number, k -> new ArrayList<>()).add(item);
             }
         }
+        // 3) 采集源兜底覆盖层:已垫底的缺集呈现为「采集兜底」来源(ACTIVE 未过期;72h TTL 到期自然出局回缺失)
+        if (episodeFallbackService != null) {
+            for (cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeFallback row : episodeFallbackService.activeRows(id)) {
+                int number = row.getEpisode();
+                if (number <= 0) {
+                    continue;
+                }
+                String label = "采集兜底:" + StringUtils.defaultIfBlank(row.getLine(), row.getSiteId());
+                sources.putIfAbsent(number, label);
+                Map<String, Object> item = new java.util.LinkedHashMap<>();
+                item.put("title", label);
+                item.put("drive", "");
+                item.put("state", "FALLBACK");
+                item.put("successCount", row.getValidatedAt() == null ? 0 : 1);
+                item.put("failCount", 0);
+                item.put("lastVerifiedTime", row.getValidatedAt());
+                matrix.computeIfAbsent(number, k -> new ArrayList<>()).add(item);
+            }
+        }
         if (!rowsSeen) {
             // 集源行完全未同步(首轮巡检前):退回 currentEpisodes 显示,避免页签全灰。
             // 行一旦存在就不再兜底 —— 主源失效/换源后 currentEpisodes 是旧值,
@@ -2229,13 +2296,17 @@ public class MediaSubscriptionService {
             // 手动锁定总集数是未播占位的上界;观测真实文件不参与夹紧(与 computeMissing 同规)
             base = Math.max(totalCap, observedBase);
         }
+        Integer seasonWindowEnd = checkService == null ? null : checkService.seasonWindowEnd(subscription);
+        if (seasonWindowEnd != null && seasonWindowEnd > 0) {
+            base = Math.min(base, seasonWindowEnd);
+        }
         List<Map<String, Object>> result = new ArrayList<>();
         // 季起始集号下界:分季订阅对齐后本季从全剧第 N 集开始,季前旧集不属于本订阅(与 computeMissing 同规)
         int lower = subscription.getSeasonStartEpisode() != null && subscription.getSeasonStartEpisode() > 1
                 ? subscription.getSeasonStartEpisode() : 1;
         for (int i = lower; i <= Math.min(base, MAX_EPISODE_ROWS); i++) {
             String source = sources.get(i);
-            boolean present = source != null; // 可用性只认 LIVE 行;"源损坏"是展示文案,不是已有
+            boolean present = source != null; // 可用性 = LIVE 行 ∪ 采集兜底覆盖层;"源损坏"是展示文案,不是已有
             if (source == null && deadByEpisode.containsKey(i)) {
                 source = "源损坏(待补源)";
             }
@@ -2291,8 +2362,10 @@ public class MediaSubscriptionService {
             media.put("writers", details.getWriters() == null ? List.of() : details.getWriters());
             media.put("cast", details.getCast() == null ? List.of() : details.getCast());
         }
-        if (subscription.isSeasonAiredOut()) {
-            // 季口径覆盖剧级 status:多季剧本季播完时整部剧仍是 RETURNING,详情页不能继续显示"在播"
+        if (subscription.isSeasonAiredOut() || MediaSubscription.STATUS_ENDED.equals(subscription.getStatus())) {
+            // 季口径覆盖剧级 status:多季剧本季播完时整部剧仍是 RETURNING,详情页不能继续显示"在播";
+            // 订阅已完结(含元数据滞后形态:官方已播未知/滞后,靠集齐总数完结,龙之家族 S3 线上案)
+            // 同理 —— 列表/remarks 已是完结口径,详情徽标不能再挂 UNKNOWN/在播
             media.put("status", MetadataDetails.STATUS_ENDED);
         }
         // 条目外链(豆瓣/TMDB/Bangumi 页面,新窗跳转):订阅绑定源 + 桥接拿到的跨源 id
@@ -3114,6 +3187,10 @@ public class MediaSubscriptionService {
             projected = Math.min(projected, total);
         }
         base = Math.max(base, projected);
+        Integer seasonWindowEnd = checkService == null ? null : checkService.seasonWindowEnd(subscription);
+        if (seasonWindowEnd != null && seasonWindowEnd > 0) {
+            base = Math.min(base, seasonWindowEnd);
+        }
         if (base <= 0 || base > MAX_EPISODE_ROWS) {
             return List.of();
         }

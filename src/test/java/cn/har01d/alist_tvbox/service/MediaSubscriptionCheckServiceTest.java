@@ -12,6 +12,7 @@ import cn.har01d.alist_tvbox.entity.HistoryRepository;
 import cn.har01d.alist_tvbox.entity.IndexTemplateRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscription;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisode;
+import cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeFallbackRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeSource;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionEpisodeSourceRepository;
@@ -1371,6 +1372,93 @@ class MediaSubscriptionCheckServiceTest {
         assertFalse(MediaSubscriptionCheckService.shouldAutoEnd(subscription, 10));
     }
 
+    // ---------- 线上事故回归:官方已播 > 总集数的桥接污染(瑞克 S9,订阅 18) ----------
+    // B站 refineAiredCount 季盲匹配(基名「瑞克和莫蒂」命中 S1 条目)把 S1 口径的已播 11 取大
+    // 灌进总 10 的 S9 详情 → 落库不夹两头冒领:shouldReopen 把已完结订阅误判「官方集数上调」
+    // 重开(08-25 线上事件「10 → 11」),季播完完结路 collected>=officialEpisodes(11) 永不满足,
+    // ACTIVE 空转 12 天;「检查更新」也把污染值报成「本地缺第 11 集」假缺口。
+    // 总数是权威口径(computeMissing 的 base/详情页已播同规夹紧):快照落库时已播夹到总数。
+
+    @Test
+    void applyMetadataSnapshotClampsAiredEpisodesToTotal() throws Exception {
+        java.lang.reflect.Method snapshot = MediaSubscriptionCheckService.class
+                .getDeclaredMethod("applyMetadataSnapshot", MediaSubscription.class, MetadataDetails.class);
+        snapshot.setAccessible(true);
+
+        MetadataDetails polluted = new MetadataDetails();
+        polluted.setTotalEpisodes(10);
+        polluted.setAiredEpisodes(11);
+        MediaSubscription subscription = subscription();
+        snapshot.invoke(service, subscription, polluted);
+        assertEquals(10, subscription.getOfficialTotal());
+        assertEquals(10, subscription.getOfficialEpisodes(), "已播超总数 = 桥接污染,必须夹住");
+
+        // 总数未知:无从夹,照收(不能为夹紧造出总数)
+        MetadataDetails noTotal = new MetadataDetails();
+        noTotal.setAiredEpisodes(11);
+        MediaSubscription withoutTotal = subscription();
+        snapshot.invoke(service, withoutTotal, noTotal);
+        assertEquals(11, withoutTotal.getOfficialEpisodes());
+
+        // 已播 ≤ 总数:透传
+        MetadataDetails normal = new MetadataDetails();
+        normal.setTotalEpisodes(12);
+        normal.setAiredEpisodes(9);
+        MediaSubscription passthrough = subscription();
+        snapshot.invoke(service, passthrough, normal);
+        assertEquals(12, passthrough.getOfficialTotal());
+        assertEquals(9, passthrough.getOfficialEpisodes());
+    }
+
+    // ---------- 线上事故回归:官方已播滞后于资源现实的完结(师兄太稳健,订阅 44) ----------
+    // 全 30 集网盘资源已收齐(currentEpisodes=30=officialTotal),官方元数据已播停在 26、
+    // RETURNING、无下集排播 —— 四条既有完结路全灭(手填/剧级ENDED/季播完 aired≥total 均不满足),
+    // 订阅 ACTIVE 每 6h 空巡检。集齐全部登记集数且无下集排播 = 本季已无可追之物,应完结;
+    // 官方后续扩总数/已播上调由 reopenEnded 正常重开。
+
+    @Test
+    void collectedAllWithNoNextAirEndsDespiteAiredLag() {
+        MediaSubscription subscription = subscription();
+        subscription.setOfficialStatus(MetadataDetails.STATUS_RETURNING);
+        subscription.setOfficialEpisodes(26);
+        subscription.setOfficialTotal(30);
+        assertTrue(MediaSubscriptionCheckService.shouldAutoEnd(subscription, 30),
+                "集齐总数 + 官方无待播集:已播统计滞后不得阻止完结");
+        // 还有下集排播:官方登记未播完,不完结
+        subscription.setNextAirTime(System.currentTimeMillis() + 48 * 3600_000L);
+        assertFalse(MediaSubscriptionCheckService.shouldAutoEnd(subscription, 30));
+        // 未集齐:继续追缺
+        subscription.setNextAirTime(null);
+        assertFalse(MediaSubscriptionCheckService.shouldAutoEnd(subscription, 29));
+    }
+
+    @Test
+    void checkUpdateEndsSubscriptionWhenCollectedAll() {
+        // 「检查更新」轻查应直接落完结,不必等完整巡检(用户语义:点它就是来对齐状态的)
+        Fixture fixture = new Fixture();
+        fixture.subscription.setMetaProvider("douban");
+        fixture.subscription.setMetaId("36406417");
+        fixture.subscription.setOfficialEpisodes(26);
+        fixture.subscription.setOfficialTotal(30);
+        fixture.subscription.setOfficialStatus(MetadataDetails.STATUS_RETURNING);
+        MetadataDetails details = new MetadataDetails();
+        details.setTotalEpisodes(30);
+        details.setAiredEpisodes(26);
+        details.setStatus(MetadataDetails.STATUS_RETURNING);
+        Mockito.when(fixture.metadataService.refreshDetails(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
+                .thenReturn(details);
+        Mockito.when(fixture.episodeSourceRepository.findNumbersBySubscriptionAndStatesIn(Mockito.eq(1), Mockito.anyCollection()))
+                .thenReturn(numbers(1, 30));
+
+        String message = fixture.service.checkUpdateNow(0, 1);
+
+        assertTrue(message.startsWith("已完结(共 30 集"), "检查更新应直接完结: " + message);
+        assertEquals(MediaSubscription.STATUS_ENDED, fixture.subscription.getStatus());
+        Mockito.verify(fixture.eventRepository).save(Mockito.argThat(e ->
+                e != null && MediaSubscriptionEvent.TYPE_ENDED.equals(e.getType())
+                        && e.getDetail().contains("检查更新")));
+    }
+
     // ---------- 退役/拒绝冷却重探 ----------
 
     @Test
@@ -2713,9 +2801,12 @@ class MediaSubscriptionCheckServiceTest {
     @Test
     void playCandidatesPreferVerifiedRowOverHigherScoredListed() {
         Fixture fixture = new Fixture();
+        // 两行都挂补缺路径:主源不参与,验证非主源之间 VERIFIED > 分数
         MediaSubscriptionResource listed = mountedPrimary(3, 9);
+        listed.setMountPath("/追剧/.sources/1-测试剧-补1");
         listed.setScore(90);
         MediaSubscriptionResource verified = mountedPrimary(4, 10);
+        verified.setMountPath("/追剧/.sources/1-测试剧-补2");
         verified.setScore(10);
         MediaSubscriptionEpisodeSource listedRow = sourceRow(21, 100, 3, MediaSubscriptionEpisodeSource.STATE_LISTED, "第17集.mkv");
         MediaSubscriptionEpisodeSource verifiedRow = sourceRow(22, 100, 4, MediaSubscriptionEpisodeSource.STATE_VERIFIED, "第17集.mkv");
@@ -2728,6 +2819,30 @@ class MediaSubscriptionCheckServiceTest {
 
         assertEquals(2, candidates.size());
         assertEquals(4, candidates.getFirst().resource().getId(), "VERIFIED 行先于高分 LISTED 行");
+    }
+
+    /** 线上(醒来 sub67):主源换百度后,UC 补缺行凭旧播放留下的 VERIFIED 仍压主源行,
+     *  UC 代理又连不通——用户重试 20 次全打同一个 UC pid。「转主源」后主源资源的行必须恒居前。 */
+    @Test
+    void playCandidatesRankPrimaryResourceAheadOfVerifiedAux() {
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource primary = mountedPrimary(3, 9); // 主源路径 /追剧/1-测试剧
+        primary.setScore(60);
+        MediaSubscriptionResource auxVerified = mountedPrimary(4, 10);
+        auxVerified.setMountPath("/追剧/.sources/1-测试剧-补2");
+        auxVerified.setScore(100);
+        MediaSubscriptionEpisodeSource primaryRow = sourceRow(21, 100, 3, MediaSubscriptionEpisodeSource.STATE_LISTED, "第17集.mkv");
+        MediaSubscriptionEpisodeSource verifiedRow = sourceRow(22, 100, 4, MediaSubscriptionEpisodeSource.STATE_VERIFIED, "第17集.mkv");
+        Mockito.when(fixture.resourceRepository.findBySubscriptionIdOrderByScoreDesc(1))
+                .thenReturn(List.of(auxVerified, primary)); // 高分 VERIFIED 补缺行在列表更前也不得压主源
+        Mockito.when(fixture.episodeSourceRepository.findBySubscriptionAndNumber(1, 17))
+                .thenReturn(List.of(verifiedRow, primaryRow));
+
+        List<MediaSubscriptionCheckService.PlayCandidate> candidates = fixture.service.playCandidates(fixture.subscription, 17);
+
+        assertEquals(2, candidates.size());
+        assertEquals(3, candidates.getFirst().resource().getId(), "主源资源的行恒居前,VERIFIED 补缺行让位");
+        assertEquals(4, candidates.get(1).resource().getId(), "主源之后仍按 VERIFIED>LISTED 排");
     }
 
     @Test
@@ -4385,6 +4500,31 @@ class MediaSubscriptionCheckServiceTest {
     }
 
     @Test
+    void resetInventoryForSeasonClearsFallbackOverlay() {
+        // 覆盖层行只按 (subscription, episode) 键、无季列:换季重置不连带清,
+        // 旧季直链会在新季首轮搜索前经播放兜底冒领集号
+        MediaSubscriptionResourceRepository resourceRepository = Mockito.mock(MediaSubscriptionResourceRepository.class);
+        MediaSubscriptionEventRepository eventRepository = Mockito.mock(MediaSubscriptionEventRepository.class);
+        MediaSubscriptionEpisodeRepository episodeRepository = Mockito.mock(MediaSubscriptionEpisodeRepository.class);
+        MediaSubscriptionEpisodeSourceRepository episodeSourceRepository = Mockito.mock(MediaSubscriptionEpisodeSourceRepository.class);
+        MediaSubscriptionEpisodeFallbackRepository fallbackRepository = Mockito.mock(MediaSubscriptionEpisodeFallbackRepository.class);
+        MediaSubscriptionCheckService svc = new MediaSubscriptionCheckService(
+                null, resourceRepository, eventRepository, episodeRepository, episodeSourceRepository, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                null, null, appProperties, new ObjectMapper(), null, null, null, null,
+                fallbackRepository
+                );
+        MediaSubscription subscription = new MediaSubscription();
+        subscription.setId(9);
+        Mockito.when(resourceRepository.findBySubscriptionIdOrderByScoreDesc(9)).thenReturn(List.of());
+
+        svc.resetInventoryForSeason(subscription, 3);
+
+        Mockito.verify(fallbackRepository).deleteBySubscriptionId(9);
+    }
+
+    @Test
     void purgeForeignSeasonResourcesSkipsWhenSeasonUnknown() {
         Fixture fixture = new Fixture();
         fixture.subscription.setName("末日地堡");
@@ -5349,6 +5489,55 @@ class MediaSubscriptionCheckServiceTest {
 
         assertEquals(0, probed.get(), "未上架的集无行可探");
         Mockito.verifyNoInteractions(fixture.eventRepository);
+    }
+
+    @Test
+    void preheatAheadMissingEpisodeInWindowTriggersRescue() {
+        Fixture fixture = new Fixture();
+        RowStore store = new RowStore();
+        installMountedResource(fixture, store);
+        AtomicInteger probed = new AtomicInteger();
+        fixture.service.setStreamProbeClient((url, userAgent, maxBytes, timeoutSeconds) -> {
+            probed.incrementAndGet();
+            return new StreamProbeClient.ProbeResult(206, "video/mp4", new byte[]{0x1A, 0x45});
+        });
+        Mockito.when(fixture.aListService.getFile(Mockito.any(), Mockito.anyString())).thenReturn(rawUrlDetail());
+        // 第 4、6 集有行,第 5 集从未上架(线上:海贼王 837 集无任何源)—— 探测循环看不见它
+        store.addEpisodeAndRow(7, 4, MediaSubscriptionEpisodeSource.STATE_LISTED);
+        store.addEpisodeAndRow(7, 6, MediaSubscriptionEpisodeSource.STATE_LISTED);
+
+        fixture.service.preheatAhead(fixture.subscription, 3);
+
+        assertEquals(2, probed.get(), "只探测已有行的 4、6 两集");
+        ArgumentCaptor<MediaSubscriptionEvent> events = ArgumentCaptor.forClass(MediaSubscriptionEvent.class);
+        Mockito.verify(fixture.eventRepository, Mockito.atLeastOnce()).save(events.capture());
+        MediaSubscriptionEvent event = events.getAllValues().stream()
+                .filter(e -> e.getDetail().contains("缺集"))
+                .findFirst().orElseThrow(() -> new AssertionError("应写缺集补源事件,实际:" + events.getAllValues()));
+        assertEquals(MediaSubscriptionEvent.TYPE_GAP_FILLED, event.getType());
+        assertTrue(event.getDetail().contains("第5 集缺集"), event.getDetail());
+        // 播放上下文自愈不外发通知:notificationService 未注入,事件只落时间线(push=false 由实现保证)
+    }
+
+    @Test
+    void preheatAheadMissingRescueHonoursCooldown() {
+        Fixture fixture = new Fixture();
+        RowStore store = new RowStore();
+        installMountedResource(fixture, store);
+        fixture.service.setStreamProbeClient((url, userAgent, maxBytes, timeoutSeconds) ->
+                new StreamProbeClient.ProbeResult(206, "video/mp4", new byte[]{0x1A, 0x45}));
+        Mockito.when(fixture.aListService.getFile(Mockito.any(), Mockito.anyString())).thenReturn(rawUrlDetail());
+        store.addEpisodeAndRow(7, 4, MediaSubscriptionEpisodeSource.STATE_LISTED);
+        store.addEpisodeAndRow(7, 6, MediaSubscriptionEpisodeSource.STATE_LISTED);
+
+        fixture.service.preheatAhead(fixture.subscription, 3);
+        fixture.service.preheatAhead(fixture.subscription, 3); // 2h 冷却内:洞还在也不重复触发
+
+        // 只数缺集事件(首次 submitCheck 的后台巡检可能并发写别的事件,不参与断言)
+        ArgumentCaptor<MediaSubscriptionEvent> events = ArgumentCaptor.forClass(MediaSubscriptionEvent.class);
+        Mockito.verify(fixture.eventRepository, Mockito.atLeastOnce()).save(events.capture());
+        assertEquals(1, events.getAllValues().stream().filter(e -> e.getDetail().contains("缺集")).count(),
+                "冷却窗口内缺集事件只写一次");
     }
 
     /** 挂载资源 + RowStore 内存库 + playCandidates 依赖的 findBySubscriptionAndNumber 派生查询。 */
