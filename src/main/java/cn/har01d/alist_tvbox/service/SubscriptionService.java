@@ -121,6 +121,7 @@ public class SubscriptionService {
     private final FileDownloader fileDownloader;
     private final SubscriptionSourceService subscriptionSourceService;
     private final PlaybackTokenRepository playbackTokenRepository;
+    private final WebHomeService webHomeService;
 
     private final OkHttpClient okHttpClient = new OkHttpClient();
     private final ThreadLocal<String> currentToken = new ThreadLocal<>();
@@ -151,7 +152,8 @@ public class SubscriptionService {
                                UserService userService,
                                FileDownloader fileDownloader,
                                SubscriptionSourceService subscriptionSourceService,
-                               PlaybackTokenRepository playbackTokenRepository) {
+                               PlaybackTokenRepository playbackTokenRepository,
+                               WebHomeService webHomeService) {
         this.environment = environment;
         this.appProperties = appProperties;
         this.restTemplate = builder
@@ -178,6 +180,7 @@ public class SubscriptionService {
         this.fileDownloader = fileDownloader;
         this.subscriptionSourceService = subscriptionSourceService;
         this.playbackTokenRepository = playbackTokenRepository;
+        this.webHomeService = webHomeService;
     }
 
     @PostConstruct
@@ -873,6 +876,9 @@ public class SubscriptionService {
             list.sort(Comparator.comparing(a -> a.get(sort)));
         } else {
             List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+            if (sites == null) {
+                return;
+            }
             int order = 5000;
             for (Map<String, Object> site : sites) {
                 if (!site.containsKey("order")) {
@@ -1217,6 +1223,9 @@ public class SubscriptionService {
 
     private static void fixApiUrl(Map<String, Object> config, URL url) {
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        if (sites == null) {
+            return;
+        }
         for (Map<String, Object> site : sites) {
             Object api = site.get("api");
             if (api instanceof String apiUrl) {
@@ -1235,6 +1244,9 @@ public class SubscriptionService {
 
     private static void fixExtUrl(Map<String, Object> config, URL url) {
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        if (sites == null) {
+            return;
+        }
         for (Map<String, Object> site : sites) {
             Object ext = site.get("ext");
             if (ext instanceof String extUrl) {
@@ -1356,6 +1368,10 @@ public class SubscriptionService {
         int id = 0;
         int order = 1000;
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
+        if (sites == null) {
+            sites = new ArrayList<>();
+            config.put("sites", sites);
+        }
         String uid = generateUid();
         String playbackToken = playbackTokenForSubscription(token, subscriptionId);
         // 共享 token → ali_secret(管理员设备,全量凭证);u- 用户 token → u-{username}-{vod_secret}
@@ -1402,7 +1418,40 @@ public class SubscriptionService {
                 log.warn("add source failed: {}", source.id(), e);
             }
         }
+        addWebHomeSite(token, sites);
         return order;
+    }
+
+    /**
+     * WebHome 自定义网页首页站点(webhtv/fish 等魔改端):type 3 + homePage,客户端切到
+     * 该站点首页时加载我们的网页(注入 fm SDK),卡片经 fm.vod 走 csp_Media 原生详情链路。
+     * 仅对已知支持 WebHome 的客户端 token 注入 —— 原版 FongMi 解析不了 csp_Builtin,
+     * 无差别下发会给不支持端留一个死站点。能力由 spider 运行时探测回传
+     * (见 {@link WebHomeService});首次配好订阅先无此站,spider 跑过一次后
+     * 下次刷新配置即出现。
+     */
+    private void addWebHomeSite(String token, List<Map<String, Object>> sites) {
+        if (!webHomeService.isCapable(token)) {
+            return;
+        }
+        Map<String, Object> site = new HashMap<>();
+        site.put("key", "atv_home");
+        site.put("name", "影视首页");
+        site.put("type", 3);
+        site.put("api", "csp_Builtin");
+        // 内置源 order 从 1000 起,置 0 保证 sortSitesByOrder 后仍居首位(站点选择器首位,易切换)
+        site.put("order", 0);
+        site.put("searchable", 0);
+        site.put("quickSearch", 0);
+        site.put("filterable", 0);
+        site.put("changeable", 0);
+        // 绝对地址:多接口(@)拼接/反代场景下相对路径会解析错;token 供页面调 /media 数据
+        // v= 页面版本:WebView 对 homePage URL 有缓存,页面改动必须 bump 强制重载
+        String homeToken = token.isBlank() ? "-" : token;
+        site.put("homePage", readHostAddress("") + "/webhome/app.html?token=" + homeToken + "&v=14");
+        sites.removeIf(item -> "atv_home".equals(item.get("key")));
+        sites.add(0, site);
+        log.debug("add WebHome site: token={}", homeToken);
     }
 
     static void applyBuiltinSiteCapabilities(String key, boolean overridden, Map<String, Object> site) {

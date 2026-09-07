@@ -3,6 +3,7 @@ package cn.har01d.alist_tvbox.web;
 import cn.har01d.alist_tvbox.config.RestErrorHandler;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionService;
 import cn.har01d.alist_tvbox.service.PianDanService;
+import cn.har01d.alist_tvbox.service.WebHomeService;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
@@ -38,12 +39,14 @@ class MediaLibraryControllerTest {
     private MediaSubscriptionService mediaSubscriptionService;
     @Mock
     private PianDanService pianDanService;
+    @Mock
+    private WebHomeService webHomeService;
 
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new MediaLibraryController(subscriptionService, mediaSubscriptionService, pianDanService))
+        mockMvc = MockMvcBuilders.standaloneSetup(new MediaLibraryController(subscriptionService, mediaSubscriptionService, pianDanService, webHomeService))
                 .setControllerAdvice(new RestErrorHandler())
                 .build();
         when(mediaSubscriptionService.resolveUid("token-a")).thenReturn(7);

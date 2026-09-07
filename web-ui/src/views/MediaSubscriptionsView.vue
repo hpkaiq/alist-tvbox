@@ -328,9 +328,14 @@
         </el-table-column>
         <el-table-column prop="driveName" label="盘" width="90"/>
         <el-table-column prop="score" label="评分" width="70" sortable/>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="110">
           <template #default="scope">
-            <el-tag size="small" :type="stateType(scope.row.state)">{{ stateLabel(scope.row.state) }}</el-tag>
+            <!-- 退役/拒绝行悬停可见退役原因与检测时间,用户据此判断是否误判走「恢复」 -->
+            <el-tooltip
+                :disabled="!['RETIRED', 'REJECTED'].includes(scope.row.state)"
+                :content="retireReasonText(scope.row)" placement="top">
+              <el-tag size="small" :type="stateType(scope.row.state)">{{ stateLabel(scope.row.state) }}</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column prop="episodesFound" label="集数" width="70"/>
@@ -359,9 +364,11 @@
                        @click="pinResource(scope.row)">钉选</el-button>
             <el-button v-if="scope.row.state !== 'REMOVED'" link type="warning" size="small"
                        @click="setResourceStart(scope.row)">起始集号</el-button>
-            <el-button v-if="scope.row.state === 'REMOVED'" link type="primary" size="small"
+            <!-- 恢复覆盖三种离池形态:手动移除墓碑 + 判死退役/盘检拒绝(检测错误时不等冷却期满,手动复活立即回候选池重探) -->
+            <el-button v-if="['REMOVED', 'RETIRED', 'REJECTED'].includes(scope.row.state)" link type="primary" size="small"
                        @click="restoreResource(scope.row)">恢复</el-button>
-            <el-button v-else-if="!scope.row.primary" link type="danger" size="small"
+            <el-button v-if="!['REMOVED', 'RETIRED', 'REJECTED'].includes(scope.row.state) && !scope.row.primary"
+                       link type="danger" size="small"
                        @click="removeResource(scope.row)">移除</el-button>
           </template>
         </el-table-column>
@@ -937,7 +944,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="navDetailVisible" title="媒体详情" width="680">
+    <el-dialog v-model="navDetailVisible" title="媒体详情" width="860">
       <div class="nav-detail" v-loading="navDetailLoading">
         <template v-if="navDetail">
           <el-image :src="navDetailPoster" fit="cover" class="nav-detail-poster">
@@ -951,9 +958,9 @@
               <span v-if="navDetail.vod_year" class="sub-text">({{ navDetail.vod_year }})</span>
             </div>
             <div class="nav-detail-tags">
-              <el-tag v-for="genre in navDetailGenres" :key="genre" size="small" effect="plain">{{ genre }}</el-tag>
-              <el-tag v-if="navDetail.vod_remarks" size="small" type="warning">{{ navDetail.vod_remarks }}</el-tag>
-              <el-tag v-for="season in navDetailSeasons" :key="'s' + season" size="small" type="info">第{{ season }}季</el-tag>
+              <el-tag v-for="genre in navDetailGenres" :key="genre" effect="plain">{{ genre }}</el-tag>
+              <el-tag v-if="navDetail.vod_remarks" type="warning">{{ navDetail.vod_remarks }}</el-tag>
+              <el-tag v-for="season in navDetailSeasons" :key="'s' + season" type="info">第{{ season }}季</el-tag>
             </div>
             <div v-if="navDetail.vod_director" class="sub-text">导演:{{ navDetail.vod_director }}</div>
             <div v-if="navDetail.vod_actor" class="sub-text">演员:{{ navDetail.vod_actor }}</div>
@@ -1075,6 +1082,10 @@ interface ResourceDto {
   pinned: boolean
   /** 资源级起始集号:该资源第 1 集对应全剧第 N 集(null = 不平移) */
   startEpisode: number | null
+  /** 退役原因分类:DEAD(链接失效)/ALIEN(异剧)/TRANSIENT(瞬时故障);仅 RETIRED/REJECTED 行有值 */
+  failKind: string | null
+  /** 上次检测时间(epoch 毫秒) */
+  checkedTime: number | null
 }
 
 interface EventDto {
@@ -2136,6 +2147,8 @@ const removeResource = (resource: ResourceDto) => {
   }).catch(() => {})
 }
 
+/** 恢复资源:手动移除(REMOVED)墓碑与判死退役/盘检拒绝(RETIRED/REJECTED)都可手动复活 ——
+ *  检测错误(风控窗口误判死等)不等冷却期满,立即回候选池下轮重探。 */
 const restoreResource = (resource: ResourceDto) => {
   if (!current.value) return
   axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/restore`).then(() => {
@@ -2645,6 +2658,17 @@ const stateLabel = (state: string | null) => {
     case 'REMOVED': return '已移除'
     default: return '候选'
   }
+}
+
+/** 退役/拒绝行的原因文本(状态标签 tooltip):分类 + 上次检测时间,判断是否误判走「恢复」 */
+const retireReasonText = (resource: ResourceDto) => {
+  const kind = resource.failKind
+  const reason = kind === 'DEAD' ? '链接失效'
+      : kind === 'ALIEN' ? '内容与订阅不符(异剧)'
+      : kind === 'TRANSIENT' ? '瞬时故障连续超限'
+      : '未知(旧数据)'
+  const checked = resource.checkedTime ? `,检测于 ${formatTime(resource.checkedTime)}` : ''
+  return `退役原因:${reason}${checked};若是误判可点「恢复」回候选池重探`
 }
 
 const eventType = (type: string) => {
@@ -3184,12 +3208,12 @@ const formatClock = (time: number) => {
 
 .nav-detail {
   display: flex;
-  gap: 18px;
-  min-height: 260px;
+  gap: 24px;
+  min-height: 300px;
 }
 
 .nav-detail-poster {
-  width: 180px;
+  width: 220px;
   aspect-ratio: 2 / 3;
   flex-shrink: 0;
   border-radius: 6px;
@@ -3202,11 +3226,16 @@ const formatClock = (time: number) => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
+}
+
+.nav-detail-info .sub-text {
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 .nav-detail-title {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -3214,12 +3243,12 @@ const formatClock = (time: number) => {
 .nav-detail-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .nav-detail-overview {
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.8;
   white-space: pre-wrap;
 }
 

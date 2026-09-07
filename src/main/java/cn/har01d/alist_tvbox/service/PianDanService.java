@@ -39,14 +39,21 @@ import java.util.TreeMap;
 @Service
 public class PianDanService {
     public static final String DOUBAN_PREFIX = "douban:";
+    public static final String DOUBAN_SUBJECT_PREFIX = "db:";
     public static final String TMDB_PREFIX = "tmdb:";
     private static final String TMDB_API_PATH = "/3";
     private static final String TMDB_IMAGE = "https://image.tmdb.org/t/p/w500";
 
     /** 豆瓣片单条目 vod_id(s:{标题}[@{年份}]):年份内嵌让详情/订阅绑定时能消歧同名翻拍;
-     *  片单条目载荷以 | 分段,vod_id 自身不能含 |。 */
+     *  片单条目载荷以 | 分段,vod_id 自身不能含 |。仅用于无豆瓣 id 的条目兜底。 */
     public static String subjectId(String name, Integer year) {
         return year == null ? "s:" + name : "s:" + name + "@" + year;
+    }
+
+    /** 豆瓣 subject id 条目 vod_id(db:{纯数字}):id 独立成类型不嵌标题 —— 标题里的 &/#/空格
+     *  会让爬虫端裸拼的 GET 参数被截断,纯数字 id 从根上免疫;标题由详情端按 id 解析。 */
+    public static String doubanSubjectId(int doubanId) {
+        return DOUBAN_SUBJECT_PREFIX + doubanId;
     }
 
     /** s:{标题}[@{年份}] → (标题, 年份?);无年份后缀时 year 为 null。 */
@@ -473,6 +480,80 @@ public class PianDanService {
             log.warn("load TMDB detail failed: {} {}", mediaType, tmdbId, e);
             return null;
         }
+    }
+
+    /** 豆瓣 subject id 条目(db:)详情:本地豆瓣库未收的榜单新片按 id 在线解析 ——
+     *  rexxar tv 条目接口对电影 id 404,先 tv 再 movie 两跳;命中 5min 短缓存,失败返回 null 由调用方兜底。 */
+    public MovieDetail doubanSubjectDetail(int doubanId) {
+        String cacheKey = DOUBAN_SUBJECT_PREFIX + doubanId;
+        MovieDetail cached = detailCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        MovieDetail detail = fetchDoubanSubject("tv", doubanId);
+        if (detail == null) {
+            detail = fetchDoubanSubject("movie", doubanId);
+        }
+        if (detail != null) {
+            detailCache.put(cacheKey, detail);
+        }
+        return detail;
+    }
+
+    private MovieDetail fetchDoubanSubject(String mediaType, int doubanId) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(HttpHeaders.REFERER, "https://m.douban.com/");
+            headers.set(HttpHeaders.USER_AGENT, cn.har01d.alist_tvbox.util.Utils.getUserAgent());
+            var response = restTemplate.exchange(URI.create("https://m.douban.com/rexxar/api/v2/" + mediaType + "/" + doubanId),
+                    HttpMethod.GET, new HttpEntity<>(null, headers), JsonNode.class);
+            JsonNode body = response.getBody();
+            if (body == null || !body.hasNonNull("title")) {
+                return null;
+            }
+            MovieDetail detail = new MovieDetail();
+            detail.setVod_id(doubanSubjectId(doubanId));
+            detail.setVod_name(body.get("title").asText());
+            detail.setVod_pic(body.path("pic").path("large").asText(body.path("pic").path("normal").asText("")));
+            String year = body.path("year").asText("");
+            if (year.matches("\\d{4}")) {
+                detail.setVod_year(year);
+            }
+            double rating = body.path("rating").path("value").asDouble(0);
+            if (rating > 0) {
+                detail.setVod_remarks(String.valueOf(rating));
+            }
+            detail.setType_name(joinNames(body.path("genres"), 3, " / "));
+            detail.setVod_area(joinNames(body.path("countries"), 2, " / "));
+            detail.setVod_lang(joinNames(body.path("languages"), 2, " / "));
+            detail.setVod_director(joinNames(body.path("directors"), 3, " / "));
+            detail.setVod_actor(joinNames(body.path("actors"), 5, " / "));
+            String intro = body.path("intro").asText("");
+            if (StringUtils.isNotBlank(intro)) {
+                detail.setVod_content(intro);
+            }
+            return detail;
+        } catch (RestClientException e) {
+            log.debug("load douban subject {} failed: {}", mediaType + '/' + doubanId, e.getMessage());
+            return null;
+        }
+    }
+
+    private static String joinNames(JsonNode array, int limit, String separator) {
+        if (!array.isArray()) {
+            return null;
+        }
+        List<String> names = new ArrayList<>();
+        for (JsonNode node : array) {
+            String name = node.path("name").asText(node.asText(""));
+            if (StringUtils.isNotBlank(name)) {
+                names.add(name);
+            }
+            if (names.size() >= limit) {
+                break;
+            }
+        }
+        return names.isEmpty() ? null : String.join(separator, names);
     }
 
     public MovieList list(String type, String ac, int page, int size, Map<String, String> filters) {

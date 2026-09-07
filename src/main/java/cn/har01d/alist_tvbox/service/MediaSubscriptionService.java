@@ -645,6 +645,7 @@ public class MediaSubscriptionService {
                     && subscription.getMountPath() != null && subscription.getMountPath().equals(r.getMountPath()));
             dto.setPinned(Boolean.TRUE.equals(r.getPinned()));
             dto.setStartEpisode(r.getStartEpisode());
+            dto.setFailKind(r.getFailKind());
             dto.setCheckedTime(r.getCheckedTime());
             dto.setCreatedTime(r.getCreatedTime());
             return dto;
@@ -727,9 +728,20 @@ public class MediaSubscriptionService {
      *  匹配口径与 localDoubanId 一致(年份过滤优先、纯名唯一兜底)。 */
     public MovieDetail localDoubanDetail(String name, Integer year) {
         Movie movie = uniqueLocalMovie(name, year);
-        if (movie == null) {
+        return movie == null ? null : toDoubanDetail(movie);
+    }
+
+    /** 豆瓣 subject id 条目(db:{id})详情富化:本地库按 id 直取 —— 两个 id 同为豆瓣 subject 命名空间,
+     *  findById 命中即该条目,无名称消歧问题;未收录(榜单新片)返回 null 由调用方回落在线解析。 */
+    public MovieDetail localDoubanDetailById(Integer doubanId) {
+        if (doubanId == null) {
             return null;
         }
+        Movie movie = movieRepository.findById(doubanId).orElse(null);
+        return movie == null ? null : toDoubanDetail(movie);
+    }
+
+    private MovieDetail toDoubanDetail(Movie movie) {
         MovieDetail detail = new MovieDetail();
         detail.setVod_name(movie.getName());
         detail.setVod_pic(movie.getCover());
@@ -831,6 +843,13 @@ public class MediaSubscriptionService {
      * 再按当前请求 host 重建绝对地址。 */
     private String absoluteCover(String stored) {
         if (StringUtils.isBlank(stored)) {
+            return stored;
+        }
+        /* 防递归:已是绝对 /images 代理形态不再包一层。listCache 缓存的列表条目是共享实例,
+         * 调用方逐次 setVod_pic(absoluteCover(...)) 会把已代理地址再包一层
+         * (/images?url=/images?url=… N 层嵌套,图床侧 400),先短路已代理形态;
+         * 相对形态 "/images?..." 仍需走下方按请求 host 重建绝对地址。 */
+        if (stored.startsWith("http") && stored.contains("/images?url=")) {
             return stored;
         }
         if (stored.startsWith("http")) {

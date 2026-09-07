@@ -1879,6 +1879,14 @@ public class TvBoxService {
         if (tid.contains("%24")) {
             tid = URLDecoder.decode(tid, StandardCharsets.UTF_8);
         }
+        if (tid.startsWith("msub:")) {
+            // Desktop subscription vod ids resolve via /media, not the spider detail API;
+            // return an empty list instead of a NumberFormatException on parseInt.
+            MovieList empty = new MovieList();
+            empty.setTotal(0);
+            empty.setLimit(0);
+            return empty;
+        }
         if (!tid.contains("$")) {
             return getDetail(ac, Integer.parseInt(tid));
         }

@@ -1124,7 +1124,13 @@ public class MediaSubscriptionCheckService {
         log.info("subscription {} removed resource {} manually: {}", id, resourceId, resource.getTitle());
     }
 
-    /** 恢复手动移除的资源:墓碑行回到候选池,下轮巡检可探测/激活。 */
+    /**
+     * 恢复被移除/退役/拒绝的资源:回到候选池,下轮巡检可探测/激活。
+     * <p>
+     * 除手动移除(REMOVED)墓碑外,判死退役(RETIRED)与盘检拒绝(REJECTED)也可能是检测错误
+     * (风控窗口误判死/瞬时故障),用户手动恢复 = 否决自动判定,不等冷却期满立即回池重探
+     * (与 addResource 手动复活同款语义);fail_kind/mount_path/share_id 一并清空回初生候选形态。
+     */
     public void restoreResource(int uid, int id, int resourceId) {
         MediaSubscription subscription = subscriptionRepository.findById(id).orElse(null);
         if (subscription == null || subscription.getUid() != uid) {
@@ -1134,14 +1140,23 @@ public class MediaSubscriptionCheckService {
         if (resource == null || resource.getSubscriptionId() != id) {
             throw new cn.har01d.alist_tvbox.exception.BadRequestException("候选资源不存在: " + resourceId);
         }
-        if (!MediaSubscriptionResource.STATE_REMOVED.equals(resource.getState())) {
-            return; // 幂等
+        String state = resource.getState();
+        if (!MediaSubscriptionResource.STATE_REMOVED.equals(state)
+                && !MediaSubscriptionResource.STATE_RETIRED.equals(state)
+                && !MediaSubscriptionResource.STATE_REJECTED.equals(state)) {
+            return; // 幂等:候选/已挂载无需恢复
         }
+        boolean wasRetired = MediaSubscriptionResource.STATE_RETIRED.equals(state)
+                || MediaSubscriptionResource.STATE_REJECTED.equals(state);
         resource.setState(MediaSubscriptionResource.STATE_CANDIDATE);
         resource.setCheckedTime(null);
+        resource.setFailKind(null);
+        resource.setMountPath(null);
+        resource.setShareId(null);
         resourceRepository.save(resource);
         addEvent(id, MediaSubscriptionEvent.TYPE_POOL_FILLED,
-                "已恢复候选:" + StringUtils.defaultIfBlank(resource.getTitle(), resource.getLink()), false);
+                (wasRetired ? "已手动恢复退役源,回候选池待重探:" : "已恢复候选:")
+                        + StringUtils.defaultIfBlank(resource.getTitle(), resource.getLink()), false);
     }
 
     /** 钉选置位(同步):目标行置 true、同订阅其余行清 false(每订阅一个钉选位)。 */
@@ -1876,7 +1891,9 @@ public class MediaSubscriptionCheckService {
             // 季起始集号下界:分季订阅对齐后季前旧集不在缺口口径(与 computeMissing 同规)
             int lower = current.getSeasonStartEpisode() != null && current.getSeasonStartEpisode() > 1
                     ? current.getSeasonStartEpisode() : 1;
-            for (int i = lower; i <= Math.min(official, 500); i++) {
+            // 上限与 computeMissing 同口径(MAX_EPISODE_ROWS):旧硬编码 500 把长番 500 集后的缺口全隐掉
+            // (海贼王官方已播 1176,缺 1175/1176 却报「本地已全部同步」)
+            for (int i = lower; i <= Math.min(official, MediaSubscriptionService.MAX_EPISODE_ROWS); i++) {
                 if (!local.contains(i)) {
                     missing.add(i);
                 }

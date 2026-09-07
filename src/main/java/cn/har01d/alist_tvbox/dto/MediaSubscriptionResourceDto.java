@@ -25,6 +25,8 @@ public class MediaSubscriptionResourceDto {
     private boolean pinned;
     /** 资源级起始集号:该资源第 1 集对应全剧第 N 集(null = 不平移)。季包资源混进连续编号订阅时用 */
     private Integer startEpisode;
+    /** 退役原因分类:DEAD(链接失效)/ALIEN(异剧)/TRANSIENT(瞬时故障连击);仅 RETIRED/REJECTED 行有值,用户可据此判断是否误判走「恢复」 */
+    private String failKind;
     private Long checkedTime;
     private long createdTime;
 }

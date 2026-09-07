@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -45,6 +46,7 @@ public class DriveService {
     private final SiteService siteService;
     private final ProxyService proxyService;
     private final SubscriptionService subscriptionService;
+    private final TvBoxService tvBoxService;
     private final AppProperties appProperties;
 
     public DriveService(AListService aListService,
@@ -52,12 +54,14 @@ public class DriveService {
                         SiteService siteService,
                         ProxyService proxyService,
                         SubscriptionService subscriptionService,
+                        TvBoxService tvBoxService,
                         AppProperties appProperties) {
         this.aListService = aListService;
         this.shareService = shareService;
         this.siteService = siteService;
         this.proxyService = proxyService;
         this.subscriptionService = subscriptionService;
+        this.tvBoxService = tvBoxService;
         this.appProperties = appProperties;
     }
 
@@ -114,6 +118,31 @@ public class DriveService {
         response.setFiles(files);
         log.debug("resolve drive response={}", response);
         return response;
+    }
+
+    /**
+     * Resolve the ready-to-play URL for one media file into a direct download link for the
+     * atv-player client-side parallel range proxy. Delegates to the same getPlayUrl machinery
+     * the spider clients use (per-drive headers, credential guards, PowerList multiUrls), with
+     * {@code type=client-proxy} so the backend keeps its own proxy out of the returned URL.
+     */
+    public Map<String, Object> resolveLink(String resourceId, String path) {
+        int siteId = 1;
+        String defaultPath = "";
+        if (StringUtils.isNotBlank(resourceId)) {
+            String[] parts = decodeHandle(resourceId).split("\\|", 2);
+            if (parts.length != 2) {
+                throw new BadRequestException("invalid resourceId");
+            }
+            siteId = parseIntOrThrow(parts[0], "invalid resourceId");
+            defaultPath = parts[1];
+        }
+        String fullPath = fixPath(StringUtils.isNotBlank(path) ? path : defaultPath);
+        if (!StringUtils.isNotBlank(fullPath)) {
+            throw new BadRequestException("path is required");
+        }
+        log.info("drive link site={} path={}", siteId, fullPath);
+        return tvBoxService.getPlayUrl(siteId, fullPath, false, "", "client-proxy");
     }
 
     /**

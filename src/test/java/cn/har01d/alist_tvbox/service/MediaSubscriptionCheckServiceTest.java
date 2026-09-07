@@ -1459,6 +1459,35 @@ class MediaSubscriptionCheckServiceTest {
                         && e.getDetail().contains("检查更新")));
     }
 
+    // ---------- 线上事故回归:海贼王 sub48,官方已播 1176/本地 1174 却报「已全部同步」 ----------
+    // 缺口扫描曾硬编码 500 上限:长番 500 集之后的真实缺口(1175/1176)全部隐掉。
+    // 与 computeMissing 同口径 MAX_EPISODE_ROWS(旧值 500 曾把柯南 1200+ 集的 27 个缺口隐掉)。
+
+    @Test
+    void checkUpdateReportsGapBeyondEpisodeFiveHundred() {
+        Fixture fixture = new Fixture();
+        fixture.subscription.setMetaProvider("tmdb");
+        fixture.subscription.setMetaId("37854");
+        fixture.subscription.setOfficialEpisodes(1151);
+        fixture.subscription.setOfficialTotal(1155);
+        fixture.subscription.setOfficialStatus(MetadataDetails.STATUS_RETURNING);
+        MetadataDetails details = new MetadataDetails();
+        details.setTotalEpisodes(1181);
+        details.setAiredEpisodes(1176); // 修复后 provider 采纳剧级权威已播
+        details.setStatus(MetadataDetails.STATUS_RETURNING);
+        Mockito.when(fixture.metadataService.refreshDetails(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
+                .thenReturn(details);
+        Mockito.when(fixture.episodeSourceRepository.findNumbersBySubscriptionAndStatesIn(Mockito.eq(1), Mockito.anyCollection()))
+                .thenReturn(numbers(1, 1174));
+
+        String message = fixture.service.checkUpdateNow(0, 1);
+
+        assertTrue(message.contains("官方已播至第 1176 集"), message);
+        assertTrue(message.contains("缺第 1175,1176 集"), "500 集后的缺口必须报出: " + message);
+        assertEquals(MediaSubscription.STATUS_ACTIVE, fixture.subscription.getStatus(),
+                "未集齐(1174 < 1181)不得完结");
+    }
+
     // ---------- 退役/拒绝冷却重探 ----------
 
     @Test
@@ -5367,6 +5396,44 @@ class MediaSubscriptionCheckServiceTest {
         fixture.service.restoreResource(0, 1, 83);
 
         assertEquals(MediaSubscriptionResource.STATE_CANDIDATE, tomb.getState());
+    }
+
+    @Test
+    void restoreResourceRevivesRetiredCandidate() {
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource retired = new MediaSubscriptionResource();
+        retired.setId(84);
+        retired.setSubscriptionId(1);
+        retired.setState(MediaSubscriptionResource.STATE_RETIRED);
+        retired.setFailKind(MediaSubscriptionResource.FAIL_KIND_DEAD);
+        retired.setMountPath("/追剧/.sources/旧挂载");
+        retired.setShareId(900);
+        retired.setCheckedTime(System.currentTimeMillis());
+        Mockito.when(fixture.resourceRepository.findById(84)).thenReturn(Optional.of(retired));
+
+        fixture.service.restoreResource(0, 1, 84);
+
+        assertEquals(MediaSubscriptionResource.STATE_CANDIDATE, retired.getState());
+        assertNull(retired.getFailKind(), "退役分类须清空,回初生候选形态");
+        assertNull(retired.getMountPath());
+        assertNull(retired.getShareId());
+        assertNull(retired.getCheckedTime(), "清检测时间,下轮巡检立即可探测");
+    }
+
+    @Test
+    void restoreResourceIgnoresMountedResource() {
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource mounted = new MediaSubscriptionResource();
+        mounted.setId(85);
+        mounted.setSubscriptionId(1);
+        mounted.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        mounted.setMountPath("/追剧/.sources/补缺");
+        Mockito.when(fixture.resourceRepository.findById(85)).thenReturn(Optional.of(mounted));
+
+        fixture.service.restoreResource(0, 1, 85);
+
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, mounted.getState(), "已挂载无需恢复,幂等返回");
+        assertEquals("/追剧/.sources/补缺", mounted.getMountPath());
     }
 
     private static Set<Integer> episodeRange(int from, int to) {

@@ -760,7 +760,8 @@ public class TelegramService {
 
     public MovieList listDouban(String type, String ac, String sort, Integer year, String genre, String region, int page, int size) {
         if (type.startsWith("s:")) {
-            return searchMovies(type.substring(2), false, size);
+            // s: 条目 id 带 @{年} 内嵌后缀,搜索只认裸标题
+            return searchMovies(PianDanService.parseSubjectId(type).name(), false, size);
         }
 
         return getDoubanList(type, ac, sort, year, genre, region, page, size);
@@ -851,7 +852,7 @@ public class TelegramService {
 
         for (Movie movie : res) {
             MovieDetail movieDetail = new MovieDetail();
-            movieDetail.setVod_id(PianDanService.subjectId(movie.getName(), movie.getYear()));
+            movieDetail.setVod_id(PianDanService.doubanSubjectId(movie.getId()));
             movieDetail.setVod_name(movie.getName());
             movieDetail.setVod_pic(movie.getCover());
             movieDetail.setVod_remarks(movie.getDbScore());
@@ -913,7 +914,7 @@ public class TelegramService {
 
         for (Movie movie : movies.subList(0, size)) {
             MovieDetail movieDetail = new MovieDetail();
-            movieDetail.setVod_id(PianDanService.subjectId(movie.getName(), movie.getYear()));
+            movieDetail.setVod_id(PianDanService.doubanSubjectId(movie.getId()));
             movieDetail.setVod_name(movie.getName());
             movieDetail.setVod_pic(movie.getCover());
             movieDetail.setVod_remarks(movie.getDbScore());
@@ -1000,7 +1001,14 @@ public class TelegramService {
         MovieDetail movieDetail = new MovieDetail();
         String title = item.get("title").asText();
         Integer year = parseYear(item.path("year").asText(item.path("card_subtitle").asText("")));
-        movieDetail.setVod_id(PianDanService.subjectId(title, year));
+        // rexxar 条目自带豆瓣 subject id:独立 db:{id} 类型(纯数字不嵌标题,爬虫裸拼 GET 不怕 &/# 截断),
+        // 无 id 的条目才回落内嵌标题的 s: 形态
+        String idText = item.path("id").asText("");
+        if (idText.matches("\\d+")) {
+            movieDetail.setVod_id(PianDanService.doubanSubjectId(Integer.parseInt(idText)));
+        } else {
+            movieDetail.setVod_id(PianDanService.subjectId(title, year));
+        }
         movieDetail.setVod_name(title);
         movieDetail.setVod_pic(item.get("pic").get("normal").asText());
         if (score > 0) {

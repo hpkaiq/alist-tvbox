@@ -84,6 +84,25 @@ public class MediaSubscriptionController {
             detail.setVod_pic(subscriptionService.proxiedCover(detail.getVod_pic()));
             return detail;
         }
+        if (id.startsWith(PianDanService.DOUBAN_SUBJECT_PREFIX)) {
+            // db:{豆瓣id}:本地库 id 直取,未收录的榜单新片回落 rexxar 在线解析
+            int doubanId;
+            try {
+                doubanId = Integer.parseInt(id.substring(PianDanService.DOUBAN_SUBJECT_PREFIX.length()));
+            } catch (NumberFormatException e) {
+                throw new BadRequestException("无效的片单条目: " + id);
+            }
+            MovieDetail detail = subscriptionService.localDoubanDetailById(doubanId);
+            if (detail == null) {
+                detail = copyMovieDetail(pianDanService.doubanSubjectDetail(doubanId));
+            }
+            if (detail == null) {
+                throw new BadRequestException("片单条目信息获取失败: " + id);
+            }
+            detail.setVod_id(id);
+            detail.setVod_pic(subscriptionService.proxiedCover(detail.getVod_pic()));
+            return detail;
+        }
         if (id.startsWith("s:")) {
             PianDanService.NameYear entry = PianDanService.parseSubjectId(id);
             MovieDetail detail = subscriptionService.localDoubanDetail(entry.name(), entry.year());
@@ -100,6 +119,9 @@ public class MediaSubscriptionController {
 
     /** tmdbDetail 命中共享缓存返回同一实例 —— 拷贝再改写,防缓存被污染。 */
     private static MovieDetail copyMovieDetail(MovieDetail source) {
+        if (source == null) {
+            return null;
+        }
         MovieDetail copy = new MovieDetail();
         copy.setVod_id(source.getVod_id());
         copy.setVod_name(source.getVod_name());

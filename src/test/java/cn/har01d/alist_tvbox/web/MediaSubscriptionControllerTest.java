@@ -160,6 +160,48 @@ class MediaSubscriptionControllerTest {
     }
 
     @Test
+    void navigationDetailDoubanSubjectIdLocalFirstThenOnline() throws Exception {
+        // db:{id}:本地库 id 直取优先
+        MovieDetail local = new MovieDetail();
+        local.setVod_name("榜单剧");
+        local.setVod_pic("https://img9.doubanio.com/x.jpg");
+        local.setVod_director("导演甲");
+        when(subscriptionService.localDoubanDetailById(36155031)).thenReturn(local);
+        when(subscriptionService.proxiedCover("https://img9.doubanio.com/x.jpg"))
+                .thenReturn("/images?url=https%3A%2F%2Fimg9.doubanio.com%2Fx.jpg");
+        mockMvc.perform(get("/api/media-subscriptions/navigation/detail").param("id", "db:36155031"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vod_id").value("db:36155031"))
+                .andExpect(jsonPath("$.vod_name").value("榜单剧"))
+                .andExpect(jsonPath("$.vod_director").value("导演甲"))
+                .andExpect(jsonPath("$.vod_pic").value("/images?url=https%3A%2F%2Fimg9.doubanio.com%2Fx.jpg"));
+
+        // 本地 miss:回落 rexxar 在线解析(短缓存实例拷贝)
+        MovieDetail online = new MovieDetail();
+        online.setVod_id("db:2222");
+        online.setVod_name("冷门新片");
+        online.setVod_content("在线简介");
+        when(subscriptionService.localDoubanDetailById(2222)).thenReturn(null);
+        when(pianDanService.doubanSubjectDetail(2222)).thenReturn(online);
+        when(subscriptionService.proxiedCover(null)).thenReturn(null);
+        mockMvc.perform(get("/api/media-subscriptions/navigation/detail").param("id", "db:2222"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vod_id").value("db:2222"))
+                .andExpect(jsonPath("$.vod_name").value("冷门新片"))
+                .andExpect(jsonPath("$.vod_content").value("在线简介"));
+
+        // 两级都 miss:400
+        when(subscriptionService.localDoubanDetailById(3333)).thenReturn(null);
+        when(pianDanService.doubanSubjectDetail(3333)).thenReturn(null);
+        mockMvc.perform(get("/api/media-subscriptions/navigation/detail").param("id", "db:3333"))
+                .andExpect(status().isBadRequest());
+
+        // 格式非法:400
+        mockMvc.perform(get("/api/media-subscriptions/navigation/detail").param("id", "db:notanumber"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void navigationDetailRejectsUnknownId() throws Exception {
         mockMvc.perform(get("/api/media-subscriptions/navigation/detail").param("id", "msubep-1-2"))
                 .andExpect(status().isBadRequest());

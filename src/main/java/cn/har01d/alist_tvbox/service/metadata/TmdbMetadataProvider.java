@@ -315,6 +315,8 @@ public class TmdbMetadataProvider implements MetadataProvider {
             if (playScheduleBridge != null && !biliClocked) {
                 playScheduleBridge.refine(details); // 豆瓣桥接带出播放源后校正爱优腾实际排播时刻;B站已校正则让位(与豆瓣链同规)
             }
+            // 全剧绝对集号形态的剧级信号采纳:必须在 bangumi/B站桥接之后(见方法注释的翻倍坑)
+            adoptWholeShowSignals(details, tv, season);
         } catch (Exception e) {
             health.record(NAME, false);
             log.warn("tmdb details {} failed: {}", id, e.getMessage());
@@ -398,6 +400,67 @@ public class TmdbMetadataProvider implements MetadataProvider {
         if (nextAir != null) {
             details.setNextAirTime(nextAir.atTime(20, 0).atZone(ZONE).toInstant().toEpochMilli());
         }
+    }
+
+    /**
+     * 全剧绝对集号形态(海贼王/柯南):季只是篇章,episode_number 跨季连续,season 1 订阅=全剧订阅。
+     * 判定:最近已播集的集号超出其所在季的注册集数 —— 分季编号剧的集号恒 ≤ 本季注册数
+     * (末日地堡 S3E8 ≤ 8 不触发),绝对编号剧的集号是全剧位置必然越过(海贼王 S23 注册 26 集,
+     * 已播 E1176)。命中后采纳剧级权威信号,只升不降:已播=最近已播集号、总数≥number_of_episodes、
+     * 下集排播不再按季过滤(下集在任何季都与 S1 同处一个连续集号空间)。
+     * <p>
+     * 不修的后果(线上 海贼王 sub48 卡 ENDED):next_episode_to_air 按季过滤丢弃 → nextAirTime 恒空,
+     * 已播/总数停在 bangumi 桥接的滞后登记值(1151/1155),本地集齐 1155 即被 endedByCollectedAll
+     * 误判完结,且重开条件「官方已播 > 本地」被滞后口径反向堵死(本地 1174 > 官方 1151)永不重开。
+     * <p>
+     * 必须在 bangumi/B站桥接之后执行:bangumi 桥接对已播是逐行累加,先抬已播会被翻倍。
+     */
+    static void adoptWholeShowSignals(MetadataDetails details, JsonNode tv, int season) {
+        if (season != 1) {
+            return; // 分季订阅走季口径 + seasonStartEpisode 对齐,剧级信号混入会冒领别季集号
+        }
+        JsonNode last = tv.path("last_episode_to_air");
+        int lastNumber = last.path("episode_number").asInt(0);
+        int ownCount = seasonEpisodeCount(tv, last.path("season_number").asInt(-1));
+        if (lastNumber <= 0 || ownCount <= 0 || lastNumber <= ownCount) {
+            return; // 分季编号剧(集号不出本季 1..K 空间)或季注册缺失:维持季口径
+        }
+        if (lastNumber > (details.getAiredEpisodes() == null ? 0 : details.getAiredEpisodes())) {
+            details.setAiredEpisodes(lastNumber);
+        }
+        int showTotal = tv.path("number_of_episodes").asInt(0);
+        if (showTotal > (details.getTotalEpisodes() == null ? 0 : details.getTotalEpisodes())) {
+            details.setTotalEpisodes(showTotal);
+        }
+        JsonNode next = tv.path("next_episode_to_air");
+        LocalDate airDate = next.isObject() ? localDate(next.path("air_date").asText()) : null;
+        if (airDate == null) {
+            return;
+        }
+        long airMoment = airDate.atTime(20, 0).atZone(ZONE).toInstant().toEpochMilli();
+        Long currentNext = details.getNextAirTime();
+        if (currentNext == null || airMoment < currentNext) {
+            details.setNextAirTime(airMoment);
+        }
+        int nextNumber = next.path("episode_number").asInt(0);
+        if (nextNumber > 0 && details.getUpcoming() != null && details.getUpcoming().size() < 60
+                && details.getUpcoming().stream().noneMatch(e -> e.getEpisode() == nextNumber)) {
+            List<cn.har01d.alist_tvbox.dto.EpisodeAirDate> upcoming = new ArrayList<>(details.getUpcoming());
+            upcoming.add(new cn.har01d.alist_tvbox.dto.EpisodeAirDate(nextNumber, airMoment));
+            details.setUpcoming(upcoming); // 排播行进时间轴;去重防与季内路径重复
+        }
+    }
+
+    private static int seasonEpisodeCount(JsonNode tv, int seasonNumber) {
+        if (seasonNumber < 0) {
+            return 0;
+        }
+        for (JsonNode s : tv.path("seasons")) {
+            if (s.path("season_number").asInt(-1) == seasonNumber) {
+                return s.path("episode_count").asInt(0);
+            }
+        }
+        return 0;
     }
 
     /** 外网 GET:失败上抛(调用方 catch 记 health/降级)—— 吞掉返回 null 会让熔断器永远打不开,
