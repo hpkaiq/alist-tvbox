@@ -140,7 +140,8 @@ class SubscriptionServiceTest {
 
     @Test
     void buildCatalogTagsUpstreamBuiltinPluginAndMapsPushKey() {
-        Map<String, Object> c = config("csp_Bili"); // upstream
+        // atv_home 为上游手写条目:能力端会被内置站合并覆盖,目录里也不得以自定义站点形态出现
+        Map<String, Object> c = config("csp_Bili", "atv_home"); // upstream
         c.put("parses", new ArrayList<>(List.of(parse("虾米"))));
 
         Plugin plugin = new Plugin();
@@ -149,6 +150,7 @@ class SubscriptionServiceTest {
         plugin.setExternalId("stable-plugin-id");
 
         List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-atv_home", true, "atv_home", "影视首页", null),
                 new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "🟢 AList", null),
                 new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_Push", true, "csp_Push", "推送", null),
                 new SubscriptionSourceService.SubscriptionSourceRef("plugin-1", false, "我的插件", "我的插件", plugin)
@@ -158,6 +160,8 @@ class SubscriptionServiceTest {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> sites = (List<Map<String, Object>>) catalog.get("sites");
+        // WebHome 首页站仅能力端注入,站点目录(普通影视配置编辑器)不返回
+        assertThat(sites).noneSatisfy(s -> assertThat(s).containsEntry("key", "atv_home"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "csp_Bili").containsEntry("origin", "upstream"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "csp_AList").containsEntry("origin", "builtin"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "push_agent").containsEntry("origin", "builtin"));
@@ -167,6 +171,24 @@ class SubscriptionServiceTest {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> parses = (List<Map<String, Object>>) catalog.get("parses");
         assertThat(parses).extracting(p -> p.get("name")).containsExactly("虾米");
+    }
+
+    @Test
+    void webPageSiteKeyDerivesFromFileName() {
+        // 自定义网页源站点目录 key 与下发站点一致(web_ 前缀,特殊字符折叠,纯中文回落插件 id)
+        Plugin page = new Plugin();
+        page.setId(12);
+        page.setUrl("/static/webhome/pages/movie-4K.html");
+        assertThat(SubscriptionService.pluginSiteKey(page)).isEqualTo("web_movie_4K");
+
+        Plugin chinese = new Plugin();
+        chinese.setId(34);
+        chinese.setUrl("/static/webhome/pages/电影库.html");
+        assertThat(SubscriptionService.pluginSiteKey(chinese)).isEqualTo("web_34");
+
+        Plugin normal = new Plugin();
+        normal.setId(56);
+        assertThat(SubscriptionService.pluginSiteKey(normal)).isEqualTo("plugin-56");
     }
 
     @Test

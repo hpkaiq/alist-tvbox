@@ -547,7 +547,7 @@
         </el-table-column>
         <el-table-column label="类型" width="90">
           <template #default="scope">
-            <span>{{ scope.row.builtin ? '内置' : '插件' }}</span>
+            <span>{{ scope.row.builtin ? '内置' : (isWebPageSource(scope.row) ? '网页' : '插件') }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" width="180">
@@ -1242,6 +1242,9 @@ const globalReferenceSid = ref('')
 const rawJsonEditorVisible = ref(false)
 const rawJsonEditorText = ref('')
 const plugins = ref<Plugin[]>([])
+// 自定义网页源:文件-backed(static/webhome/pages/*.html 自动注册),非 spider 插件
+const isWebPageSource = (source: ManagedSource) => !!source.url && source.url.startsWith('/static/webhome/pages/')
+
 const managedSources = ref<ManagedSource[]>([])
 const sourceFilter = ref('')
 const filteredManagedSources = computed(() => {

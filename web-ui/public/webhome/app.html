@@ -127,6 +127,17 @@
     min-height: var(--fm-web-height, 100vh);
     overflow-y: auto; background: #0b0e14;
   }
+  .detail-bg {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
+    background-position: center 30%; background-size: cover;
+    filter: blur(26px) saturate(1.15); opacity: 0.45;
+    transform: scale(1.2);
+  }
+  .detail-bg::after {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(180deg, rgba(11,14,20,0.55) 0%, rgba(11,14,20,0.92) 70%);
+  }
+  .detail-panel { position: relative; z-index: 1; }
   .detail-page.show { display: block; }
   .detail-panel {
     display: flex; width: 100%; max-width: 1180px;
@@ -167,6 +178,53 @@
 
   .state { padding: 18px 42px; color: #7d8ba6; font-size: 14px; }
 
+  /* Hero 轮播横幅(参考 tmdb.html hero-card):双层背景交叉淡入 + 渐变遮罩 + 圆点指示 */
+  .hero {
+    position: relative; margin: 16px 42px 0 42px; height: 300px;
+    border-radius: 14px; overflow: hidden; background: #121a2c;
+  }
+  .hero-bg {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background-position: center 30%; background-size: cover;
+    opacity: 0; transition: opacity 0.8s;
+  }
+  .hero-bg.show { opacity: 1; }
+  .hero-shade {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(90deg, rgba(7,10,17,0.82) 0%, rgba(7,10,17,0.35) 45%, rgba(7,10,17,0.05) 70%),
+                linear-gradient(0deg, rgba(7,10,17,0.9) 0%, rgba(7,10,17,0) 40%);
+  }
+  .hero-info {
+    position: absolute; left: 30px; bottom: 24px; z-index: 2; max-width: 44%;
+  }
+  .hero-title {
+    font-size: 28px; font-weight: 800; color: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+  }
+  .hero-remark {
+    margin-top: 6px; font-size: 14px; color: rgba(255,255,255,0.75);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .hero-btn {
+    margin-top: 14px; height: 42px; padding: 0 24px;
+    border: none; border-radius: 21px; background: #4f8cff; color: #fff;
+    font-size: 15px; font-weight: 600; cursor: pointer; outline: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+  }
+  .hero-btn:hover, .hero-btn:focus, .hero-btn.focus {
+    background: #6ba1ff; box-shadow: 0 0 0 3px rgba(79,140,255,0.4);
+    outline: none;
+  }
+  .hero-dots {
+    position: absolute; right: 22px; bottom: 22px; z-index: 2; display: flex;
+  }
+  .hero-dots .dot {
+    width: 8px; height: 8px; margin-left: 8px; border-radius: 4px;
+    background: rgba(255,255,255,0.35);
+  }
+  .hero-dots .dot.on { background: #4f8cff; }
+
   /* 竖屏手机适配:收窄留白,详情页改纵向布局 */
   @media (max-width: 720px) {
     .topbar { padding: calc(var(--safe-top, 0px) + 14px) 18px 10px 18px; }
@@ -175,6 +233,9 @@
     .row-title { padding: 0 18px; }
     .rail { padding: 6px 18px 18px 18px; }
     .state { padding: 14px 18px; }
+    .hero { margin: 12px 18px 0 18px; height: 210px; }
+    .hero-title { font-size: 22px; }
+    .hero-info { max-width: 74%; }
     .card { width: 120px; margin-right: 12px; }
     .badge { max-width: 108px; }
     .detail-panel {
@@ -210,10 +271,22 @@
       <button class="icon-btn" id="refresh-btn" type="button" title="刷新">↻ 刷新</button>
     </div>
   </div>
+  <div class="hero" id="hero" style="display:none">
+    <div class="hero-bg" id="hero-bg-a"></div>
+    <div class="hero-bg" id="hero-bg-b"></div>
+    <div class="hero-shade"></div>
+    <div class="hero-info">
+      <div class="hero-title" id="hero-title"></div>
+      <div class="hero-remark" id="hero-remark"></div>
+      <button class="hero-btn" id="hero-btn" type="button">立即观看</button>
+    </div>
+    <div class="hero-dots" id="hero-dots"></div>
+  </div>
   <div id="rows"></div>
 </div>
 <div class="toast" id="toast"></div>
 <div class="detail-page" id="detail-page">
+  <div class="detail-bg" id="detail-bg"></div>
   <div class="detail-panel">
     <div class="detail-poster"><img id="detail-pic" alt=""></div>
     <div class="detail-info">
@@ -430,32 +503,15 @@
       if (action) action(item, card);
     };
     card.onclick = run;
-    /* 长按 700ms = 全局搜索该剧(参考 tmdb.html bindRemotePress) */
-    var pressTimer = null;
+    /* 长按搜索已按需求下线:原实现的「长按后合成 click 压制」在 keyup 被跳走的搜索页吃掉后
+     * 会粘住,吞掉下一次真实点击(= 有时要点两次才能进详情);搜索入口收敛到详情页搜索按钮
+     * 与顶部搜索框。Enter 键下沉到卡片即止(防 document 处理器再触发 current.node.click()
+     * 造成双重激活),激活由 keyup 合成 click 完成 —— 与原短按路径完全一致 */
     card.onkeydown = function (ev) {
-      if (ev.key === 'Enter' || ev.keyCode === 23 || ev.keyCode === 13) {
-        if (pressTimer == null) {
-          pressTimer = setTimeout(function () {
-            pressTimer = 'fired';
-            doSearch(name);
-          }, 700);
-        }
-        ev.stopPropagation();
-      }
+      if (ev.key === 'Enter' || ev.keyCode === 23 || ev.keyCode === 13) ev.stopPropagation();
     };
     card.onkeyup = function (ev) {
-      if (ev.key === 'Enter' || ev.keyCode === 23 || ev.keyCode === 13) {
-        if (pressTimer === 'fired') {
-          card.onclick = function () { };  /* 长按后的合成 click 压制 */
-          setTimeout(function () { card.onclick = run; }, 300);
-          ev.preventDefault();
-          ev.stopPropagation();
-        } else if (pressTimer != null) {
-          clearTimeout(pressTimer);
-        }
-        pressTimer = null;
-        ev.stopPropagation();
-      }
+      if (ev.key === 'Enter' || ev.keyCode === 23 || ev.keyCode === 13) ev.stopPropagation();
     };
     registerFocusable(card, entry, entry ? entry.cards.length : 0);
     rail.appendChild(card);
@@ -464,6 +520,12 @@
 
   /* ---------- 遥控器/键盘焦点导航(行×列空间移动) ---------- */
   var focusables = [];  /* { node, entry, index } 与 rowRegistry 同序 */
+  /* 指针交互(触屏/鼠标)期间来的焦点不滚动:点击→焦点→滚动居中会把卡片移出手指/光标下方,
+   * 浏览器按「内容发生移动」取消本次合成 click(= 要点两次才能进详情;卡片已居中/无法
+   * 再移动时才一次生效)。键盘/遥控器导航没有指针事件,照常滚动对齐。 */
+  var lastPointerAt = 0;
+  document.addEventListener('touchstart', function () { lastPointerAt = Date.now(); }, true);
+  document.addEventListener('mousedown', function () { lastPointerAt = Date.now(); }, true);
   function registerFocusable(node, entry, index) {
     var record = { node: node, entry: entry, index: index };
     focusables.push(record);
@@ -471,7 +533,7 @@
     node.addEventListener('focus', function () {
       current = record;
       node.classList.add('focus');
-      scrollIntoViewCompat(node);
+      if (Date.now() - lastPointerAt > 400) scrollIntoViewCompat(node);
     });
     node.addEventListener('blur', function () { node.classList.remove('focus'); });
     return record;
@@ -562,6 +624,7 @@
   document.addEventListener('keydown', function (ev) {
     var key = ev.key;
     var code = ev.keyCode;
+    if (heroItems.length) restartHeroAuto();
     /* 详情浮层打开时:左右切按钮,返回/ESC 关闭,Enter 触发,屏蔽网格导航 */
     if (qs('detail-page').classList.contains('show')) {
       if (key === 'Escape' || code === 27 || code === 4) { closeDetail(); ev.preventDefault(); return; }
@@ -719,6 +782,7 @@
       var img = qs('detail-pic');
       img.src = coverSrc(d.vod_pic);
       img.style.display = '';
+      qs('detail-bg').style.backgroundImage = 'url(' + coverSrc(d.vod_pic) + ')';
     }
     qs('detail-sub').textContent = subscribed ? '➖ 取消追剧' : '➕ 加入追剧';
   }
@@ -807,15 +871,76 @@
   };
 
   /* ---------- 数据加载 ---------- */
-  function loadRow(entry, typeId, action) {
+  function loadRow(entry, typeId, action, onLoaded) {
     setState(entry, '加载中…', null);
     return getJson(API_BASE + '?t=' + encodeURIComponent(typeId)).then(function (data) {
       var list = data && data.list ? data.list : null;
       if (!list) throw new Error('empty');
       renderCards(entry, list, action || openMediaItem);
+      if (onLoaded) onLoaded(list);
     }).catch(function () {
       setState(entry, '加载失败。', function () { loadRow(entry, typeId, action); });
     });
+  }
+
+  /* ---------- Hero 轮播(最近更新前几张,参考 tmdb.html hero 自动轮播+交互暂停) ---------- */
+  var heroItems = [];
+  var heroIndex = 0;
+  var heroTimer = null;
+  var heroLayer = 0;   /* 0=A层显示,1=B层显示 */
+  var heroEntry = null;
+
+  function restartHeroAuto() {
+    if (heroTimer) clearTimeout(heroTimer);
+    heroTimer = setTimeout(function () {
+      showHero(heroIndex + 1);
+    }, 5200);
+  }
+
+  function showHero(index) {
+    if (!heroItems.length) return;
+    heroIndex = ((index % heroItems.length) + heroItems.length) % heroItems.length;
+    var item = heroItems[heroIndex];
+    var pic = item.vod_pic || item.pic || '';
+    var nextLayer = heroLayer === 0 ? qs('hero-bg-b') : qs('hero-bg-a');
+    var curLayer = heroLayer === 0 ? qs('hero-bg-a') : qs('hero-bg-b');
+    if (pic) {
+      nextLayer.style.backgroundImage = 'url(' + coverSrc(pic) + ')';
+      nextLayer.classList.add('show');
+      curLayer.classList.remove('show');
+      heroLayer = heroLayer === 0 ? 1 : 0;
+    }
+    qs('hero-title').textContent = item.vod_name || item.title || '';
+    qs('hero-remark').textContent = item.vod_remarks || item.vodRemarks || '';
+    var dots = qs('hero-dots');
+    clear(dots);
+    for (var i = 0; i < heroItems.length; i++) {
+      dots.appendChild(el('span', i === heroIndex ? 'dot on' : 'dot'));
+    }
+    restartHeroAuto();
+  }
+
+  function buildHero(list) {
+    heroItems = list.slice(0, 4);
+    if (!heroItems.length) return;
+    qs('hero').style.display = '';
+    /* hero 按钮注册为第 0 行(在继续观看之前),遥控器可聚焦、Enter 打开 */
+    var hero = qs('hero');
+    heroEntry = { element: hero, state: { style: {} }, cards: [], rowEl: hero, isHero: true };
+    var btn = qs('hero-btn');
+    var currentItem = function () { return heroItems[heroIndex]; };
+    btn.onclick = function () {
+      restartHeroAuto();
+      var item = currentItem();
+      if (!item) return;
+      var id = String(item.vod_id || item.id || '');
+      if (id.indexOf('msub:') === 0) openMediaItem(item);
+      else openBoardDetail(item);
+    };
+    heroEntry.cards = [btn];
+    registerFocusable(btn, heroEntry, 0);
+    rowRegistry.unshift(heroEntry);
+    showHero(0);
   }
 
   function loadHistory(entry) {
@@ -854,6 +979,7 @@
   }
 
   var booted = false;
+  var contEntry = null;  /* 继续观看行:fmsdk 晚到竞态时补拉用 */
   function boot() {
     /* window.fm 已就绪与 fmsdk 事件可能双双触发,重复 boot 会把所有行/榜单建两遍 */
     if (booted) return;
@@ -869,11 +995,12 @@
     var ended = buildRow('已完结', null, null);
     /* 继续观看行插在最前(依赖 fm.history) */
     var cont = buildRow('继续观看', null, null);
+    contEntry = cont;
     rowsBox.insertBefore(cont.rowEl, rowsBox.firstChild);
     rowRegistry.splice(rowRegistry.indexOf(cont), 1);
     rowRegistry.unshift(cont);
 
-    loadRow(recent, 'recent');
+    loadRow(recent, 'recent', null, buildHero);
     loadRow(active, 'active');
     loadRow(ended, 'ended');
     loadHistory(cont);
@@ -892,7 +1019,13 @@
   /* ---------- SDK 就绪 ---------- */
   function ensureFm() {
     if (window.fm) { fm = window.fm; boot(); return; }
-    window.addEventListener('fmsdk', function () { fm = window.fm; boot(); });
+    window.addEventListener('fmsdk', function () {
+      fm = window.fm;
+      if (!booted) { boot(); return; }
+      /* 慢加载竞态:600ms 降级 boot 已跑过而 fm 后到(sdk 在 onPageFinished 注入,
+       * 慢 WebView/慢网络下晚于降级定时器),继续观看行当时因无 fm 被跳过 —— fm 就绪补拉 */
+      if (contEntry && !contEntry.cards.length) { loadHistory(contEntry); }
+    });
     /* 非 App 环境直接渲染(浏览器预览) */
     setTimeout(function () {
       if (!window.fm && !native) { boot(); }

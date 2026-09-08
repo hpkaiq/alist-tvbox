@@ -6,7 +6,7 @@ import cn.har01d.alist_tvbox.entity.MediaSubscriptionEventRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionNotifyTask;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionNotifyTaskRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscriptionRepository;
-import cn.har01d.alist_tvbox.service.metadata.MetadataHttp;
+import cn.har01d.alist_tvbox.telegram.TelegramHttp;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -24,6 +24,7 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -70,41 +71,44 @@ public class MediaSubscriptionNotificationService {
     private final MediaSubscriptionNotifyTaskRepository taskRepository;
     private final SettingService settingService;
     private final ObjectMapper objectMapper;
-    private final RestTemplate rest;
+    private final TelegramHttp http;
     /** 串行派发:入队即试发(保持旧实现的秒级到达),失败留给兜底扫描 */
     private final ExecutorService executor;
     /** 同订阅处理互斥(入队即试发与兜底扫描并发时防重复编辑) */
     private final Set<Integer> inFlight = ConcurrentHashMap.newKeySet();
+    /** 与 MetadataHttp 默认档一致;出站代理(墙内部署)由 TelegramHttp 统一供给 */
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(15);
 
     @Autowired
     public MediaSubscriptionNotificationService(MediaSubscriptionRepository subscriptionRepository,
                                                 MediaSubscriptionEventRepository eventRepository,
                                                 MediaSubscriptionNotifyTaskRepository taskRepository,
                                                 SettingService settingService,
-                                                ObjectMapper objectMapper) {
-        this(subscriptionRepository, eventRepository, taskRepository, settingService, objectMapper,
-                new MetadataHttp(null).create());
-    }
-
-    /** 测试注入 RestTemplate 桩;生产走带超时的 MetadataHttp 工厂 */
-    MediaSubscriptionNotificationService(MediaSubscriptionRepository subscriptionRepository,
-                                         MediaSubscriptionEventRepository eventRepository,
-                                         MediaSubscriptionNotifyTaskRepository taskRepository,
-                                         SettingService settingService,
-                                         ObjectMapper objectMapper,
-                                         RestTemplate rest) {
+                                                ObjectMapper objectMapper,
+                                                TelegramHttp http) {
         this.subscriptionRepository = subscriptionRepository;
         this.eventRepository = eventRepository;
         this.taskRepository = taskRepository;
         this.settingService = settingService;
         this.objectMapper = objectMapper;
-        this.rest = rest;
+        this.http = http;
         AtomicInteger seq = new AtomicInteger();
         this.executor = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "msub-notify-" + seq.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         });
+    }
+
+    /** 测试注入 RestTemplate 桩;生产走 TelegramHttp(与 Bot 收发共用的带代理工厂) */
+    MediaSubscriptionNotificationService(MediaSubscriptionRepository subscriptionRepository,
+                                         MediaSubscriptionEventRepository eventRepository,
+                                         MediaSubscriptionNotifyTaskRepository taskRepository,
+                                         SettingService settingService,
+                                         ObjectMapper objectMapper,
+                                         RestTemplate rest) {
+        this(subscriptionRepository, eventRepository, taskRepository, settingService, objectMapper,
+                new TelegramHttp(rest));
     }
 
     @PreDestroy
@@ -314,7 +318,7 @@ public class MediaSubscriptionNotificationService {
         }
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
-        ResponseEntity<String> response = rest.exchange(uri, HttpMethod.POST,
+        ResponseEntity<String> response = http.get(READ_TIMEOUT).exchange(uri, HttpMethod.POST,
                 new HttpEntity<>(body.toString(), headers), String.class);
         long returnedId;
         try {

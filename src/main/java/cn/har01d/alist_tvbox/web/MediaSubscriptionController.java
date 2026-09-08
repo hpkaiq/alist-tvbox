@@ -202,12 +202,20 @@ public class MediaSubscriptionController {
     }
 
     /** 手动添加候选资源:粘贴网盘分享链接直接入候选池(不挂载、不动主源),巡检/补缺时自动探测;
-     *  与 activate/pin(转主源)分开,回应"一启用就变主资源"。body {link, password?}。 */
+     *  与 activate/pin(转主源)分开,回应"一启用就变主资源"。body {link, password?};
+     *  link 为本站 URL/裸路径时走路径资源即时入账(issue #1071)。 */
     @PostMapping("/{id}/resources")
     public Map<String, Object> addResource(@PathVariable int id, @RequestBody Map<String, String> body) {
         return subscriptionService.addResource(currentUid(), id,
                 body == null ? null : body.get("link"),
                 body == null ? null : body.get("password"));
+    }
+
+    /** 网盘目录选择器(issue #1071):列出已挂载网盘目录树的一层子目录(path 空=根=已挂载存储),
+     *  供「添加资源-网盘目录」懒加载浏览,选中即以路径资源入账。 */
+    @GetMapping("/drive-dirs")
+    public List<String> driveDirs(@RequestParam(name = "path", required = false) String path) {
+        return checkService.browseDriveDirs(path);
     }
 
     /** 手动磁力补缺:粘贴磁力/ed2k 提交全局离线下载账号,下载完成入账补缺集。body {url, episode?}

@@ -704,4 +704,38 @@ class PluginServiceTest {
         assertThat(existing.getContent()).isEqualTo("stable");
         assertThat(existing.getLastError()).contains("插件地址不可访问");
     }
+
+    @Test
+    void upsertWebPageInsertsNewRowAtFrontOfPlugins() {
+        when(pluginRepository.findByUrl("/static/webhome/pages/emby.html")).thenReturn(Optional.empty());
+        when(pluginRepository.save(any(Plugin.class))).thenAnswer(invocation -> {
+            Plugin saved = invocation.getArgument(0);
+            if (saved.getId() == null) {
+                saved.setId(5);
+            }
+            return saved;
+        });
+
+        Plugin result = pluginService.upsertWebPage("/static/webhome/pages/emby.html", "emby");
+
+        assertThat(result.getUrl()).isEqualTo("/static/webhome/pages/emby.html");
+        assertThat(result.getName()).isEqualTo("emby");
+        // 新建落插件区最前(内置源之后、其它插件之前),不沉底
+        verify(subscriptionSourceService).moveToFrontOfPlugins("plugin-5");
+    }
+
+    @Test
+    void upsertWebPageRescanKeepsPosition() {
+        Plugin existing = new Plugin();
+        existing.setId(5);
+        existing.setUrl("/static/webhome/pages/emby.html");
+        existing.setName("emby");
+        when(pluginRepository.findByUrl("/static/webhome/pages/emby.html")).thenReturn(Optional.of(existing));
+        when(pluginRepository.save(existing)).thenReturn(existing);
+
+        pluginService.upsertWebPage("/static/webhome/pages/emby.html", "emby");
+
+        // 重扫只刷新检查时间,不重排用户调过的顺序
+        verify(subscriptionSourceService, never()).moveToFrontOfPlugins(org.mockito.ArgumentMatchers.anyString());
+    }
 }

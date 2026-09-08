@@ -211,6 +211,15 @@ public class PlaybackSyncService {
         List<History> matches = findByIdentity(uid, syncScope, sourceKind, in.getSourceKey(), in.getVodId());
         History exist = newestHistory(matches);
         deleteDuplicateHistories(matches, exist);
+        // csp_Media 的选集 id 有两种并存形态:webhtv 原生播放写入 msubep-{sub}-{ep}@{线路}@{序号},
+        // spider 详情播放写入 msubep-{sub}-{ep}。占位动作 id(msubstat-/msubinspect-/msubinfo-
+        // 等)不是真实播放,整体拒收,不再落成播放记录。
+        if (KIND_SITE.equals(sourceKind) && "csp_Media".equals(in.getSourceKey())
+                && mediaEpisodeNumberOf(in.getEpisodeUrl()) == null) {
+            log.debug("skip media non-episode url: uid={} vodId={} url={}",
+                    uid, in.getVodId(), in.getEpisodeUrl());
+            return;
+        }
         if (exist != null) {
             long existTime = timeOf(exist);
             if (updatedAt < existTime) {
@@ -229,6 +238,16 @@ public class PlaybackSyncService {
                     log.debug("skip not newer: uid={} site={} vodId={} remote={} local={}",
                             uid, in.getSiteKey(), in.getVodId(), updatedAt, existTime);
                 }
+                return;
+            }
+            if (isMediaEpisodeRegression(in, exist)) {
+                // jar 同步通道(clientKey 为空)的本地行可能是别的端进度同步前的残留:宿主按它
+                // 续播会刷新 createTime,带着新时间戳的旧行会赢下 LWW,把其他端已推进的集数
+                // 整体回退(86 集被残留的第 1 集推回)。集数落后且来自 jar 通道时拒收;
+                // webhtv 原生通道(clientKey 有值)是用户当下真实操作(含主动重看),放行。
+                log.info("skip media episode regression: uid={} vodId={} remote={}({}) local={}({})",
+                        uid, in.getVodId(),
+                        in.getEpisodeUrl(), in.getEpisode(), exist.getEpisodeUrl(), exist.getEpisode());
                 return;
             }
         }
@@ -862,6 +881,45 @@ public class PlaybackSyncService {
             }
         }
         return true;
+    }
+
+    /** csp_Media 选集 id 前缀:msubep-{subId}-{episode}(原生客户端还会追加 @{线路}@{序号})。 */
+    private static final java.util.regex.Pattern MEDIA_EPISODE_NUMBER =
+            java.util.regex.Pattern.compile("msubep-\\d+-(\\d{1,5})");
+
+    /** 从选集 URL 解析逻辑集号;非选集 id(占位动作/空值)返回 null。 */
+    static Integer mediaEpisodeNumberOf(String episodeUrl) {
+        if (episodeUrl == null || episodeUrl.isEmpty()) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = MEDIA_EPISODE_NUMBER.matcher(episodeUrl);
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            int episode = Integer.parseInt(matcher.group(1));
+            return episode > 0 ? episode : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * csp_Media 集数回归判定:上报集数(按选集 URL 解析)落后于在库记录,且上报来自 jar
+     * 同步通道(clientKey 为空)。webhtv 原生通道带 clientKey,是用户当下的真实操作
+     * (包括主动从头重看),不作限制。URL 形态不参与判定——原生(@后缀)与 spider(无后缀)
+     * 两种格式并存且都会产生正常进度,只有集数倒退+jar 通道才是残留行回灌。
+     */
+    static boolean isMediaEpisodeRegression(PlaybackSyncInput in, History exist) {
+        if (!"csp_Media".equals(in.getSourceKey())) {
+            return false;
+        }
+        if (in.getClientKey() != null && !in.getClientKey().isBlank()) {
+            return false;
+        }
+        Integer incoming = mediaEpisodeNumberOf(in.getEpisodeUrl());
+        Integer existing = mediaEpisodeNumberOf(exist.getEpisodeUrl());
+        return incoming != null && existing != null && incoming < existing;
     }
 
     /**

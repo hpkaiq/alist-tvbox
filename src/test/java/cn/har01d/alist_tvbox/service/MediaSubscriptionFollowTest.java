@@ -304,10 +304,12 @@ class MediaSubscriptionFollowTest {
         MediaSubscriptionEventRepository eventRepository = Mockito.mock(MediaSubscriptionEventRepository.class);
         MediaSubscriptionService manual = manualService(shareService, eventRepository);
         when(subscriptionRepository.findById(3)).thenReturn(Optional.of(subscription()));
-        when(shareService.parseShareLink("https://example.com/nope")).thenReturn(null);
+        // URL 形态已划入路径资源流程(issue #1071,路径不可访问另有明确报错);
+        // 本用例锚定「既非分享链接也非路径」的纯文本仍被拒绝
+        when(shareService.parseShareLink("not-a-share-link")).thenReturn(null);
 
         assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
-                () -> manual.addResource(1, 3, "https://example.com/nope", null));
+                () -> manual.addResource(1, 3, "not-a-share-link", null));
         verify(resourceRepository, never()).save(any());
     }
 }

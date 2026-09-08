@@ -69,6 +69,15 @@
               />
               <span class="hint">建议外网开启，多个安全Token，逗号分割。</span>
             </el-form-item>
+            <el-form-item prop="anonymousAccess" label="亲友共享">
+              <el-switch
+                v-model="form.anonymousAccess"
+                inline-prompt
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <span class="hint">开启安全订阅后，无Token的旧订阅地址仍可访问，且配置内自动注入首个安全Token，亲友无需改地址。</span>
+            </el-form-item>
             <el-form-item prop="token" label="安全Token">
               <el-input v-model="form.token" type="password" show-password/>
             </el-form-item>
@@ -469,7 +478,8 @@ const login = ref({
 
 const form = ref({
   token: '',
-  enabledToken: true
+  enabledToken: true,
+  anonymousAccess: false
 })
 
 const formatTime = (value: string | number) => {
@@ -743,6 +753,7 @@ onMounted(() => {
   axios.get('/api/settings').then(({data}) => {
     form.value.token = data.token
     form.value.enabledToken = data.enabled_token === 'true'
+    form.value.anonymousAccess = data.anonymous_access === 'true'
     scheduleTime.value = data.schedule_time || new Date(2023, 6, 20, 9, 0)
     aListStartTime.value = data.alist_start_time
     movieVersion.value = data.movie_version

@@ -57,6 +57,8 @@ public final class Constants {
     /** 用户级 vod token 前缀(u-{username}):该前缀保留给用户 token,全局 tokens 禁用,两个空间永不撞车。 */
     public static final String USER_TOKEN_PREFIX = "u-";
     public static final String ENABLED_TOKEN = "enabled_token";
+    /** 亲友共享模式:开启后无 token 的旧订阅地址在安全订阅开启时仍可访问,且配置 ext 注入首个安全 token。 */
+    public static final String ANONYMOUS_ACCESS = "anonymous_access";
     public static final String INDEX_VERSION = "index_version";
     public static final String DOCKER_VERSION = "docker_version";
     public static final String APP_VERSION = "app_version";

@@ -29,18 +29,31 @@ public class PluginFileSyncService {
 
     private final PluginService pluginService;
     private final PluginRepository pluginRepository;
+    private final SubscriptionSourceService subscriptionSourceService;
 
-    public PluginFileSyncService(PluginService pluginService, PluginRepository pluginRepository) {
+    public PluginFileSyncService(PluginService pluginService, PluginRepository pluginRepository,
+                                 SubscriptionSourceService subscriptionSourceService) {
         this.pluginService = pluginService;
         this.pluginRepository = pluginRepository;
+        this.subscriptionSourceService = subscriptionSourceService;
     }
 
     /**
-     * 重扫 static/plugins/ 下的 .py 文件，upsert 对应插件，并删除文件已不存在的 file-backed 插件。
-     * 幂等，可安全重复调用。
+     * 重扫 static/plugins/ 下的 .py 与 static/webhome/pages/ 下的 .html:
+     * .py upsert 为 spider 插件、.html upsert 为自定义网页源(均以 /static/ 前缀 url 为身份),
+     * 并删除文件已不存在的 file-backed 条目。幂等,可安全重复调用。
      */
     public synchronized void reconcile() {
-        Path base = Utils.getWebPath("static");
+        reconcile(Utils.getWebPath("static"));
+    }
+
+    /** base 可注入(测试用临时目录),生产恒为 static 根。 */
+    synchronized void reconcile(Path base) {
+        reconcilePlugins(base);
+        reconcileWebPages(base);
+    }
+
+    private void reconcilePlugins(Path base) {
         Path dir = base.resolve(PluginService.FILE_PLUGIN_DIR);
         // 自动创建 plugins 目录，确保静态文件页面可见、可直接上传
         try {
@@ -72,7 +85,7 @@ public class PluginFileSyncService {
                         }
                     });
         } catch (IOException e) {
-            log.warn("failed to walk plugins dir: {}", dir, e);
+            log.warn("failed to walk plugins dir: {}", dir);
             return;
         }
 
@@ -82,6 +95,57 @@ public class PluginFileSyncService {
             }
         }
         log.debug("plugin file sync reconciled: {} present", presentUrls.size());
+    }
+
+    /**
+     * 自定义网页源:static/webhome/pages/ 下的 .html(递归)upsert 为 Plugin 行
+     * (站点生成时按 csp_WebHome 形态下发),文件删除后对应条目一并删除。
+     * 重扫保留用户改过的名称/开关/顺序,与 .py 插件同款幂等收敛。
+     */
+    private void reconcileWebPages(Path base) {
+        Path dir = base.resolve(PluginService.WEB_PAGE_DIR);
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            log.warn("failed to create web pages dir: {}", dir, e);
+        }
+
+        List<Plugin> existing = pluginRepository.findByUrlStartingWithOrderBySortOrderAscIdAsc(PluginService.WEB_PAGE_URL_PREFIX);
+        if (!Files.exists(dir)) {
+            existing.forEach(this::deleteQuietly);
+            return;
+        }
+
+        Set<String> presentUrls = new HashSet<>();
+        try (Stream<Path> stream = Files.walk(dir)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().toLowerCase().endsWith(".html"))
+                    .forEach(file -> {
+                        String url = toStaticUrl(base, file);
+                        try {
+                            pluginService.upsertWebPage(url, displayName(file));
+                            presentUrls.add(url);
+                        } catch (Exception e) {
+                            log.warn("failed to register web page {}: {}", file, e.getMessage());
+                        }
+                    });
+        } catch (IOException e) {
+            log.warn("failed to walk web pages dir: {}", dir);
+            return;
+        }
+
+        for (Plugin plugin : existing) {
+            if (!presentUrls.contains(plugin.getUrl())) {
+                deleteQuietly(plugin);
+            }
+        }
+        log.debug("web page sync reconciled: {} present", presentUrls.size());
+    }
+
+    private String displayName(Path file) {
+        String name = file.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     private String toStaticUrl(Path base, Path file) {
@@ -103,6 +167,11 @@ public class PluginFileSyncService {
             reconcile();
         } catch (Exception e) {
             log.warn("startup plugin file reconcile failed", e);
+        }
+        try {
+            subscriptionSourceService.migrateWebPagesToFrontOnce();
+        } catch (Exception e) {
+            log.warn("startup web pages front migrate failed", e);
         }
     }
 }

@@ -4,10 +4,13 @@ import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.entity.EmbyRepository;
 import cn.har01d.alist_tvbox.entity.FeiniuRepository;
 import cn.har01d.alist_tvbox.entity.JellyfinRepository;
+import cn.har01d.alist_tvbox.entity.Plugin;
 import cn.har01d.alist_tvbox.entity.PluginRepository;
+import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.SiteRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -15,6 +18,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SubscriptionSourceServiceTest {
@@ -50,5 +54,159 @@ class SubscriptionSourceServiceTest {
                         .returns("片单导航", SubscriptionSourceService.ManagedSource::name)
                         .returns(true, SubscriptionSourceService.ManagedSource::builtin)
                         .returns(true, SubscriptionSourceService.ManagedSource::enabled));
+
+        // WebHome 首页站与其它内置源同权管理:默认启用且居首位(站点选择器首位)
+        List<SubscriptionSourceService.ManagedSource> all = service.findAll();
+        assertThat(all.get(0))
+                .returns("atv_home", SubscriptionSourceService.ManagedSource::key)
+                .returns("影视首页", SubscriptionSourceService.ManagedSource::name)
+                .returns(true, SubscriptionSourceService.ManagedSource::builtin)
+                .returns(true, SubscriptionSourceService.ManagedSource::enabled)
+                .returns(1, SubscriptionSourceService.ManagedSource::sortOrder);
+    }
+
+    @Test
+    void migrateWebPagesToFrontMovesLegacyRowsOnce() {
+        // 存量迁移:首版落底的网页行一次性挪到插件区最前(相对顺序保留),标志防重复
+        PluginRepository pluginRepository = mock(PluginRepository.class);
+        SettingRepository settingRepository = mock(SettingRepository.class);
+        SiteRepository siteRepository = mock(SiteRepository.class);
+        EmbyRepository embyRepository = mock(EmbyRepository.class);
+        FeiniuRepository feiniuRepository = mock(FeiniuRepository.class);
+        JellyfinRepository jellyfinRepository = mock(JellyfinRepository.class);
+        when(settingRepository.findById("builtin_subscription_sources")).thenReturn(Optional.empty());
+        when(siteRepository.findById(1)).thenReturn(Optional.empty());
+        when(embyRepository.count()).thenReturn(0L);
+        when(feiniuRepository.count()).thenReturn(0L);
+        when(jellyfinRepository.count()).thenReturn(0L);
+        when(settingRepository.existsByName("web_pages_front_migrated")).thenReturn(false);
+
+        Plugin pyPlugin = new Plugin();
+        pyPlugin.setId(1);
+        pyPlugin.setSortOrder(15);
+        pyPlugin.setName("爬虫");
+        Plugin page1 = new Plugin();
+        page1.setId(2);
+        page1.setSortOrder(16);
+        page1.setName("网页1");
+        page1.setUrl("/static/webhome/pages/p1.html");
+        Plugin page2 = new Plugin();
+        page2.setId(3);
+        page2.setSortOrder(17);
+        page2.setName("网页2");
+        page2.setUrl("/static/webhome/pages/p2.html");
+        when(pluginRepository.findAllByOrderBySortOrderAscIdAsc()).thenReturn(List.of(pyPlugin, page1, page2));
+        when(pluginRepository.findById(1)).thenReturn(Optional.of(pyPlugin));
+        when(pluginRepository.findById(2)).thenReturn(Optional.of(page1));
+        when(pluginRepository.findById(3)).thenReturn(Optional.of(page2));
+
+        SubscriptionSourceService service = new SubscriptionSourceService(
+                new AppProperties(),
+                pluginRepository,
+                settingRepository,
+                siteRepository,
+                embyRepository,
+                feiniuRepository,
+                jellyfinRepository,
+                new ObjectMapper()
+        );
+
+        service.migrateWebPagesToFrontOnce();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Plugin>> captor = ArgumentCaptor.forClass((Class) List.class);
+        verify(pluginRepository).saveAll(captor.capture());
+        List<Plugin> saved = captor.getValue();
+        assertThat(saved).extracting(Plugin::getId).containsExactly(2, 3, 1);
+        verify(settingRepository).save(org.mockito.ArgumentMatchers.argThat(
+                arg -> arg != null && "web_pages_front_migrated".equals(arg.getName())));
+    }
+
+    @Test
+    void moveToFrontOfPluginsInsertsBeforeOtherPlugins() {
+        // 新网页源插入第一个非内置源之前(插件区最前),其余源相对顺序不变
+        PluginRepository pluginRepository = mock(PluginRepository.class);
+        SettingRepository settingRepository = mock(SettingRepository.class);
+        SiteRepository siteRepository = mock(SiteRepository.class);
+        EmbyRepository embyRepository = mock(EmbyRepository.class);
+        FeiniuRepository feiniuRepository = mock(FeiniuRepository.class);
+        JellyfinRepository jellyfinRepository = mock(JellyfinRepository.class);
+        when(settingRepository.findById("builtin_subscription_sources")).thenReturn(Optional.empty());
+        when(siteRepository.findById(1)).thenReturn(Optional.empty());
+        when(embyRepository.count()).thenReturn(0L);
+        when(feiniuRepository.count()).thenReturn(0L);
+        when(jellyfinRepository.count()).thenReturn(0L);
+
+        Plugin pyPlugin = new Plugin();
+        pyPlugin.setId(1);
+        pyPlugin.setSortOrder(15);
+        pyPlugin.setName("爬虫");
+        Plugin page = new Plugin();
+        page.setId(2);
+        page.setSortOrder(16);
+        page.setName("网页");
+        when(pluginRepository.findAllByOrderBySortOrderAscIdAsc()).thenReturn(List.of(pyPlugin, page));
+        when(pluginRepository.findById(1)).thenReturn(Optional.of(pyPlugin));
+        when(pluginRepository.findById(2)).thenReturn(Optional.of(page));
+
+        SubscriptionSourceService service = new SubscriptionSourceService(
+                new AppProperties(),
+                pluginRepository,
+                settingRepository,
+                siteRepository,
+                embyRepository,
+                feiniuRepository,
+                jellyfinRepository,
+                new ObjectMapper()
+        );
+
+        service.moveToFrontOfPlugins("plugin-2");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Plugin>> captor = ArgumentCaptor.forClass((Class) List.class);
+        verify(pluginRepository).saveAll(captor.capture());
+        List<Plugin> saved = captor.getValue();
+        assertThat(saved).extracting(Plugin::getId).containsExactly(2, 1);
+        assertThat(saved.get(0).getSortOrder()).isEqualTo(saved.get(1).getSortOrder() - 1);
+    }
+
+    @Test
+    void webPageSourceIsNotRefreshable() {
+        // 自定义网页源:文件即内容,「刷新」按 spider 插件逻辑无意义,隐藏刷新/配置入口
+        PluginRepository pluginRepository = mock(PluginRepository.class);
+        SettingRepository settingRepository = mock(SettingRepository.class);
+        SiteRepository siteRepository = mock(SiteRepository.class);
+        EmbyRepository embyRepository = mock(EmbyRepository.class);
+        FeiniuRepository feiniuRepository = mock(FeiniuRepository.class);
+        JellyfinRepository jellyfinRepository = mock(JellyfinRepository.class);
+        when(settingRepository.findById("builtin_subscription_sources")).thenReturn(Optional.empty());
+        when(siteRepository.findById(1)).thenReturn(Optional.empty());
+        when(embyRepository.count()).thenReturn(0L);
+        when(feiniuRepository.count()).thenReturn(0L);
+        when(jellyfinRepository.count()).thenReturn(0L);
+
+        Plugin page = new Plugin();
+        page.setId(5);
+        page.setSortOrder(10);
+        page.setName("电影库");
+        page.setUrl("/static/webhome/pages/电影库.html");
+        when(pluginRepository.findAllByOrderBySortOrderAscIdAsc()).thenReturn(List.of(page));
+
+        SubscriptionSourceService service = new SubscriptionSourceService(
+                new AppProperties(),
+                pluginRepository,
+                settingRepository,
+                siteRepository,
+                embyRepository,
+                feiniuRepository,
+                jellyfinRepository,
+                new ObjectMapper()
+        );
+
+        assertThat(service.findAll())
+                .anySatisfy(source -> assertThat(source)
+                        .returns("/static/webhome/pages/电影库.html", SubscriptionSourceService.ManagedSource::url)
+                        .returns(false, SubscriptionSourceService.ManagedSource::refreshable)
+                        .returns(false, SubscriptionSourceService.ManagedSource::extendable));
     }
 }

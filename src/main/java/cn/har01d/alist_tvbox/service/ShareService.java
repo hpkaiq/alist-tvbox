@@ -1624,6 +1624,16 @@ public class ShareService {
         return response.getBody();
     }
 
+    /** 路径归属存储的驱动名(追剧手动路径资源标注盘线路);找不到返回 null,不校验 AList 状态(尽力而为)。 */
+    public String findStorageDriverByPath(String path) {
+        try {
+            return aListLocalService.findStorageDriverByPath(path);
+        } catch (Exception e) {
+            log.warn("find storage driver by path failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
     public void validateStorages() {
         aListLocalService.validateAListStatus();
         HttpHeaders headers = new HttpHeaders();

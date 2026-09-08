@@ -122,8 +122,9 @@ public class MediaSubscriptionResource {
     @Column(name = "fail_kind", length = 16)
     private String failKind;
 
-    /** 手动钉选(用户指定主源):换源候选序置顶、归属复核豁免(用户否决自动判定);
-     * 每订阅至多一个,失效退役不清除 —— 恢复可用后优先回归。null 视为未钉选。 */
+    /** 手动钉选(用户指定主源):换源候选序置顶、异剧/时长/归属复核全链路豁免(用户否决自动判定,
+     * 不因内容门禁退役/卸载);每订阅至多一个,链接真死的失效退役不清除 —— 恢复可用后优先回归。
+     * null 视为未钉选。 */
     private Boolean pinned;
 
     /**

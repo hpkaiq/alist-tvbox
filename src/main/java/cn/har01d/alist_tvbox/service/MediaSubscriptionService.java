@@ -548,7 +548,7 @@ public class MediaSubscriptionService {
      * (手动事实优先于既有判定,restoreResource 同款语义)。
      */
     public Map<String, Object> addResource(int uid, int id, String link, String password) {
-        getOwned(uid, id);
+        MediaSubscription subscription = getOwned(uid, id);
         String normalized = StringUtils.trimToEmpty(link);
         if (StringUtils.isBlank(normalized)) {
             throw new BadRequestException("缺少分享链接");
@@ -556,6 +556,10 @@ public class MediaSubscriptionService {
         normalized = StringUtils.abbreviate(normalized, 1000); // 列 VARCHAR(1024)
         cn.har01d.alist_tvbox.entity.Share probe = shareService.parseShareLink(normalized);
         if (probe == null || probe.getType() == null || !MediaSubscriptionCheckService.supportedDriveType(probe.getType())) {
+            String mountedPath = mountedPathOf(normalized);
+            if (mountedPath != null) {
+                return addPathResource(subscription, mountedPath);
+            }
             throw new BadRequestException("无法识别的网盘分享链接(支持夸克/UC/阿里/百度/115/天翼/移动/123/迅雷/光鸭)");
         }
         MediaSubscriptionResource resource =
@@ -595,6 +599,85 @@ public class MediaSubscriptionService {
         log.info("media subscription {} manually added resource candidate {} (existed={}, revived={})",
                 id, resource.getId(), existed, revived);
         return Map.of("success", true, "resourceId", resource.getId(), "existed", existed, "revived", revived);
+    }
+
+    /** 输入形态识别:本实例 URL(http://host:port/…)或裸路径(/…)视为已挂载网盘目录,返回规范化
+     *  AList 路径;其余返回 null(走分享链接流程)。URL 形态按需解码(%XX),WebDAV 前缀 /dav 剥离。 */
+    private static String mountedPathOf(String raw) {
+        String value = StringUtils.trimToEmpty(raw);
+        boolean url = StringUtils.startsWithIgnoreCase(value, "http://")
+                || StringUtils.startsWithIgnoreCase(value, "https://");
+        if (!url && !value.startsWith("/")) {
+            return null;
+        }
+        String path = value;
+        if (url) {
+            try {
+                path = java.net.URI.create(value).getRawPath();
+            } catch (Exception e) {
+                return null;
+            }
+            if (path != null && path.contains("%")) {
+                try {
+                    path = java.net.URLDecoder.decode(path, java.nio.charset.StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException e) {
+                    // 字面 % 序列(目录名本身含 %):保留原文
+                }
+            }
+        }
+        path = path == null ? "" : path.replaceAll("/+", "/");
+        if (path.startsWith("/dav/") || "/dav".equals(path)) { // WebDAV 前缀:fs 路径空间无 /dav
+            path = path.substring(4);
+        }
+        while (path.endsWith("/") && path.length() > 1) {
+            path = path.substring(0, path.length() - 1);
+        }
+        if (StringUtils.isBlank(path) || "/".equals(path)) {
+            throw new BadRequestException("请粘贴具体的剧集目录(如 /115/115/电影/XXX)");
+        }
+        if (path.length() > 500) { // mount_path VARCHAR(512)
+            throw new BadRequestException("路径过长:" + StringUtils.abbreviate(path, 80));
+        }
+        return path;
+    }
+
+    /** 手动添加已挂载网盘目录(issue #1071):即时列举入账为路径资源(path: 合成链接,直接供流
+     *  不挂卸不动主源);入账失败抛 400 把原因回给用户;目录原位增长由巡检 refreshAuxMounts 每轮重列承接。 */
+    private Map<String, Object> addPathResource(MediaSubscription subscription, String path) {
+        if (path.equals(subscription.getMountPath())) {
+            throw new BadRequestException("该路径正是本订阅的主源挂载目录,无需添加");
+        }
+        String link = "path:" + path;
+        MediaSubscriptionResource resource =
+                resourceRepository.findBySubscriptionIdAndLink(subscription.getId(), link).orElse(null);
+        boolean existed = resource != null;
+        boolean revived = false;
+        if (resource == null) {
+            resource = new MediaSubscriptionResource();
+            resource.setSubscriptionId(subscription.getId());
+            resource.setLink(link);
+            resource.setCreatedTime(System.currentTimeMillis());
+        } else if (MediaSubscriptionResource.STATE_CANDIDATE.equals(resource.getState())
+                || MediaSubscriptionResource.STATE_MOUNTED.equals(resource.getState())) {
+            // 幂等:已入账,重新添加 = 刷新目录内容(原位增长的手动同步入口)
+        } else {
+            revived = true; // REMOVED/RETIRED/REJECTED:手动事实优先,重新入账复活(restoreResource 同款)
+        }
+        resource.setType(DriveId.fromDriverName(shareService.findStorageDriverByPath(path)));
+        resource.setSource(MediaSubscriptionResource.SOURCE_MANUAL);
+        resource.setPassword(null);
+        resource.setTitle(StringUtils.abbreviate(StringUtils.substringAfterLast(path, "/"), 250));
+        resource.setScore(1000); // 手动提供的源:线路装配/资源序与手动分享同档置顶
+        Set<Integer> covered;
+        try {
+            covered = checkService.registerPathResource(subscription, resource);
+        } catch (Exception e) {
+            throw new BadRequestException(StringUtils.defaultIfBlank(e.getMessage(), "路径资源入账失败"), e);
+        }
+        log.info("media subscription {} manually added path resource {} at {} ({} episodes, existed={}, revived={})",
+                subscription.getId(), resource.getId(), path, covered.size(), existed, revived);
+        return Map.of("success", true, "resourceId", resource.getId(), "existed", existed,
+                "revived", revived, "episodes", covered.size());
     }
 
     /** 资源池事件(不发通知):手动添加/恢复这类管理动作只进页面时间线。 */

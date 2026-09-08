@@ -52,6 +52,10 @@ public class PluginService {
     public static final String STATIC_URL_PREFIX = "/static/";
     public static final String FILE_PLUGIN_DIR = "plugins";
     public static final String FILE_PLUGIN_URL_PREFIX = STATIC_URL_PREFIX + FILE_PLUGIN_DIR + "/";
+    // 文件-backed 自定义网页源：static/webhome/pages/ 下的 .html 自动注册为订阅源(csp_WebHome 站点)。
+    // 页面经 /webhome/** 映射访问(带 no-cache,与内置 app.html 同机制),url 身份仍以 /static/ 前缀落库
+    public static final String WEB_PAGE_DIR = "webhome/pages";
+    public static final String WEB_PAGE_URL_PREFIX = STATIC_URL_PREFIX + WEB_PAGE_DIR + "/";
 
     private final PluginRepository pluginRepository;
     private final SettingRepository settingRepository;
@@ -154,6 +158,53 @@ public class PluginService {
         plugin.setLastCheckedAt(OffsetDateTime.now());
         plugin.setLastError("");
         return pluginRepository.save(plugin);
+    }
+
+    /**
+     * 自定义网页源注册(static/webhome/pages/*.html 文件双向同步入口):按 url 匹配 upsert,
+     * 不解析内容、不发起下载;重扫时保留用户改过的名称/开关/顺序,仅新建时用文件名兜底。
+     */
+    @Transactional
+    public Plugin upsertWebPage(String url, String fallbackName) {
+        Plugin existing = pluginRepository.findByUrl(url).orElse(null);
+        if (existing != null) {
+            existing.setLastCheckedAt(OffsetDateTime.now());
+            existing.setLastError("");
+            return pluginRepository.save(existing);
+        }
+        Plugin plugin = new Plugin();
+        plugin.setUrl(url);
+        plugin.setName(StringUtils.defaultIfBlank(fallbackName, deriveSourceName(url)));
+        plugin.setSourceName(plugin.getName());
+        plugin.setEnabled(true);
+        plugin.setSortOrder(subscriptionSourceService.nextSortOrder());
+        plugin.setLastCheckedAt(OffsetDateTime.now());
+        plugin.setLastError("");
+        Plugin saved = pluginRepository.save(plugin);
+        // 新网页源插到插件区最前(内置源之后、其它插件之前),不沉底;重扫已有条目不重排
+        subscriptionSourceService.moveToFrontOfPlugins("plugin-" + saved.getId());
+        return saved;
+    }
+
+    /** 是否为文件-backed 自定义网页源(区别于 spider 插件,站点走 csp_WebHome 形态)。 */
+    public static boolean isWebPagePlugin(Plugin plugin) {
+        return plugin != null && plugin.getUrl() != null && plugin.getUrl().startsWith(WEB_PAGE_URL_PREFIX);
+    }
+
+    /** 网页源站点 key:web_ + 文件路径 sanitized(非 ASCII/特殊字符折叠为 _,空则回落插件 id)。 */
+    public static String webPageSiteKey(Plugin plugin) {
+        String name = StringUtils.removeStart(plugin.getUrl(), WEB_PAGE_URL_PREFIX);
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        String key = StringUtils.strip(name.replaceAll("[^A-Za-z0-9_]", "_").replaceAll("_+", "_"), "_");
+        return "web_" + (key.isEmpty() ? String.valueOf(plugin.getId()) : key);
+    }
+
+    /** 网页源页面访问地址:文件身份 /static/webhome/pages/x.html → 访问 /webhome/pages/x.html(no-cache)。 */
+    public static String webPageUrl(Plugin plugin) {
+        return "/webhome/" + StringUtils.removeStart(plugin.getUrl(), STATIC_URL_PREFIX + "webhome/");
     }
 
     @Transactional

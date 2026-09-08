@@ -80,6 +80,27 @@ public final class DriveId {
         return toDrive(toType(value));
     }
 
+    /** 内嵌 AList 存储驱动名 → 盘类型(手动路径资源标注盘线路用);未知/套娃驱动返回 null(不单独出线路)。 */
+    private static final Map<String, Integer> DRIVER_TO_TYPE = Map.ofEntries(
+            Map.entry("Quark", 5), Map.entry("QuarkTV", 5),
+            Map.entry("UC", 7), Map.entry("UCTV", 7),
+            Map.entry("115 Cloud", 8), Map.entry("115 Open", 8),
+            Map.entry("BaiduNetdisk", 10),
+            Map.entry("189CloudPC", 9),
+            Map.entry("139Yun", 6),
+            Map.entry("123Pan", 3), Map.entry("123 Open", 3),
+            Map.entry("ThunderBrowser", 2),
+            Map.entry("AliyundriveOpen", 0), Map.entry("AliyunShare", 0),
+            Map.entry("PikPak", 1),
+            Map.entry("GuangYaPan", 12),
+            Map.entry("Local", 4),
+            Map.entry("Strm", 11));
+
+    /** 存储驱动名(x_storages.driver)→ 盘类型;空白/未收录(套娃 AList 等)返回 null。 */
+    public static Integer fromDriverName(String driver) {
+        return StringUtils.isBlank(driver) ? null : DRIVER_TO_TYPE.get(driver.trim());
+    }
+
     public static boolean isShareTokenName(String value) {
         if (StringUtils.isBlank(value)) {
             return false;

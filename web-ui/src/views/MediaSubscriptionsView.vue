@@ -313,7 +313,7 @@
       <div class="resources-toolbar">
         <el-button size="small" type="primary" plain @click="openAddResource">添加资源</el-button>
         <el-button size="small" type="primary" plain @click="openManualMagnet">磁力补缺</el-button>
-        <span class="sub-text">粘贴分享链接只入候选池,不挂载不动主源;巡检/补缺时自动探测,想立即挂载点「启用」(只挂为补缺源,不动主源;换主源用「转主源」)</span>
+        <span class="sub-text">分享链接只入候选池,巡检/补缺时自动探测,想立即挂载点「启用」(只挂为补缺源,不动主源;换主源用「转主源」);网盘里已有的剧用「网盘目录」选择器选中目录即入账为路径资源</span>
       </div>
       <el-table :data="resources" border v-loading="resourcesLoading">
         <el-table-column prop="title" label="资源" min-width="240" show-overflow-tooltip>
@@ -345,6 +345,7 @@
         <el-table-column label="角色" width="90">
           <template #default="scope">
             <el-tag v-if="scope.row.primary" size="small" type="success">主源</el-tag>
+            <el-tag v-else-if="isPathRow(scope.row)" size="small" type="warning">路径</el-tag>
             <el-tag v-else-if="scope.row.state === 'MOUNTED'" size="small" type="warning">补缺</el-tag>
             <el-tag v-if="scope.row.pinned" size="small" type="danger" style="margin-left: 4px">钉选</el-tag>
             <el-tag v-if="scope.row.startEpisode" size="small" type="info" style="margin-left: 4px">起{{ scope.row.startEpisode }}</el-tag>
@@ -354,8 +355,8 @@
           <template #default="scope">
             <el-button v-if="scope.row.state === 'CANDIDATE'" link type="primary" size="small"
                        @click="enableResource(scope.row)">启用</el-button>
-            <!-- 转主源一步直达:候选行也要有(线上反馈"不缺的候补无法变主源"——此前只有已挂载补缺行才有此按钮,候选换主源得先启用再转两步,或用语义不直白的钉选) -->
-            <el-button v-if="scope.row.state === 'CANDIDATE' || (scope.row.state === 'MOUNTED' && !scope.row.primary)"
+            <!-- 转主源一步直达:候选行也要有(线上反馈"不缺的候补无法变主源"——此前只有已挂载补缺行才有此按钮,候选换主源得先启用再转两步,或用语义不直白的钉选);路径资源直连用户网盘目录,无分享链接可挂到固定路径,不参与转正 -->
+            <el-button v-if="!isPathRow(scope.row) && (scope.row.state === 'CANDIDATE' || (scope.row.state === 'MOUNTED' && !scope.row.primary))"
                        link type="primary" size="small"
                        @click="activateResource(scope.row)">转主源</el-button>
             <el-button v-if="scope.row.pinned" link type="danger" size="small"
@@ -375,22 +376,42 @@
       </el-table>
     </el-drawer>
 
-    <el-dialog v-model="addResourceVisible" title="手动添加候选资源" width="560">
-      <el-form label-width="70px" @submit.prevent>
-        <el-form-item label="分享链接">
-          <el-input v-model="addResourceForm.link" type="textarea" :rows="3" placeholder="网盘分享链接(夸克/UC/阿里/百度/115/天翼/移动/123/迅雷/光鸭)"
-                    :disabled="addResourceSaving"/>
-        </el-form-item>
-        <el-form-item label="提取码">
-          <el-input v-model="addResourceForm.password" placeholder="无提取码可留空" :disabled="addResourceSaving"/>
-        </el-form-item>
-      </el-form>
-      <div class="sub-text">
-        只加入候选池:不挂载、不替换当前主源。巡检补缺/换源时自动探测(候选序置顶);要立即挂载,请在列表点「启用」(只挂为补缺源,不动主源;换主源用「转主源/钉选」)。
-      </div>
+    <el-dialog v-model="addResourceVisible" title="手动添加候选资源" width="620" top="6vh">
+      <el-tabs v-model="addResourceTab">
+        <el-tab-pane label="网盘目录" name="dir">
+          <div class="sub-text">
+            浏览已挂载网盘,选中剧集目录即时入账为「路径资源」:直接供流不动主源,网盘里目录更新后巡检自动同步 —— 网盘里已有的剧,选进来就能看。
+          </div>
+          <el-tree :key="dirTreeKey" lazy node-key="path" highlight-current
+                   :props="{label: 'name', isLeaf: () => false}"
+                   :load="loadDriveDirs" :expand-on-click-node="true"
+                   empty-text="没有子目录(或未挂载任何网盘)"
+                   v-loading="dirTreeLoading"
+                   @node-click="onDirNodeClick"
+                   style="max-height: 46vh; overflow: auto; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; padding: 4px"/>
+          <div v-if="selectedDirPath" class="sub-text" style="margin-top: 6px">已选目录:{{ selectedDirPath }}</div>
+        </el-tab-pane>
+        <el-tab-pane label="分享链接" name="link">
+          <el-form label-width="70px" @submit.prevent>
+            <el-form-item label="分享链接">
+              <el-input v-model="addResourceForm.link" type="textarea" :rows="3"
+                        placeholder="网盘分享链接(夸克/UC/阿里/百度/115/天翼/移动/123/迅雷/光鸭),或以 / 开头的网盘目录路径"
+                        :disabled="addResourceSaving"/>
+            </el-form-item>
+            <el-form-item label="提取码">
+              <el-input v-model="addResourceForm.password" placeholder="分享链接的提取码,可留空" :disabled="addResourceSaving"/>
+            </el-form-item>
+          </el-form>
+          <div class="sub-text">
+            分享链接只加入候选池:不挂载、不替换当前主源,巡检补缺/换源时自动探测(候选序置顶);要立即挂载,请在列表点「启用」(只挂为补缺源,不动主源;换主源用「转主源/钉选」)。
+          </div>
+        </el-tab-pane>
+      </el-tabs>
       <template #footer>
         <el-button @click="addResourceVisible = false">取消</el-button>
-        <el-button type="primary" :loading="addResourceSaving" @click="submitAddResource">添加</el-button>
+        <el-button v-if="addResourceTab === 'dir'" type="primary" :disabled="!selectedDirPath"
+                   :loading="addResourceSaving" @click="submitAddDirResource">添加此目录</el-button>
+        <el-button v-else type="primary" :loading="addResourceSaving" @click="submitAddResource">添加</el-button>
       </template>
     </el-dialog>
 
@@ -661,6 +682,10 @@
             <el-form-item label="Chat ID">
               <el-input v-model="notifyForm.chatId" placeholder="与 bot 对话后获取"/>
               <span v-if="!store.admin" class="sub-text">个人 TG 通知渠道:留空时沿用管理员配置的全局渠道</span>
+            </el-form-item>
+            <el-form-item v-if="store.admin" label="TG 代理">
+              <el-input v-model="notifyForm.botProxy" placeholder="http://192.168.1.2:7890 或 socks5://...,留空直连"/>
+              <span class="sub-text">服务器访问 Telegram API(机器人收发+追剧通知)走的代理,只作用于机器人不影响网盘请求;保存后下一轮拉取即生效,无需重启。容器环境变量 HTTP_PROXY 对 Java 后端无效</span>
             </el-form-item>
             <el-form-item label="免打扰时段">
               <el-input v-model="notifyForm.quietHours" placeholder="23:00-08:00,留空立即发送"/>
@@ -1286,6 +1311,11 @@ const resources = ref<ResourceDto[]>([])
 const addResourceVisible = ref(false)
 const addResourceSaving = ref(false)
 const addResourceForm = ref({link: '', password: ''})
+// 网盘目录 tab(issue #1071):目录树懒加载 + 选中路径
+const addResourceTab = ref<'dir' | 'link'>('dir')
+const dirTreeKey = ref(0)
+const dirTreeLoading = ref(false)
+const selectedDirPath = ref('')
 // 手动磁力补缺:贴磁力/ed2k 提交全局离线下载账号补缺集(集号留空按文件名自动识别);
 // 搜索区按订阅关键词搜候选(TG-Search,与自动兜底同源),结果可解析看包内容、可入库提交
 const magnetVisible = ref(false)
@@ -1356,6 +1386,7 @@ const notifyForm = ref({
   botToken: '',
   chatId: '',
   quietHours: '',
+  botProxy: '',
   botEnabled: true,
   collectionFallback: false,
   doubanCookie: '',
@@ -1940,6 +1971,9 @@ const resourceShareLink = (row: ResourceDto) => {
   return link + (link.includes('?') ? '&' : '?') + param + '=' + password
 }
 
+/** 路径资源(link=path:/…):用户粘贴的已挂载网盘目录,直连供流,不参与转主源。 */
+const isPathRow = (row: ResourceDto) => !!row.link?.startsWith('path:')
+
 const showResources = (row: SubscriptionDto) => {
   current.value = row
   resourcesVisible.value = true
@@ -1958,11 +1992,46 @@ const loadResources = () => {
   })
 }
 
-/** 手动添加候选资源:只入池不挂载不动主源(用户反馈"一启用就变主资源"的解法 ——
- *  添加与启用两个动作分开;同链幂等,曾移除/判死的复活回候选池)。 */
+/** 手动添加候选资源:分享链接只入池不挂载不动主源(用户反馈"一启用就变主资源"的解法 ——
+ *  添加与启用两个动作分开;同链幂等,曾移除/判死的复活回候选池);
+ *  网盘目录 tab(issue #1071):目录树选择器选中即路径资源即时入账。 */
 const openAddResource = () => {
   addResourceForm.value = {link: '', password: ''}
+  addResourceTab.value = 'dir'
+  selectedDirPath.value = ''
+  dirTreeKey.value++ // 树重挂载:重新懒加载根层(已挂载存储)
   addResourceVisible.value = true
+}
+
+interface DriveDirNode {
+  name: string
+  path: string
+}
+
+/** 目录树懒加载:一层一层拉子目录(后端只回目录名),根层 = 已挂载存储列表。 */
+const loadDriveDirs = (node: any, resolve: (dirs: DriveDirNode[]) => void) => {
+  const parent = node.level === 0 ? '' : String(node.data?.path || '')
+  dirTreeLoading.value = true
+  axios.get('/api/media-subscriptions/drive-dirs', {params: parent ? {path: parent} : {}}).then(({data}) => {
+    const names = (data as string[]) || []
+    resolve(names.map(name => ({name, path: parent + '/' + name})))
+  }).catch(error => {
+    ElMessage.error(error?.response?.data?.message || error?.message || '目录加载失败')
+    resolve([])
+  }).finally(() => {
+    dirTreeLoading.value = false
+  })
+}
+
+const onDirNodeClick = (data: DriveDirNode) => {
+  selectedDirPath.value = data.path
+}
+
+/** 目录 tab 提交:选中路径走同一 addResource 接口(裸路径形态 → 路径资源即时入账)。 */
+const submitAddDirResource = () => {
+  if (!current.value || !selectedDirPath.value) return
+  addResourceSaving.value = true
+  postAddResource(selectedDirPath.value, null)
 }
 
 const openManualMagnet = () => {
@@ -2073,21 +2142,34 @@ const submitAddResource = () => {
   if (!current.value) return
   const link = addResourceForm.value.link.trim()
   if (!link) {
-    ElMessage.warning('请粘贴分享链接')
+    ElMessage.warning('请粘贴分享链接或网盘目录路径')
     return
   }
   addResourceSaving.value = true
-  axios.post(`/api/media-subscriptions/${current.value.id}/resources`, {
+  postAddResource(link, addResourceForm.value.password.trim() || null)
+}
+
+/** 添加资源统一提交与回执(分享链接候选入池 / 路径资源即时入账两形态共用)。 */
+const postAddResource = (link: string, password: string | null) => {
+  axios.post(`/api/media-subscriptions/${current.value!.id}/resources`, {
     link,
-    password: addResourceForm.value.password.trim() || null,
+    password,
   }).then(response => {
-    if (response.data?.existed) {
+    if (response.data?.episodes !== undefined) {
+      // 路径资源:即时入账,响应带识别出的集数
+      ElMessage.success(response.data.existed
+          ? '路径资源已在池中,已刷新目录内容'
+          : `已入账路径资源,识别出 ${response.data.episodes} 集可直接播放`)
+    } else if (response.data?.existed) {
       ElMessage.success('该链接已在资源池中,提取码已按填写更新')
     } else {
       ElMessage.success(response.data?.revived ? '已复活为候选(下轮巡检重探)' : '已加入候选池,巡检/补缺时自动探测')
     }
     addResourceVisible.value = false
     loadResources()
+    if (response.data?.episodes !== undefined) {
+      schedule(loadAll, 1000) // 集数清单/进度随入账变化,刷新主页行
+    }
   }).finally(() => {
     addResourceSaving.value = false
   })
@@ -2117,7 +2199,7 @@ const activateResource = (resource: ResourceDto) => {
 const pinResource = (resource: ResourceDto) => {
   if (!current.value) return
   axios.post(`/api/media-subscriptions/${current.value.id}/resources/${resource.id}/pin`).then(() => {
-    ElMessage.success('已钉选为主源,自动换源不再覆盖')
+    ElMessage.success('已钉选为主源:强制指定,自动换源与异剧判定不再覆盖(仅链接真死时换走,恢复后优先回归)')
     schedule(loadResources, 6000)
     schedule(loadAll, 8000)
   })
@@ -2378,6 +2460,7 @@ const openNotify = () => {
     notifyForm.value.botToken = settings['msub_telegram_bot_token'] || ''
     notifyForm.value.chatId = settings['msub_telegram_chat_id'] || ''
     notifyForm.value.quietHours = settings['msub_notify_quiet_hours'] || ''
+    notifyForm.value.botProxy = settings['msub_telegram_proxy'] || ''
     notifyForm.value.botEnabled = settings['msub_telegram_bot_enabled'] !== 'false'
     notifyForm.value.collectionFallback = settings['msub_collection_fallback'] === 'true'
     notifyForm.value.doubanCookie = settings['douban_cookie'] || ''
@@ -2455,6 +2538,7 @@ const saveNotify = () => {
     axios.post('/api/settings', {name: 'msub_telegram_bot_token', value: notifyForm.value.botToken}),
     axios.post('/api/settings', {name: 'msub_telegram_chat_id', value: notifyForm.value.chatId}),
     axios.post('/api/settings', {name: 'msub_notify_quiet_hours', value: notifyForm.value.quietHours.trim()}),
+    axios.post('/api/settings', {name: 'msub_telegram_proxy', value: notifyForm.value.botProxy.trim()}),
     axios.post('/api/settings', {name: 'msub_telegram_bot_enabled', value: String(notifyForm.value.botEnabled)}),
     axios.post('/api/settings', {name: 'msub_collection_fallback', value: String(notifyForm.value.collectionFallback)}),
     axios.post('/api/settings', {name: 'douban_cookie', value: notifyForm.value.doubanCookie}),

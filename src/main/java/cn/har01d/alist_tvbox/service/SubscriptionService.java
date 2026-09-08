@@ -82,6 +82,7 @@ import java.util.stream.Collectors;
 
 import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE;
+import static cn.har01d.alist_tvbox.util.Constants.ANONYMOUS_ACCESS;
 import static cn.har01d.alist_tvbox.util.Constants.ENABLED_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.USER_TOKEN_PREFIX;
@@ -97,6 +98,8 @@ public class SubscriptionService {
     private static final String AUTO_UPDATE_ZX = "auto_update_zx";
     private static final String AUTO_UPDATE_XS = "auto_update_xs";
     private static final String SYSTEM_PLAYBACK_TOKEN_NAME = "系统订阅同步";
+    /** WebHome 网页首页站点 key(内置源之一,订阅源管理可禁用/调序/改名)。 */
+    private static final String WEB_HOME_KEY = "atv_home";
 
     private final Environment environment;
     private final AppProperties appProperties;
@@ -129,6 +132,8 @@ public class SubscriptionService {
     private final ThreadLocal<String> verifiedUserToken = new ThreadLocal<>();
 
     private String tokens = "";
+    // 亲友共享模式:安全订阅开启时仍放行无 token 请求,并为其注入首个安全 token(老订阅地址零改动)
+    private boolean anonymousAccess;
 
     public SubscriptionService(Environment environment,
                                AppProperties appProperties,
@@ -203,6 +208,9 @@ public class SubscriptionService {
         if (!settingRepository.existsByName(ENABLED_TOKEN)) {
             settingRepository.save(new Setting(ENABLED_TOKEN, String.valueOf(!tokens.isEmpty())));
         }
+        anonymousAccess = Boolean.parseBoolean(settingRepository.findById(ANONYMOUS_ACCESS)
+                .map(Setting::getValue)
+                .orElse("false"));
 
         if (list.isEmpty()) {
             Subscription sub = new Subscription();
@@ -347,6 +355,11 @@ public class SubscriptionService {
             return;
         }
 
+        // 亲友共享模式:无 token 请求放行(仍以匿名身份下发配置,个人订阅/凭证端点照旧校验)
+        if (anonymousAccess && rawToken.isBlank()) {
+            return;
+        }
+
         // 全局 tokens 优先匹配:与用户名撞车时按共享 token 处理,避免被用户名分支抢走
         for (String t : tokens.split(",")) {
             if (t.equals(rawToken)) {
@@ -463,6 +476,7 @@ public class SubscriptionService {
     public TokenDto getTokens() {
         TokenDto tokenDto = new TokenDto();
         tokenDto.setEnabledToken(appProperties.isEnabledToken());
+        tokenDto.setAnonymousAccess(anonymousAccess);
 
         String role = Optional.of(SecurityContextHolder.getContext())
                 .map(SecurityContext::getAuthentication)
@@ -531,6 +545,9 @@ public class SubscriptionService {
         settingRepository.save(new Setting(ENABLED_TOKEN, String.valueOf(dto.isEnabledToken())));
         settingRepository.save(new Setting(TOKEN, tokens));
         appProperties.setEnabledToken(dto.isEnabledToken());
+        anonymousAccess = dto.isAnonymousAccess();
+        settingRepository.save(new Setting(ANONYMOUS_ACCESS, String.valueOf(anonymousAccess)));
+        dto.setAnonymousAccess(anonymousAccess);
         return dto;
     }
 
@@ -1386,28 +1403,45 @@ public class SubscriptionService {
         for (SubscriptionSourceService.SubscriptionSourceRef source : subscriptionSourceService.findEnabledSources()) {
             try {
                 if (source.builtin()) {
-                    Map<String, Object> site = buildSite(embedToken, secret, uid, source.siteKey(), source.name(),
-                            playbackToken, configUrl);
-                    site.put("order", order);
-                    // key transformation for csp_Push (needed before override lookup)
-                    if ("csp_Push".equals(source.siteKey())) {
-                        site.put("key", "push_agent");
+                    if (WEB_HOME_KEY.equals(source.siteKey())) {
+                        // WebHome 网页首页站:单形态通吃(webhtv/fish 按 homePage 字段原生渲染,
+                        // 字段驱动与 api 名无关;普通端由 spring.jar csp_WebHome spider 弹窗加载);
+                        // 启用/顺序/名称来自订阅源管理
+                        Map<String, Object> site = buildWebHomeSite(token, source.name(), playbackToken);
+                        site.put("order", order);
+                        applySiteOverride(WEB_HOME_KEY, site, sites);
+                        sites.add(id++, site);
+                        log.debug("add builtin source {}: {}", source.siteKey(), site);
+                    } else {
+                        Map<String, Object> site = buildSite(embedToken, secret, uid, source.siteKey(), source.name(),
+                                playbackToken, configUrl);
+                        site.put("order", order);
+                        // key transformation for csp_Push (needed before override lookup)
+                        if ("csp_Push".equals(source.siteKey())) {
+                            site.put("key", "push_agent");
+                        }
+                        if ("csp_AList".equals(source.siteKey())) {
+                            sites.removeIf(item -> "Alist".equals(item.get("key")));
+                        } else if ("csp_Push".equals(source.siteKey())) {
+                            sites.removeIf(item -> "push_agent".equals(item.get("key")));
+                        }
+                        // apply user override from config.sites (partial entry added by overrideConfig)
+                        String overrideKey = (String) site.get("key");
+                        boolean overridden = applySiteOverride(overrideKey, site, sites);
+                        // special defaults when no user override
+                        applyBuiltinSiteCapabilities(source.siteKey(), overridden, site);
+                        sites.add(id++, site);
+                        log.debug("add builtin source {}: {}", source.siteKey(), site);
                     }
-                    if ("csp_AList".equals(source.siteKey())) {
-                        sites.removeIf(item -> "Alist".equals(item.get("key")));
-                    } else if ("csp_Push".equals(source.siteKey())) {
-                        sites.removeIf(item -> "push_agent".equals(item.get("key")));
-                    }
-                    // apply user override from config.sites (partial entry added by overrideConfig)
-                    String overrideKey = (String) site.get("key");
-                    boolean overridden = applySiteOverride(overrideKey, site, sites);
-                    // special defaults when no user override
-                    applyBuiltinSiteCapabilities(source.siteKey(), overridden, site);
-                    sites.add(id++, site);
-                    log.debug("add builtin source {}: {}", source.siteKey(), site);
                 } else if (source.plugin() != null) {
-                    Map<String, Object> site = buildPluginSite(source.plugin(), embedToken, secret,
-                            playbackToken, configUrl);
+                    Map<String, Object> site;
+                    if (PluginService.isWebPagePlugin(source.plugin())) {
+                        // 自定义网页源(webhome/pages/*.html):csp_WebHome 形态,非 spider 插件站点
+                        site = buildWebPageSite(source.plugin(), playbackToken);
+                    } else {
+                        site = buildPluginSite(source.plugin(), embedToken, secret,
+                                playbackToken, configUrl);
+                    }
                     site.put("order", order);
                     String overrideKey = (String) site.get("key");
                     applySiteOverride(overrideKey, site, sites);
@@ -1418,40 +1452,70 @@ public class SubscriptionService {
                 log.warn("add source failed: {}", source.id(), e);
             }
         }
-        addWebHomeSite(token, sites);
         return order;
     }
 
     /**
-     * WebHome 自定义网页首页站点(webhtv/fish 等魔改端):type 3 + homePage,客户端切到
-     * 该站点首页时加载我们的网页(注入 fm SDK),卡片经 fm.vod 走 csp_Media 原生详情链路。
-     * 仅对已知支持 WebHome 的客户端 token 注入 —— 原版 FongMi 解析不了 csp_Builtin,
-     * 无差别下发会给不支持端留一个死站点。能力由 spider 运行时探测回传
-     * (见 {@link WebHomeService});首次配好订阅先无此站,spider 跑过一次后
-     * 下次刷新配置即出现。
+     * WebHome 自定义网页首页站点:单形态通吃所有客户端 —— homePage 字段(webhtv/fish 按
+     * site.hasHomePage() 字段驱动原生渲染,与 api 名无关,已核 fish_webhtv HomeWebController)
+     * + api=csp_WebHome(原版 FongMi/OK影视 无 homePage 概念,由 spring.jar spider 全屏
+     * WebView 加载 ext 里的同一 URL,注入最小 fm SDK)。同一 URL 同一 token,页面零改动;
+     * 能力探测记忆(WebHomeService)不再参与形态选择 —— 同 token 多设备混用(一台 webhtv
+     * 把 token 标成能力端,同 token 的原版端曾因此拿到解析不了的原生形态)无法在配置拉取时
+     * 区分客户端,双形态必错一边。ext 为明文 JSON 字符串(spider 端兼容 base64/裸 URL)。
+     * 随订阅源管理(可禁用/调序/改名)下发。
      */
-    private void addWebHomeSite(String token, List<Map<String, Object>> sites) {
-        if (!webHomeService.isCapable(token)) {
-            return;
-        }
+    private Map<String, Object> buildWebHomeSite(String token, String name, String playbackToken) {
+        String homeToken = token.isBlank() ? "-" : token;
+        // 绝对地址:多接口(@)拼接/反代场景下相对路径会解析错;token 供页面调 /media 数据
+        // v= 页面版本:WebView 对 homePage URL 有缓存,页面改动必须 bump 强制重载
+        String pageUrl = readHostAddress("") + "/webhome/app.html?token=" + homeToken + "&v=19";
+        Map<String, Object> site = buildWebHomeLikeSite(WEB_HOME_KEY, name, pageUrl, playbackToken);
+        log.debug("add WebHome site: token={}", homeToken);
+        return site;
+    }
+
+    /**
+     * 自定义网页源站点(static/webhome/pages/*.html 自动注册,名称可在订阅源管理改):
+     * 与内置影视首页同款 csp_WebHome 单形态;页面地址经 /webhome/** no-cache,无需版本号。
+     */
+    private Map<String, Object> buildWebPageSite(Plugin plugin, String playbackToken) {
+        String pageUrl = readHostAddress("") + PluginService.webPageUrl(plugin);
+        Map<String, Object> site = buildWebHomeLikeSite(
+                PluginService.webPageSiteKey(plugin),
+                StringUtils.defaultIfBlank(plugin.getName(), "网页"),
+                pageUrl, playbackToken);
+        log.debug("add web page site: {} -> {}", site.get("key"), pageUrl);
+        return site;
+    }
+
+    /** csp_WebHome 站点公共字段(内置影视首页与自定义网页源共用)。 */
+    private Map<String, Object> buildWebHomeLikeSite(String key, String name, String pageUrl, String playbackToken) {
         Map<String, Object> site = new HashMap<>();
-        site.put("key", "atv_home");
-        site.put("name", "影视首页");
+        site.put("key", key);
+        site.put("name", StringUtils.defaultIfBlank(name, "影视首页"));
         site.put("type", 3);
-        site.put("api", "csp_Builtin");
-        // 内置源 order 从 1000 起,置 0 保证 sortSitesByOrder 后仍居首位(站点选择器首位,易切换)
-        site.put("order", 0);
+        site.put("api", "csp_WebHome");
+        site.put("homePage", pageUrl);
         site.put("searchable", 0);
         site.put("quickSearch", 0);
         site.put("filterable", 0);
         site.put("changeable", 0);
-        // 绝对地址:多接口(@)拼接/反代场景下相对路径会解析错;token 供页面调 /media 数据
-        // v= 页面版本:WebView 对 homePage URL 有缓存,页面改动必须 bump 强制重载
-        String homeToken = token.isBlank() ? "-" : token;
-        site.put("homePage", readHostAddress("") + "/webhome/app.html?token=" + homeToken + "&v=14");
-        sites.removeIf(item -> "atv_home".equals(item.get("key")));
-        sites.add(0, site);
-        log.debug("add WebHome site: token={}", homeToken);
+        // 显式 jar(与其他内置源一致):防宿主不回落全局 spider 或全局位被覆盖
+        site.put("jar", readHostAddress("") + "/spring.jar");
+        Map<String, Object> ext = new HashMap<>();
+        ext.put("url", pageUrl);
+        // 播放同步专用令牌(订阅 token 过不了 /api/playback 的 X-PlaySync-Token 鉴权):
+        // spider fm.history 桥的兜底数据源 —— 服务端播放记录(跨设备继续观看)
+        ext.put("pt", StringUtils.defaultString(playbackToken));
+        try {
+            // base64(JSON),与 csp_Media 等其它源一致(spider 端 parseExt 先试 base64,兼容明文)
+            site.put("ext", Base64.getEncoder().encodeToString(
+                    objectMapper.writeValueAsString(ext).replaceAll("\\s", "").getBytes()));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("encode WebHome ext failed", e);
+        }
+        return site;
     }
 
     static void applyBuiltinSiteCapabilities(String key, boolean overridden, Map<String, Object> site) {
@@ -1844,8 +1908,12 @@ public class SubscriptionService {
                 json = appendMd5sum(name, json);
                 // 用当前请求 token(订阅 token、USER 用户名、或无 token 的 "")原样注入;仅 currentToken==null(未走 checkToken 的可信内部/管理端,如 getCatalog)才回退全局首个订阅 token。
                 // 关键:/sub/{id} 等用户路径会经 checkToken 把 currentToken 设为 "",不算"内部",不注入全局 —— 避免无 token 客户端拿到全局订阅 token 再访问 tokenm/zx/tvfan
+                // 例外:亲友共享模式(anonymousAccess)下用户显式接受该泄漏面,匿名请求也注入首个 token,老订阅地址零改动
                 String currentReqToken = currentToken.get();
                 String subToken = currentReqToken != null ? currentReqToken : getFirstSubscriptionToken();
+                if (StringUtils.isBlank(subToken) && anonymousAccess) {
+                    subToken = getFirstSubscriptionToken();
+                }
                 // u- 用户 token 升级为凭证形态再入 URL:tokenm 只认带密钥形态(裸 u- 无熵),
                 // zx/tvfan 目前本就只收共享 token,嵌入哪种都会 400,不影响
                 subToken = userService.toCredentialToken(subToken);
@@ -1966,9 +2034,13 @@ public class SubscriptionService {
             json = json.replace("{Cloud-drive", "{\"Cloud-drive");
             if (json.contains("tvfan/Cloud-drive.txt")) {
                 String address = readHostAddress();
-                // 同 loadLocalConfigJson:用户请求(含空 token "")原样注入,仅 currentToken==null 的可信内部场景回退全局首个
+                // 同 loadLocalConfigJson:用户请求(含空 token "")原样注入,仅 currentToken==null 的可信内部场景回退全局首个;
+                // 亲友共享模式下匿名请求同样回退首个 token
                 String currentReqToken = currentToken.get();
                 String subToken = currentReqToken != null ? currentReqToken : getFirstSubscriptionToken();
+                if (StringUtils.isBlank(subToken) && anonymousAccess) {
+                    subToken = getFirstSubscriptionToken();
+                }
                 json = json.replace("tvfan/Cloud-drive.txt", address + "/tvfan/config" + (StringUtils.isBlank(subToken) ? "" : "?token=" + subToken));
             }
 
@@ -2105,6 +2177,11 @@ public class SubscriptionService {
                 continue;
             }
             builtinPluginKeys.add(key);
+            // WebHome 首页站仅对能力端(webhtv/fish)随配置注入,普通影视订阅不含此站,
+            // 站点目录(配置编辑器)不返回;key 仍参与去重,用户手写的 atv_home 条目也不进自定义站点列表
+            if (WEB_HOME_KEY.equals(key)) {
+                continue;
+            }
             Map<String, Object> item = new HashMap<>();
             item.put("key", key);
             item.put("name", source.name() == null ? key : source.name());
@@ -2155,6 +2232,10 @@ public class SubscriptionService {
 
     /** 插件显示名允许重命名；订阅站点 key 必须使用跨设备稳定的 manifest id。 */
     static String pluginSiteKey(Plugin plugin) {
+        // 自定义网页源:站点目录 key 与下发的 csp_WebHome 站点 key 保持一致(配置编辑器归类为受管源)
+        if (PluginService.isWebPagePlugin(plugin)) {
+            return PluginService.webPageSiteKey(plugin);
+        }
         if (StringUtils.isNotBlank(plugin.getExternalId())) {
             return plugin.getExternalId();
         }

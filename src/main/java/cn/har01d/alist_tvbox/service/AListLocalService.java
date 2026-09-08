@@ -386,6 +386,37 @@ public class AListLocalService {
         return sb.toString();
     }
 
+    /**
+     * 路径归属存储的驱动名(手动路径资源标注盘线路用):从路径本身逐级上溯到根,第一个命中的
+     * 挂载点即归属存储(最长前缀匹配的精确版)。找不到/AList 库不可访问返回 null,调用方按未知盘处理。
+     */
+    public String findStorageDriverByPath(String path) {
+        String current = StringUtils.trimToEmpty(path);
+        while (StringUtils.isNotBlank(current) && current.startsWith("/")) {
+            String sql = "SELECT driver FROM x_storages WHERE mount_path = ?";
+            String driver = null;
+            if (System.getenv("NATIVE") != null && "sqlite3".equals(database)) {
+                String result = Utils.executeQuery(renderSql(sql, new Object[]{current}));
+                driver = StringUtils.isBlank(result) ? null : result.trim();
+            } else {
+                try {
+                    driver = alistJdbcTemplate.queryForObject(sql, new Object[]{current}, String.class);
+                } catch (EmptyResultDataAccessException e) {
+                    driver = null;
+                } catch (Exception e) {
+                    log.warn("find storage driver by path failed: {}", e.getMessage());
+                    return null;
+                }
+            }
+            if (StringUtils.isNotBlank(driver)) {
+                return driver;
+            }
+            int index = current.lastIndexOf('/');
+            current = index <= 0 ? "" : current.substring(0, index);
+        }
+        return null;
+    }
+
     public boolean existsById(String tableName, long id) {
         if (System.getenv("NATIVE") != null && "sqlite3".equals(database)) {
             String sql = "SELECT 1 FROM " + tableName + " WHERE id = " + id + " LIMIT 1";

@@ -6,7 +6,11 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.URI;
 import java.time.Duration;
+import java.util.Locale;
 
 /**
  * 元数据 provider 共用的 HTTP 客户端工厂。
@@ -29,6 +33,11 @@ public class MetadataHttp {
 
     /** 长轮询等特殊调用需要更长的读超时(如 Telegram getUpdates 的 25s 挂起)。 */
     public RestTemplate create(Duration readTimeout) {
+        return create(readTimeout, null);
+    }
+
+    /** 带出站代理版(JVM 不读 HTTP_PROXY 环境变量,需显式挂 Proxy):proxyUrl 形态见 {@link #parseProxy}。 */
+    public RestTemplate create(Duration readTimeout, String proxyUrl) {
         RestTemplateBuilder base = builder != null ? builder : new RestTemplateBuilder();
         RestTemplate template = base
                 .connectTimeout(Duration.ofSeconds(10))
@@ -40,8 +49,51 @@ public class MetadataHttp {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) Duration.ofSeconds(10).toMillis());
         factory.setReadTimeout((int) readTimeout.toMillis());
+        Proxy proxy = parseProxy(proxyUrl);
+        if (proxy != null) {
+            factory.setProxy(proxy);
+        }
         template.setRequestFactory(factory);
         return template;
+    }
+
+    /**
+     * 解析出站代理地址:{@code http://host:port} / {@code https://host:port} / {@code socks5://host:port}
+     * (socks/socks5h 同 SOCKS);裸 {@code host:port} 默认 http 代理;空白返回 null(直连)。
+     * <p>
+     * 格式非法抛 {@link IllegalArgumentException} 而非静默回落直连 —— 墙内部署配错代理若静默直连,
+     * 表现为「配了代理还是不通」无从排查;让错误直接出现在轮询日志里。
+     * 不支持带用户名密码的形态(JDK {@link Proxy} 不携带凭据,Authenticator.setDefault 是全局污染)。
+     */
+    public static Proxy parseProxy(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String spec = value.trim();
+        Proxy.Type type = Proxy.Type.HTTP;
+        int schemeEnd = spec.indexOf("://");
+        if (schemeEnd > 0) {
+            String scheme = spec.substring(0, schemeEnd).toLowerCase(Locale.ROOT);
+            switch (scheme) {
+                case "http", "https" -> type = Proxy.Type.HTTP;
+                case "socks", "socks5", "socks5h" -> type = Proxy.Type.SOCKS;
+                default -> throw new IllegalArgumentException("不支持的代理协议: " + scheme);
+            }
+            spec = spec.substring(schemeEnd + 3);
+        }
+        if (spec.lastIndexOf('@') >= 0) {
+            throw new IllegalArgumentException("代理不支持用户名密码认证: " + value.trim());
+        }
+        URI uri;
+        try {
+            uri = URI.create("http://" + spec);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("代理地址无效: " + value.trim());
+        }
+        if (uri.getHost() == null || uri.getPort() == -1) {
+            throw new IllegalArgumentException("代理地址无效(应为 host:port): " + value.trim());
+        }
+        return new Proxy(type, new InetSocketAddress(uri.getHost(), uri.getPort()));
     }
 
     /**

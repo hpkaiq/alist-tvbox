@@ -1,7 +1,6 @@
 package cn.har01d.alist_tvbox.telegram;
 
 import cn.har01d.alist_tvbox.dto.telegram.BotUpdate;
-import cn.har01d.alist_tvbox.service.metadata.MetadataHttp;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -27,7 +26,8 @@ import java.util.Map;
  * <p>
  * 与 {@code MediaSubscriptionNotificationService.callTelegram} 同款裸 HTTP 模式:String 收发 + 注入的
  * Jackson2 ObjectMapper 手动解析(规避 Boot 4 裸 new RestTemplate() 挂 Jackson3 转换器的坑),不引入 Bot SDK。
- * 读超时须大于 getUpdates 的 timeout(25s 挂起),故不共用 15s 的 MetadataHttp 默认实例。
+ * 读超时须大于 getUpdates 的 timeout(25s 挂起),故不共用 15s 档位;出站代理
+ * (Setting {@code msub_telegram_proxy},墙内部署用)由 {@link TelegramHttp} 统一供给、热切换。
  * 交互文本统一 parse_mode=HTML,转义责任在 Renderer;token 一律不入日志。
  */
 @Component
@@ -35,19 +35,20 @@ public class TelegramBotClient {
     private static final Logger log = LoggerFactory.getLogger(TelegramBotClient.class);
     private static final String API_BASE = "https://api.telegram.org/bot";
     private static final long POLL_TIMEOUT_SECONDS = 25;
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(POLL_TIMEOUT_SECONDS + 10);
 
     private final ObjectMapper objectMapper;
-    private final RestTemplate rest;
+    private final TelegramHttp http;
 
     @Autowired
-    public TelegramBotClient(ObjectMapper objectMapper, MetadataHttp metadataHttp) {
-        this(objectMapper, metadataHttp.create(Duration.ofSeconds(POLL_TIMEOUT_SECONDS + 10)));
+    public TelegramBotClient(ObjectMapper objectMapper, TelegramHttp http) {
+        this.objectMapper = objectMapper;
+        this.http = http;
     }
 
-    /** 测试注入 RestTemplate 桩;生产走带超时的 MetadataHttp 工厂。 */
+    /** 测试注入 RestTemplate 桩;生产走 TelegramHttp(带代理热切换)。 */
     TelegramBotClient(ObjectMapper objectMapper, RestTemplate rest) {
-        this.objectMapper = objectMapper;
-        this.rest = rest;
+        this(objectMapper, new TelegramHttp(rest));
     }
 
     /** 拉取待处理 update(offset 为上轮最大 update_id+1;首轮 0)。allowed_updates 收窄防无关更新刷屏。 */
@@ -186,7 +187,7 @@ public class TelegramBotClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> response;
         try {
-            response = rest.exchange(uri, HttpMethod.POST, new HttpEntity<>(body.toString(), headers), String.class);
+            response = http.get(READ_TIMEOUT).exchange(uri, HttpMethod.POST, new HttpEntity<>(body.toString(), headers), String.class);
         } catch (HttpStatusCodeException e) {
             String description = errorDescription(e);
             // 内容未变的重复编辑(狂点同一按钮)是正常交互,吞掉

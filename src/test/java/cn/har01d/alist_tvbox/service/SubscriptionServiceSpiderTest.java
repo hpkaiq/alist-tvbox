@@ -5,6 +5,7 @@ import cn.har01d.alist_tvbox.entity.EmbyRepository;
 import cn.har01d.alist_tvbox.entity.FeiniuRepository;
 import cn.har01d.alist_tvbox.entity.JellyfinRepository;
 import cn.har01d.alist_tvbox.entity.PlaybackTokenRepository;
+import cn.har01d.alist_tvbox.entity.Plugin;
 import cn.har01d.alist_tvbox.entity.DriverAccountRepository;
 import cn.har01d.alist_tvbox.entity.PluginFilterRepository;
 import cn.har01d.alist_tvbox.entity.PluginRepository;
@@ -38,6 +39,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -52,6 +54,33 @@ import static org.mockito.Mockito.when;
 class SubscriptionServiceSpiderTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** 订阅源管理里的 WebHome 内置源条目(builtin-atv_home,findEnabledSources 消费形态)。 */
+    private static final SubscriptionSourceService.SubscriptionSourceRef WEB_HOME_SOURCE =
+            new SubscriptionSourceService.SubscriptionSourceRef("builtin-atv_home", true, "atv_home", "影视首页", null);
+
+    @Test
+    void webPagePluginEmitsWebHomeStyleSite() throws Exception {
+        // 自定义网页源(webhome/pages/*.html 自动注册):csp_WebHome 同款单形态站点,
+        // 中文文件名 key 回落插件 id(web_5),页面地址经 /webhome/** no-cache,无 token/版本号
+        Plugin page = new Plugin();
+        page.setId(5);
+        page.setUrl("/static/webhome/pages/电影库.html");
+        page.setName("我的电影库");
+        SubscriptionService service = newService("{}", mock(WebHomeService.class), List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("plugin-5", false, "我的电影库", "我的电影库", page)));
+
+        Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
+        Map<String, Object> site = findSite(config, "web_5");
+
+        assertEquals("csp_WebHome", site.get("api"));
+        assertEquals("我的电影库", site.get("name"));
+        assertEquals("http://atv.example/webhome/pages/电影库.html", site.get("homePage"));
+        assertEquals("http://atv.example/spring.jar", site.get("jar"));
+        String pageExt = new String(java.util.Base64.getDecoder().decode((String) site.get("ext")));
+        assertTrue(pageExt.contains("\"url\":\"http://atv.example/webhome/pages/电影库.html\""));
+        assertEquals(0, site.get("searchable"));
+    }
 
     @BeforeEach
     void setUp() {
@@ -119,21 +148,41 @@ class SubscriptionServiceSpiderTest {
     }
 
     @Test
-    void webHomeSiteInjectedOnlyForCapableClient() {
-        // 能力端(webhtv/fish):注入 homePage 站点,原生 WebHome 直接加载网页
+    void webHomeSiteSingleFormForAllClients() {
+        // 单形态通吃:homePage 字段(webhtv/fish 按 site.hasHomePage() 字段驱动原生渲染,与 api 名无关)
+        // + api=csp_WebHome(普通端由 spring.jar spider 弹窗加载 ext 同一 URL)。
+        // 不再按 token 能力记忆二选一 —— 配置拉取无法区分客户端,同 token 多设备混用
+        // (一台 webhtv 标记能力端后,同 token 的原版端拿到解析不了的原生形态)必错一边
         WebHomeService capable = mock(WebHomeService.class);
         when(capable.isCapable(anyString())).thenReturn(true);
-        SubscriptionService service = newService("{}", capable);
+        SubscriptionService service = newService("{}", capable, List.of(WEB_HOME_SOURCE));
         Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
-        List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
-        assertEquals("atv_home", sites.get(0).get("key"));
-        assertEquals("csp_Builtin", sites.get(0).get("api"));
-        assertEquals("http://atv.example/webhome/app.html?token=-&v=14", sites.get(0).get("homePage"));
+        Map<String, Object> atvHome = findSite(config, "atv_home");
+        assertEquals("csp_WebHome", atvHome.get("api"));
+        assertEquals("http://atv.example/webhome/app.html?token=-&v=19", atvHome.get("homePage"));
+        // 显式 jar(与其他内置源一致):防宿主不回落全局 spider 或全局位被覆盖
+        assertEquals("http://atv.example/spring.jar", atvHome.get("jar"));
+        // ext = base64(JSON)(与 csp_Media 等其它源一致;url + pt 播放同步专用令牌,测试桩下 pt 为空)
+        String ext = new String(java.util.Base64.getDecoder().decode((String) atvHome.get("ext")));
+        assertTrue(ext.contains("\"url\":\"http://atv.example/webhome/app.html?token=-&v=19\""));
+        assertTrue(ext.contains("\"pt\":\"\""));
 
-        // 原版 FongMi/OK影视等普通端:不注入
-        SubscriptionService plain = newService("{}");
+        // 普通端(未标记能力):同一形态
+        SubscriptionService plain = newService("{}", mock(WebHomeService.class), List.of(WEB_HOME_SOURCE));
         Map<String, Object> config2 = plain.subscription("", "http://up.example/config.json", "", null);
-        for (Map<String, Object> site : (List<Map<String, Object>>) config2.get("sites")) {
+        Map<String, Object> plainHome = findSite(config2, "atv_home");
+        assertEquals("csp_WebHome", plainHome.get("api"));
+        assertEquals(atvHome.get("homePage"), plainHome.get("homePage"));
+    }
+
+    @Test
+    void webHomeSiteFollowsSubscriptionSourceSwitch() {
+        // 订阅源管理里禁用 atv_home:即便客户端能力达标也不再注入
+        WebHomeService capable = mock(WebHomeService.class);
+        when(capable.isCapable(anyString())).thenReturn(true);
+        SubscriptionService service = newService("{}", capable, List.of());
+        Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
+        for (Map<String, Object> site : (List<Map<String, Object>>) config.get("sites")) {
             assertEquals(false, "atv_home".equals(site.get("key")));
         }
     }
@@ -148,6 +197,11 @@ class SubscriptionServiceSpiderTest {
     }
 
     private SubscriptionService newService(String upstreamJson, WebHomeService webHomeService) {
+        return newService(upstreamJson, webHomeService, List.of());
+    }
+
+    private SubscriptionService newService(String upstreamJson, WebHomeService webHomeService,
+                                           List<SubscriptionSourceService.SubscriptionSourceRef> sources) {
         SettingRepository settingRepository = mock(SettingRepository.class);
         when(settingRepository.findById(anyString())).thenAnswer(invocation -> {
             Object key = invocation.getArgument(0);
@@ -164,7 +218,7 @@ class SubscriptionServiceSpiderTest {
         when(driverAccountRepository.findByTypeAndMasterTrue(any())).thenReturn(Optional.empty());
 
         SubscriptionSourceService subscriptionSourceService = mock(SubscriptionSourceService.class);
-        when(subscriptionSourceService.findEnabledSources()).thenReturn(List.of());
+        when(subscriptionSourceService.findEnabledSources()).thenReturn(sources);
 
         SubscriptionService service = new SubscriptionService(
                 mock(Environment.class),

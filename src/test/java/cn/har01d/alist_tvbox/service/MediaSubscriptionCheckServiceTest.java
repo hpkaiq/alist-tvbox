@@ -89,6 +89,15 @@ class MediaSubscriptionCheckServiceTest {
         assertEquals(12, service.parseEpisode("剧名.S02E12.2160p.WEB-DL.mkv", 2));
     }
 
+    /** 网盘重名去重尾缀「(1)」不得毒化末号规则(吞噬星空 217 4K(1).mp4 曾绑到第 1 集)。 */
+    @Test
+    void dedupeParenSuffixDoesNotOverrideEpisode() {
+        assertEquals(217, service.parseEpisode("217 4K(1).mp4", null));
+        assertEquals(86, service.parseEpisode("吞噬星空 86(2).mp4", null));
+        // 括号是唯一数字来源时保持原语义(第 1 集)
+        assertEquals(1, service.parseEpisode("剧集(1).mp4", null));
+    }
+
     // ---------- 进度感知的观看进度(2026-08-27):刚点开几十秒的试看不算看完 ----------
     // 线上形态:33 集只看了几十秒就被算成"看完 33 集",追平标记被试看抬到 33,
     // 用户回看时「还没看完的最后一集」从此不亮角标。当前集进度不足折算前一集。
@@ -4802,6 +4811,61 @@ class MediaSubscriptionCheckServiceTest {
         assertFalse(store.episodes.containsKey(142), "142 噪声集号不落 episode/集源行");
         assertTrue(store.episodes.containsKey(26), "主体集号照常落行");
         Mockito.verifyNoInteractions(fixture.deadLinkRepository);
+    }
+
+    @Test
+    void probeSharePinnedResourceSkipsAlienGate() {
+        // 钉选 = 用户否决内容判定:37 集文件对官方 26 集(溢出 11 远超容差),未钉选必判异剧退役;
+        // 钉选后探测通过不退役 —— 线上反馈「恢复→钉选→下轮探测再判异剧退役」的钉选形同虚设
+        Fixture fixture = new Fixture();
+        fixture.subscription.setOfficialTotal(26);
+        fixture.subscription.setOfficialEpisodes(26);
+        MediaSubscriptionResource resource = new MediaSubscriptionResource();
+        resource.setId(19);
+        resource.setSubscriptionId(1);
+        resource.setLink("https://pan.baidu.com/s/live37pin");
+        resource.setTitle("仙剑奇侠传三 全37集 2160P");
+        resource.setType(10);
+        resource.setState(MediaSubscriptionResource.STATE_CANDIDATE);
+        resource.setPinned(true);
+        Share temp = new Share();
+        temp.setId(78);
+        temp.setPath("/我的百度分享/temp/baidu@live37pin@");
+        Share probe = new Share();
+        probe.setType(10);
+        probe.setShareId("live37pin");
+        Mockito.when(fixture.shareService.parseShareLink("https://pan.baidu.com/s/live37pin")).thenReturn(probe);
+        Mockito.when(fixture.shareRepository.findByTypeAndShareIdAndTempTrue(10, "live37pin")).thenReturn(List.of(temp));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(files(s01EpisodeFiles(37)));
+        RowStore store = new RowStore();
+        store.install(fixture);
+        fixture.service.setStreamProbeClient((url, userAgent, maxBytes, timeoutSeconds) ->
+                new StreamProbeClient.ProbeResult(206, "video/mp4", new byte[]{0x1A, 0x45}));
+        Mockito.when(fixture.aListService.getFile(Mockito.any(), Mockito.anyString())).thenReturn(rawUrlDetail());
+
+        fixture.service.probeShare(fixture.subscription, resource); // 不抛:钉选豁免异剧门禁
+
+        assertEquals(MediaSubscriptionResource.STATE_CANDIDATE, resource.getState(), "钉选源不因内容门禁退役");
+        assertNull(resource.getFailKind(), "不落异剧分类");
+        assertTrue(store.episodes.containsKey(37), "钉选源的超范围集号照常入账(用户强制指定)");
+        Mockito.verifyNoInteractions(fixture.deadLinkRepository);
+    }
+
+    @Test
+    void retireAlienCandidateExemptsPinnedResource() {
+        // 兜底闸门:activate/补缺等 catch 路径直接调 retireAlienCandidate 时,钉选源同样豁免
+        Fixture fixture = new Fixture();
+        MediaSubscriptionResource pinned = new MediaSubscriptionResource();
+        pinned.setId(20);
+        pinned.setSubscriptionId(1);
+        pinned.setState(MediaSubscriptionResource.STATE_MOUNTED);
+        pinned.setPinned(true);
+
+        fixture.service.retireAlienCandidate(fixture.subscription, pinned);
+
+        assertEquals(MediaSubscriptionResource.STATE_MOUNTED, pinned.getState(), "钉选源不被判异剧退役");
     }
 
     // ---------- 元数据信号增强(2026-08-23,用户提议"集数/播出时间/单集长度/类型/演员应帮助判断匹配度")----------
