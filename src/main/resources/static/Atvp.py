@@ -1,11 +1,13 @@
 # coding=utf-8
 import base64
+import hashlib
 import html
 import inspect
 import json
 import os
 import re
 import sys
+import threading
 import types
 from abc import ABCMeta, abstractmethod
 from importlib.machinery import SourceFileLoader
@@ -19,6 +21,10 @@ from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
 from Crypto.PublicKey import ECC
 from lxml import etree
+
+# 插件密文预热 daemon 的进程级去重(多站点 init 只起一个下载线程)
+_preheat_daemon_lock = threading.Lock()
+_preheat_daemon_started = False
 
 
 class _FallbackSpider(metaclass=ABCMeta):
@@ -203,6 +209,7 @@ class Spider(HostSpider):
         self._play_context_cache = {}
         self._resume_context_cache = {}
         self._filters = []
+        self._preheat_cache_dir = None
 
     def init(self, extend=""):
         self.extend = extend or ""
@@ -215,6 +222,7 @@ class Spider(HostSpider):
             f"api={self._backend_api or '-'}, token={'yes' if self._vod_token else 'no'}"
         )
         self._localProxyConfig = payload.get("local_proxy_config") if isinstance(payload, dict) else {}
+        self._start_preheat_daemon(payload)
         package_text = self._load_source(source)
         source_text = package_text if self._is_raw_source(payload) else self._decrypt_secspider_source(package_text)
         spider_cls = self._load_inner_spider_class(source_text)
@@ -334,6 +342,10 @@ class Spider(HostSpider):
         if not target:
             raise ValueError("Atvp source is empty")
         if self._is_remote_source(target):
+            # 预热缓存命中则免网络:密文地址带版本参数,插件更新换地址即换缓存文件
+            cached = self._read_preheat_cache(target)
+            if cached is not None:
+                return cached
             rsp = self.fetch(target, timeout=10)
             body = str(rsp.text or "")
             if rsp.status_code != 200 or not body.strip():
@@ -343,6 +355,86 @@ class Spider(HostSpider):
         if not path.is_file():
             raise ValueError(f"Atvp local source not found: {target}")
         return path.read_text(encoding="utf-8")
+
+    def _resolve_preheat_cache_dir(self):
+        """密文预下载缓存目录;与 spring.jar 的 PluginPreheat 约定同一子目录,
+        双方各自锚定 Application 的 cacheDir(非 Chaquopy 环境返回空,缓存不生效)。"""
+        if self._preheat_cache_dir is None:
+            try:
+                from com.chaquo.python import Python
+                cache_dir = Python.getPlatform().getApplication().getCacheDir().getAbsolutePath()
+                self._preheat_cache_dir = os.path.join(str(cache_dir), "plugin-preheat")
+            except Exception:
+                self._preheat_cache_dir = ""
+        return self._preheat_cache_dir
+
+    def _preheat_cache_file(self, url):
+        directory = self._resolve_preheat_cache_dir()
+        if not directory:
+            return ""
+        digest = hashlib.md5(str(url).encode("utf-8")).hexdigest()
+        return os.path.join(directory, digest + ".txt")
+
+    def _read_preheat_cache(self, url):
+        path = self._preheat_cache_file(url)
+        if not path:
+            return None
+        try:
+            if not os.path.isfile(path):
+                return None
+            text = Path(path).read_text(encoding="utf-8")
+            return text if text.strip() else None
+        except Exception:
+            return None
+
+    def _start_preheat_daemon(self, payload):
+        """Python 原生运行模式不经 spring.jar,Atvp 自己拉清单预下载兜底;
+        PyProxy 模式下 jar 已预热过,这里命中缓存即秒回,重复下载无害。"""
+        global _preheat_daemon_started
+        if not isinstance(payload, dict):
+            return
+        manifest = str(payload.get("preheatUrl") or "").strip()
+        if not manifest or not self._is_remote_source(manifest):
+            return
+        with _preheat_daemon_lock:
+            if _preheat_daemon_started:
+                return
+            _preheat_daemon_started = True
+        threading.Thread(target=self._preheat_worker, args=(manifest,), daemon=True).start()
+
+    def _preheat_worker(self, manifest):
+        try:
+            directory = self._resolve_preheat_cache_dir()
+            if not directory:
+                return
+            os.makedirs(directory, exist_ok=True)
+            data = json.loads(str(self.fetch(manifest, timeout=10).text or "{}"))
+            items = data.get("plugins") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                return
+            fetched = 0
+            for item in items:
+                url = str(item.get("url") or "").strip() if isinstance(item, dict) else ""
+                if not url:
+                    continue
+                target = self._preheat_cache_file(url)
+                if not target or (os.path.isfile(target) and os.path.getsize(target) > 0):
+                    continue
+                try:
+                    body = str(self.fetch(url, timeout=10).text or "")
+                    if not body.strip():
+                        continue
+                    # tmp 后缀带 .py 与 Java 侧的 .tmp 区分,防两端并发写同一临时文件
+                    tmp = target + ".tmp.py"
+                    with open(tmp, "w", encoding="utf-8") as handle:
+                        handle.write(body)
+                    os.replace(tmp, target)
+                    fetched += 1
+                except Exception as error:
+                    self.log(f"Atvp preheat fetch failed: {error}")
+            self.log(f"Atvp preheat daemon done: fetched={fetched}")
+        except Exception as error:
+            self.log(f"Atvp preheat daemon error: {error}")
 
     @staticmethod
     def _obfuscate_text_for_test(text, xor_key, chunk_size=16):

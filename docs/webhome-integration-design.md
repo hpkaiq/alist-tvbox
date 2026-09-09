@@ -1,7 +1,12 @@
 # WebHome 首页站点集成设计(alist-tvbox × WebHomeTV/默影视)
 
 日期:2026-09-07
-状态:一期已实现(后端注入 + 首页页面 + 客户端能力探测,待真机验收)
+状态:**已演进为 csp_WebHome 单形态通吃(2026-09-09)** —— 能力探测/双形态方案已废弃:
+webhtv/fish 按 `homePage` 字段原生渲染,原版 FongMi/OK影视 由 spring.jar `csp_WebHome`
+弹 WebView 加载同一 URL 并注入对齐 webhtv 完整契约的 `window.fm` SDK(req/桥内 OkHttp、
+res/客户端本地代理、pan.play/push_agent 网盘直开、pan.check/服务端盘检、盘搜桥层透明拦截)。
+**页面开发/移植看 [webhome-page-dev-guide.md](webhome-page-dev-guide.md)**;本文保留
+一期设计过程与客户端契约考证。下述「客户端能力判定」章节为历史方案,仅存档。
 
 ## 客户端能力判定(实现定论)
 
@@ -59,7 +64,7 @@ WebHome 自定义首页站点,把 alist-tvbox 的订阅追更、片单、最近�
    - `fm.vodInline(payload)`:多集直链临时播放(适合网盘直列场景,`episodes[].resolve`
      支持按集懒解析)。
    - `fm.play(url, title, {headers})`:播 /p 代理直链(网盘代理地址)。
-   - `fm.search(keyword, {direct: true})`:跳原生全局搜索。
+   - `fm.search(keyword, {direct: true})`:跳原生全局搜索。(2026-09-09 现状:普通端优先跳 CollectActivity——OK影视 TV 的 SearchActivity 不读 extra 会丢词,详见网页开发指南)
    - `fm.history()`:本机最近观看(60 天),可做"继续观看"行。
    - `fm.ui.setChrome({mode: "edge"})`:首页融合模式(TV 映射 tv-full)。
    - `fm.pan.check/fm.device/fm.site/fm.config/fm.cache` 等辅助。

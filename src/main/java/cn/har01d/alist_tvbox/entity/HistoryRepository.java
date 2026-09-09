@@ -1,5 +1,7 @@
 package cn.har01d.alist_tvbox.entity;
 
+import cn.har01d.alist_tvbox.dto.SourceKeyUsageCount;
+
 import java.util.Collection;
 import java.util.List;
 
@@ -69,4 +71,9 @@ public interface HistoryRepository extends JpaRepository<History, Integer> {
             + "AND h.sourceKind = :sourceKind AND h.sourceKey = :sourceKey")
     List<History> findSyncBySite(@Param("uid") int uid, @Param("syncScope") String syncScope,
                                  @Param("sourceKind") String sourceKind, @Param("sourceKey") String sourceKey);
+
+    /** 各 sourceKey 的使用次数(按次数倒序),插件预热清单据此把常用插件排前。 */
+    @Query("SELECT h.sourceKey AS sourceKey, COUNT(h) AS total FROM History h "
+            + "WHERE h.sourceKind = :sourceKind GROUP BY h.sourceKey ORDER BY total DESC")
+    List<SourceKeyUsageCount> countBySourceKey(@Param("sourceKind") String sourceKind);
 }

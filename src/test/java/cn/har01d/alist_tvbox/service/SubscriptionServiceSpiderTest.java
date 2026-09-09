@@ -1,8 +1,10 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.dto.SourceKeyUsageCount;
 import cn.har01d.alist_tvbox.entity.EmbyRepository;
 import cn.har01d.alist_tvbox.entity.FeiniuRepository;
+import cn.har01d.alist_tvbox.entity.HistoryRepository;
 import cn.har01d.alist_tvbox.entity.JellyfinRepository;
 import cn.har01d.alist_tvbox.entity.PlaybackTokenRepository;
 import cn.har01d.alist_tvbox.entity.Plugin;
@@ -32,6 +34,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -79,7 +82,49 @@ class SubscriptionServiceSpiderTest {
         assertEquals("http://atv.example/spring.jar", site.get("jar"));
         String pageExt = new String(java.util.Base64.getDecoder().decode((String) site.get("ext")));
         assertTrue(pageExt.contains("\"url\":\"http://atv.example/webhome/pages/电影库.html\""));
+        // 裸订阅(无 token)ext.token 空串:spider 侧盘检/盘搜后端随关闭;
+        // 未配 pansou 上游时能力开关 false(不注入死基址、不拦公开站)
+        assertTrue(pageExt.contains("\"token\":\"\""));
+        assertTrue(pageExt.contains("\"panSearch\":false"));
         assertEquals(0, site.get("searchable"));
+    }
+
+    @Test
+    void webPageSiteEmbedsVodTokenForPanBackends() throws Exception {
+        // 盘检(/check-links)与盘搜后端(/pan-search)共用 ext.token,与页面 URL 同 token 空间
+        Plugin page = new Plugin();
+        page.setId(6);
+        page.setUrl("/static/webhome/pages/玩偶.html");
+        page.setName("玩偶盘链");
+        SubscriptionService service = newService("{}", mock(WebHomeService.class), List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("plugin-6", false, "玩偶盘链", "玩偶盘链", page),
+                WEB_HOME_SOURCE));
+
+        Map<String, Object> config = service.subscription("tok9", "http://up.example/config.json", "", null);
+        String pageExt = new String(java.util.Base64.getDecoder().decode((String) findSite(config, "web_6").get("ext")));
+        assertTrue(pageExt.contains("\"token\":\"tok9\""));
+        Map<String, Object> home = findSite(config, "atv_home");
+        String homeExt = new String(java.util.Base64.getDecoder().decode((String) home.get("ext")));
+        assertTrue(homeExt.contains("\"token\":\"tok9\""));
+    }
+
+    @Test
+    void webPageSiteEnablesPanSearchWhenUpstreamConfigured() throws Exception {
+        // 盘搜后端能力开关随 pansou 上游配置走;玩偶等第三方页零改动靠 fm.req 透明拦截享用
+        AppProperties appProperties = new AppProperties();
+        appProperties.setPanSouUrl("http://pansou.example");
+        Plugin page = new Plugin();
+        page.setId(7);
+        page.setUrl("/static/webhome/pages/玩偶.html");
+        page.setName("玩偶盘链");
+        SubscriptionService service = newService("{}", mock(WebHomeService.class), List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("plugin-7", false, "玩偶盘链", "玩偶盘链", page)),
+                mock(PluginRepository.class), mock(HistoryRepository.class), appProperties);
+
+        Map<String, Object> config = service.subscription("tok9", "http://up.example/config.json", "", null);
+        String pageExt = new String(java.util.Base64.getDecoder().decode((String) findSite(config, "web_7").get("ext")));
+        assertTrue(pageExt.contains("\"token\":\"tok9\""));
+        assertTrue(pageExt.contains("\"panSearch\":true"));
     }
 
     @BeforeEach
@@ -159,12 +204,12 @@ class SubscriptionServiceSpiderTest {
         Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
         Map<String, Object> atvHome = findSite(config, "atv_home");
         assertEquals("csp_WebHome", atvHome.get("api"));
-        assertEquals("http://atv.example/webhome/app.html?token=-&v=19", atvHome.get("homePage"));
+        assertEquals("http://atv.example/webhome/app.html?token=-&v=22", atvHome.get("homePage"));
         // 显式 jar(与其他内置源一致):防宿主不回落全局 spider 或全局位被覆盖
         assertEquals("http://atv.example/spring.jar", atvHome.get("jar"));
         // ext = base64(JSON)(与 csp_Media 等其它源一致;url + pt 播放同步专用令牌,测试桩下 pt 为空)
         String ext = new String(java.util.Base64.getDecoder().decode((String) atvHome.get("ext")));
-        assertTrue(ext.contains("\"url\":\"http://atv.example/webhome/app.html?token=-&v=19\""));
+        assertTrue(ext.contains("\"url\":\"http://atv.example/webhome/app.html?token=-&v=22\""));
         assertTrue(ext.contains("\"pt\":\"\""));
 
         // 普通端(未标记能力):同一形态
@@ -187,6 +232,66 @@ class SubscriptionServiceSpiderTest {
         }
     }
 
+    @Test
+    void preheatManifestPutsFrequentlyUsedPluginsFirst() {
+        PluginRepository pluginRepository = mock(PluginRepository.class);
+        Plugin a = preheatPlugin(1, "ext-a", 10, 4);
+        Plugin b = preheatPlugin(2, "ext-b", 20, null);
+        Plugin c = preheatPlugin(3, "ext-c", 30, 7);
+        when(pluginRepository.findByEnabledTrueOrderBySortOrderAscIdAsc())
+                .thenReturn(new ArrayList<>(List.of(a, b, c)));
+
+        HistoryRepository historyRepository = mock(HistoryRepository.class);
+        when(historyRepository.countBySourceKey("spider_plugin"))
+                .thenReturn(List.of(usage("ext-c", 5), usage("ext-a", 2)));
+
+        SubscriptionService service = newService("{}", mock(WebHomeService.class), List.of(),
+                pluginRepository, historyRepository);
+        Map<String, Object> manifest = service.buildPreheatManifest();
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> plugins = (List<Map<String, Object>>) manifest.get("plugins");
+        assertEquals(3, plugins.size());
+        // 常用(播放记录聚合次数)在前;未用过的保持 sortOrder 原序垫后
+        assertEquals("ext-c", plugins.get(0).get("key"));
+        assertEquals("ext-a", plugins.get(1).get("key"));
+        assertEquals("ext-b", plugins.get(2).get("key"));
+        // 地址与 ext 的 source 同一拼法(缓存命中前提),带 ?v= 版本参数
+        assertEquals("http://atv.example/plugins/-/3.txt?v=7", plugins.get(0).get("url"));
+        assertEquals("http://atv.example/plugins/-/1.txt?v=4", plugins.get(1).get("url"));
+        assertEquals("http://atv.example/plugins/-/2.txt", plugins.get(2).get("url"));
+        assertEquals(
+                SubscriptionService.buildPluginExtPayload(c, "http://atv.example", "-", "", "", false, Map.of())
+                        .get("source"),
+                plugins.get(0).get("url"));
+    }
+
+    private Plugin preheatPlugin(int id, String externalId, int sortOrder, Integer version) {
+        Plugin plugin = new Plugin();
+        plugin.setId(id);
+        plugin.setExternalId(externalId);
+        plugin.setName(externalId);
+        plugin.setUrl("https://example.com/" + externalId + ".txt");
+        plugin.setSortOrder(sortOrder);
+        plugin.setVersion(version);
+        plugin.setEnabled(true);
+        return plugin;
+    }
+
+    private SourceKeyUsageCount usage(String sourceKey, long total) {
+        return new SourceKeyUsageCount() {
+            @Override
+            public String getSourceKey() {
+                return sourceKey;
+            }
+
+            @Override
+            public long getTotal() {
+                return total;
+            }
+        };
+    }
+
     private Map<String, Object> findSite(Map<String, Object> config, String key) {
         List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
         return sites.stream().filter(s -> key.equals(s.get("key"))).findFirst().orElseThrow();
@@ -202,6 +307,20 @@ class SubscriptionServiceSpiderTest {
 
     private SubscriptionService newService(String upstreamJson, WebHomeService webHomeService,
                                            List<SubscriptionSourceService.SubscriptionSourceRef> sources) {
+        return newService(upstreamJson, webHomeService, sources, mock(PluginRepository.class),
+                mock(HistoryRepository.class));
+    }
+
+    private SubscriptionService newService(String upstreamJson, WebHomeService webHomeService,
+                                           List<SubscriptionSourceService.SubscriptionSourceRef> sources,
+                                           PluginRepository pluginRepository, HistoryRepository historyRepository) {
+        return newService(upstreamJson, webHomeService, sources, pluginRepository, historyRepository, new AppProperties());
+    }
+
+    private SubscriptionService newService(String upstreamJson, WebHomeService webHomeService,
+                                           List<SubscriptionSourceService.SubscriptionSourceRef> sources,
+                                           PluginRepository pluginRepository, HistoryRepository historyRepository,
+                                           AppProperties appProperties) {
         SettingRepository settingRepository = mock(SettingRepository.class);
         when(settingRepository.findById(anyString())).thenAnswer(invocation -> {
             Object key = invocation.getArgument(0);
@@ -222,7 +341,7 @@ class SubscriptionServiceSpiderTest {
 
         SubscriptionService service = new SubscriptionService(
                 mock(Environment.class),
-                new AppProperties(),
+                appProperties,
                 new RestTemplateBuilder(),
                 objectMapper,
                 mock(JdbcTemplate.class),
@@ -235,7 +354,7 @@ class SubscriptionServiceSpiderTest {
                 mock(EmbyRepository.class),
                 mock(FeiniuRepository.class),
                 mock(JellyfinRepository.class),
-                mock(PluginRepository.class),
+                pluginRepository,
                 mock(PluginFilterRepository.class),
                 mock(AListLocalService.class),
                 mock(ConfigFileService.class),
@@ -244,7 +363,8 @@ class SubscriptionServiceSpiderTest {
                 mock(FileDownloader.class),
                 subscriptionSourceService,
                 mock(PlaybackTokenRepository.class),
-                webHomeService
+                webHomeService,
+                historyRepository
         );
 
         ReflectionTestUtils.setField(service, "okHttpClient", httpServerReturning(upstreamJson));

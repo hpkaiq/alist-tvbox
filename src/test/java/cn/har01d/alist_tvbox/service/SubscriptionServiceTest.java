@@ -140,7 +140,7 @@ class SubscriptionServiceTest {
 
     @Test
     void buildCatalogTagsUpstreamBuiltinPluginAndMapsPushKey() {
-        // atv_home 为上游手写条目:能力端会被内置站合并覆盖,目录里也不得以自定义站点形态出现
+        // atv_home 为上游手写条目:被内置定义合并,目录里只以 builtin 形态出现一次(不以 upstream 形态重复)
         Map<String, Object> c = config("csp_Bili", "atv_home"); // upstream
         c.put("parses", new ArrayList<>(List.of(parse("虾米"))));
 
@@ -160,8 +160,10 @@ class SubscriptionServiceTest {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> sites = (List<Map<String, Object>>) catalog.get("sites");
-        // WebHome 首页站仅能力端注入,站点目录(普通影视配置编辑器)不返回
-        assertThat(sites).noneSatisfy(s -> assertThat(s).containsEntry("key", "atv_home"));
+        // WebHome 首页站随目录返回(白名单模式须可选),上游手写条目被去重,只出现一次且为 builtin
+        assertThat(sites).filteredOn(s -> "atv_home".equals(s.get("key"))).hasSize(1);
+        assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "atv_home")
+                .containsEntry("name", "影视首页").containsEntry("origin", "builtin"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "csp_Bili").containsEntry("origin", "upstream"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "csp_AList").containsEntry("origin", "builtin"));
         assertThat(sites).anySatisfy(s -> assertThat(s).containsEntry("key", "push_agent").containsEntry("origin", "builtin"));
@@ -225,10 +227,11 @@ class SubscriptionServiceTest {
         assertThat(SubscriptionService.selectPluginApi(plugin, false, "http://atv"))
                 .isEqualTo("csp_PyProxy");
         assertThat(payload)
-                .containsEntry("loader", "http://atv/Atvp.py?v=local-proxy-v1")
+                .containsEntry("loader", "http://atv/Atvp.py?v=preheat-v1")
                 .containsEntry("source", "http://atv/plugins/web/7.py")
                 .containsEntry("raw", true)
                 .containsEntry("api", "http://atv")
+                .containsEntry("preheatUrl", "http://atv/plugin-preheat/web")
                 .containsEntry("playbackSourceKind", "spider_plugin")
                 .containsEntry("playbackSourceKey", "stable-plugin-id")
                 .containsEntry("playbackSourceName", "短剧优选")
@@ -237,6 +240,14 @@ class SubscriptionServiceTest {
                 .containsEntry("data", "{\"site\":\"demo\"}")
                 .containsEntry("local_proxy_config", localProxyConfig);
         assertThat(payload.get("loader")).isNotEqualTo("http://atv/plugins/web/7.py");
+
+        // 有版本号时 source 地址带版本参数:预下载缓存以完整地址为 key,插件更新换地址即失效
+        plugin.setVersion(12);
+        assertThat(SubscriptionService.pluginContentUrl("http://atv", "web", plugin))
+                .isEqualTo("http://atv/plugins/web/7.py?v=12");
+        plugin.setVersion(null);
+        assertThat(SubscriptionService.pluginContentUrl("http://atv", "web", plugin))
+                .isEqualTo("http://atv/plugins/web/7.py");
     }
 
     @Test
@@ -251,7 +262,7 @@ class SubscriptionServiceTest {
                 plugin, "http://atv", "web", "", "secret", true, localProxyConfig);
 
         assertThat(SubscriptionService.selectPluginApi(plugin, true, "http://atv"))
-                .isEqualTo("http://atv/Atvp.py?v=local-proxy-v1");
+                .isEqualTo("http://atv/Atvp.py?v=preheat-v1");
         assertThat(SubscriptionService.selectPluginApi(plugin, false, "http://atv"))
                 .isEqualTo("csp_PyProxy");
         assertThat(payload)
@@ -264,7 +275,7 @@ class SubscriptionServiceTest {
         Map<String, Object> javaPayload = SubscriptionService.buildPluginExtPayload(
                 plugin, "http://atv", "web", "", "secret", false, localProxyConfig);
         assertThat(javaPayload)
-                .containsEntry("loader", "http://atv/Atvp.py?v=local-proxy-v1")
+                .containsEntry("loader", "http://atv/Atvp.py?v=preheat-v1")
                 .containsEntry("local_proxy_config", localProxyConfig);
     }
 

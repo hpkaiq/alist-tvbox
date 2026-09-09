@@ -60,4 +60,29 @@ class PluginContentControllerTest {
 
         verify(pluginService, never()).readContent(7);
     }
+
+    @Test
+    void preheatManifestShouldAuthenticateAndReturnManifest() throws Exception {
+        when(subscriptionService.buildPreheatManifest())
+                .thenReturn(java.util.Map.of("plugins", java.util.List.of(
+                        java.util.Map.of("url", "http://atv/plugins/tok/3.txt?v=9", "key", "c"))));
+
+        mockMvc.perform(get("/plugin-preheat/test-token"))
+                .andExpect(status().isOk())
+                .andExpect(content().json("{\"plugins\":[{\"url\":\"http://atv/plugins/tok/3.txt?v=9\",\"key\":\"c\"}]}"));
+
+        verify(subscriptionService).checkToken("test-token");
+        verify(subscriptionService).buildPreheatManifest();
+    }
+
+    @Test
+    void preheatManifestShouldRejectBadToken() throws Exception {
+        doThrow(new BadRequestException("Token不正确"))
+                .when(subscriptionService).checkToken("bad-token");
+
+        mockMvc.perform(get("/plugin-preheat/bad-token"))
+                .andExpect(status().isBadRequest());
+
+        verify(subscriptionService, never()).buildPreheatManifest();
+    }
 }
