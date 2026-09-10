@@ -85,6 +85,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -135,7 +136,7 @@ public class TvBoxService {
 
     private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
     private final Cache<Integer, List<String>> cache = Caffeine.newBuilder()
-            .maximumSize(10)
+            .maximumSize(20)
             .build();
     private final Set<String> excludeNames = Set.of("国产剧", "欧美剧", "电视剧", "美剧", "短剧", "动漫", "国漫", "纪录片", "综艺", "电子书", "有声书", "有声小说", "电影", "电影合集", "动画电影", "欧美电影", "演唱会", "日韩剧", "每日更新", "temp", "合集1", "合集2", "合集3");
 
@@ -1240,12 +1241,15 @@ public class TvBoxService {
             List<Sort.Order> orders = new ArrayList<>();
             for (String item : sort.split(";")) {
                 parts = item.split(",");
+                if (parts.length < 2) {
+                    continue; // 脏 filter JSON(如 {"sort":"x"})无逗号分段,跳过该排序键别越界
+                }
                 Sort.Order order = parts[1].equals("asc") ? Sort.Order.asc(parts[0]) : Sort.Order.desc(parts[0]);
                 orders.add(order);
             }
-            pageable = PageRequest.of(page - 1, size, Sort.by(orders));
+            pageable = PageRequest.of(Math.max(0, page - 1), size, Sort.by(orders));
         } else {
-            pageable = PageRequest.of(page - 1, size);
+            pageable = PageRequest.of(Math.max(0, page - 1), size);
         }
 
         AListAlias aListAlias = aliasRepository.findByPath(path);
@@ -1453,19 +1457,24 @@ public class TvBoxService {
         }
         String url = null;
         String name = getNameFromPath(path);
-        String fullPath = path;
         if (isMediaFile(path)) {
             log.info("get play url - site {}:{}  path: {}", site.getId(), site.getName(), path);
         } else {
+            // 目录播放 = 播放目录内第一个媒体文件:fullPath 此前算了没用,下游仍按目录取 raw_url 恒空(半接线)
             FsResponse fsResponse = aListService.listFiles(site, path, 1, 100);
+            boolean found = false;
             for (FsInfo fsInfo : fsResponse.getFiles()) {
                 if (fsInfo.getType() != 1 && isMediaFormat(fsInfo.getName())) {
                     name = fsInfo.getName();
-                    fullPath = fixPath(path + "/" + name);
+                    path = fixPath(path + "/" + name);
+                    found = true;
                     break;
                 }
             }
-            log.info("get play url -- site {}:{}  path: {}", site.getId(), site.getName(), fullPath);
+            if (!found) {
+                throw new BadRequestException("目录中无可播放的媒体文件: " + path);
+            }
+            log.info("get play url -- site {}:{}  path: {}", site.getId(), site.getName(), path);
         }
 
         Map<String, Object> result = new HashMap<>();
@@ -1699,7 +1708,18 @@ public class TvBoxService {
     }
 
     public Map<String, Object> getPlayUrl(Integer siteId, Integer id, Integer index, boolean getSub, String client, String type) {
-        return getPlayUrl(siteId, id, cache.getIfPresent(id).get(index - 1), getSub, client, type);
+        List<String> paths = cache.getIfPresent(id);
+        if (paths == null || index == null || index < 1 || index > paths.size()) {
+            // 历史回放兜底:路径缓存容量 20 会被 LRU 逐出,按详情重建(播放条目 id-序号 契约不变)
+            Meta meta = metaRepository.findById(id).orElseThrow(NotFoundException::new);
+            int sid = siteId != null ? siteId : (meta.getSiteId() != null ? meta.getSiteId() : 1);
+            getMovieDetail(siteService.getById(sid), meta);
+            paths = cache.getIfPresent(id);
+        }
+        if (paths == null || index == null || index < 1 || index > paths.size()) {
+            throw new NotFoundException();
+        }
+        return getPlayUrl(siteId, id, paths.get(index - 1), getSub, client, type);
     }
 
     public Map<String, Object> getPlayUrl(Integer siteId, Integer id, boolean getSub, String client, String type) {
@@ -1935,6 +1955,10 @@ public class TvBoxService {
         if (ID_PATH.matcher(path).matches()) {
             String[] ids = path.split("\\-");
             List<Meta> list = metaRepository.findAllById(Arrays.stream(ids).map(Integer::parseInt).collect(Collectors.toList()));
+            if (list.isEmpty()) {
+                // id 已被删除(历史记录回访):空列表 get(0) 越界
+                throw new NotFoundException();
+            }
             Meta meta = list.get(0);
             if (!tenantService.valid(meta.getPath())) {
                 return null;
@@ -2105,15 +2129,21 @@ public class TvBoxService {
         List<String> list = new ArrayList<>();
         list.add("#EXTM3U");
         MovieList movieList = getPlaylist("detail", site, path);
+        // 租户失效/空目录时 getPlaylist 可返回空,直接 get(0) 会 NPE
+        if (movieList == null || movieList.getList() == null || movieList.getList().isEmpty()) {
+            throw new NotFoundException();
+        }
         MovieDetail detail = movieList.getList().get(0);
         String[] folders = detail.getVod_play_from().split("\\$\\$\\$");
+        String[] groups = detail.getVod_play_url().split("\\$\\$\\$");
         int i = 0;
-        for (String folder : folders) {
-            String[] urls = detail.getVod_play_url().split("#");
+        for (int f = 0; f < folders.length; f++) {
+            // vod_play_url 是 源$$$源 结构,必须按 folder 对应分片切 #,整串切会把全部剧集在每个 folder 标签下重复输出
+            String[] urls = (f < groups.length ? groups[f] : "").split("#");
             for (String url : urls) {
                 if (i++ >= start) {
                     parts = url.split("\\$");
-                    list.add("#EXTINF:3600000," + detail.getVod_name() + " " + (folders.length > 1 ? folder + " " : "") + parts[0]);
+                    list.add("#EXTINF:3600000," + detail.getVod_name() + " " + (folders.length > 1 ? folders[f] + " " : "") + parts[0]);
                     list.add(parts[1]);
                 }
             }
@@ -2293,46 +2323,50 @@ public class TvBoxService {
                     sort(fileNames);
                 }
 
-                int index = 0;
-                List<String> urls = new ArrayList<>();
-                for (String name : fileNames) {
-                    String filepath = fixPath(path + "/" + folder + "/" + name);
-                    String title = fixName(name, prefix, suffix) + "(" + Utils.byte2size(map.get(name).getSize()) + ")";
-                    if ("detail".equals(ac) || "web".equals(ac) || "gui".equals(ac)) {
-                        Video item = new Video();
-                        item.setName(name);
-                        if ("gui".equals(ac) && StringUtils.isNotBlank(folder)) {
-                            item.setTitle(folder + " - " + title);
-                        } else {
-                            item.setTitle(title);
-                        }
-                        item.setPath(filepath);
-                        item.setTime(map.get(name).getModified());
-                        item.setDuration(map.get(name).getDuration());
-                        item.setSize(map.get(name).getSize());
-                        String url = buildProxyUrl(site, filepath, item);
-                        item.setUrl(url);
-                        if (!subtitleNames.isEmpty()) {
-                            String best = findBestSubtitle(subtitleNames, name.replace(prefix, "").replace(suffix, ""));
-                            if (best != null) {
-                                item.setSubs(List.of(buildSubtitleOption(site, fixPath(path + "/" + folder + "/" + best), best)));
+                // 同目录国语/粤语多音轨混排时按语言拆成独立播放线路;单语言目录仍是单线路,行为不变
+                Map<String, List<String>> audioGroups = groupByAudioLanguage(fileNames);
+                for (var group : audioGroups.entrySet()) {
+                    int index = 0;
+                    List<String> urls = new ArrayList<>();
+                    for (String name : group.getValue()) {
+                        String filepath = fixPath(path + "/" + folder + "/" + name);
+                        String title = fixName(name, prefix, suffix) + "(" + Utils.byte2size(map.get(name).getSize()) + ")";
+                        if ("detail".equals(ac) || "web".equals(ac) || "gui".equals(ac)) {
+                            Video item = new Video();
+                            item.setName(name);
+                            if ("gui".equals(ac) && StringUtils.isNotBlank(folder)) {
+                                item.setTitle(folder + " - " + title);
+                            } else {
+                                item.setTitle(title);
                             }
-                        }
-                        if ("detail".equals(ac)) {
-                            urls.add(title + "$" + url);
+                            item.setPath(filepath);
+                            item.setTime(map.get(name).getModified());
+                            item.setDuration(map.get(name).getDuration());
+                            item.setSize(map.get(name).getSize());
+                            String url = buildProxyUrl(site, filepath, item);
+                            item.setUrl(url);
+                            if (!subtitleNames.isEmpty()) {
+                                String best = findBestSubtitle(subtitleNames, name.replace(prefix, "").replace(suffix, ""));
+                                if (best != null) {
+                                    item.setSubs(List.of(buildSubtitleOption(site, fixPath(path + "/" + folder + "/" + best), best)));
+                                }
+                            }
+                            if ("detail".equals(ac)) {
+                                urls.add(title + "$" + url);
+                            } else {
+                                result.getItems().add(item);
+                            }
                         } else {
-                            result.getItems().add(item);
+                            String url = buildPlayUrl(site, source, index++, filepath);
+                            urls.add(title + "$" + url);
                         }
-                    } else {
-                        String url = buildPlayUrl(site, source, index++, filepath);
-                        urls.add(title + "$" + url);
                     }
-                }
-                source++;
 
-                if (!urls.isEmpty()) {
-                    result.getFiles().add(String.join("#", urls));
-                    result.getFolders().add(fixSourceName(parent + "/" + folder));
+                    if (!urls.isEmpty()) {
+                        result.getFiles().add(String.join("#", urls));
+                        result.getFolders().add(audioSourceName(parent, folder, group.getKey()));
+                    }
+                    source++;
                 }
 
                 // 同 folders:嵌套版本目录(HQ.DV/SDR)兼容性差的靠后
@@ -2366,6 +2400,41 @@ public class TvBoxService {
             name = name.substring(0, name.length() - 1);
         }
         return name;
+    }
+
+    /** 文件名音轨归类:国语/國語标国语,粤语/粵語标粤语;两者都含(国粤双语单文件)或都不含归未标注组。 */
+    private static String audioLanguageOf(String name) {
+        boolean mandarin = name.contains("国语") || name.contains("國語");
+        boolean cantonese = name.contains("粤语") || name.contains("粵語");
+        if (mandarin == cantonese) {
+            return "";
+        }
+        return mandarin ? "国语" : "粤语";
+    }
+
+    /** 按音轨语言分组,保序:未标注、国语、粤语;仅一组时收敛回单组,线路名不带语言后缀保持原行为。 */
+    private static Map<String, List<String>> groupByAudioLanguage(List<String> fileNames) {
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        groups.put("", new ArrayList<>());
+        groups.put("国语", new ArrayList<>());
+        groups.put("粤语", new ArrayList<>());
+        for (String name : fileNames) {
+            groups.get(audioLanguageOf(name)).add(name);
+        }
+        groups.values().removeIf(List::isEmpty);
+        if (groups.size() <= 1) {
+            return Map.of("", fileNames);
+        }
+        return groups;
+    }
+
+    /** 语言线路名:根目录文件直接用语言名,嵌套目录在文件夹名后加后缀(如 HQ.DV-国语);未标注组沿用原名。 */
+    private static String audioSourceName(String parent, String folder, String lang) {
+        String base = fixSourceName(parent + "/" + folder);
+        if (lang.isEmpty()) {
+            return base;
+        }
+        return "视频".equals(base) ? lang : base + "-" + lang;
     }
 
     private static void sort(List<String> fileNames) {
@@ -2832,8 +2901,9 @@ public class TvBoxService {
                     .replaceQuery("")
                     .build()
                     .toUriString();
+            // localhost 无路径 URL 时 indexOf 返 -1,substring(0) 会拼出 proxy+原串垃圾地址
             int index = url.indexOf('/', 16);
-            url = proxy + url.substring(index + 1);
+            url = index >= 0 ? proxy + url.substring(index + 1) : proxy;
             log.debug("fixHttp: {}", url);
         }
 
@@ -2983,7 +3053,9 @@ public class TvBoxService {
         device.setId(99);
         device.setIp(buildTvUrl());
         device.setName("AList TvBox");
-        device.setUuid(settingService.get("system_id").getValue());
+        // system_id 行理论上 setup 时必建,但配置缺失时 get() 返 null 直接 NPE
+        var systemId = settingService.get("system_id");
+        device.setUuid(systemId == null ? "" : systemId.getValue());
         return device;
     }
 

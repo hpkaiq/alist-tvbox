@@ -234,6 +234,7 @@
         </el-form-item>
         <el-form-item label="115分享本地索引" v-if="has115Account">
           <el-button type="primary" :loading="index115Loading" @click="updateIndex115">下载</el-button>
+          <el-button :loading="index115ForceLoading" @click="forceUpdateIndex115">强制更新</el-button>
           <el-tag v-if="index115Checking" type="info" style="margin-left: 8px">检查中</el-tag>
           <el-tag v-else-if="index115Check.error" type="danger" style="margin-left: 8px">检查失败</el-tag>
           <el-tag v-else-if="index115Check.hasUpdate" type="warning" style="margin-left: 8px">有更新</el-tag>
@@ -262,6 +263,15 @@
         <el-form-item label="夸克TV机器码">
           <el-input v-model="quarkDeviceId" style="width: 300px" type="text"/>
           <el-button type="primary" class="hint" @click="updateQuarkDeviceId">更新</el-button>
+        </el-form-item>
+        <el-form-item label="信任反代">
+          <el-input v-model="trustedProxies" style="width: 300px" type="text"
+                    placeholder="留空=始终采信转发头;配置后仅列表内地址的转发头被采信"/>
+          <el-button type="primary" class="hint" @click="updateTrustedProxies">更新</el-button>
+          <div class="hint" style="width: 100%">
+            逗号分隔的反代地址(精确 IP 或 192.168.50./* 前缀)。留空维持默认:始终采信 X-Forwarded-For;
+            配置后其它来源的请求一律按 TCP 对端地址记客户端 IP(登录限速/日志/播放同步按此口径)。
+          </div>
         </el-form-item>
         <el-form-item label="Cookie地址">
           <a :href="currentUrl + '/ali/token/' + aliSecret" target="_blank">
@@ -436,6 +446,7 @@ const autoCheckin = ref(false)
 const dialogVisible = ref(false)
 const has115Account = ref(false)
 const index115Loading = ref(false)
+const index115ForceLoading = ref(false)
 const index115Checking = ref(false)
 const index115Check = ref<{hasAccount: boolean, hasUpdate: boolean, localVersion: string, remoteVersion: string, error: string | null}>({hasAccount: false, hasUpdate: false, localVersion: '', remoteVersion: '', error: null})
 const changelog = ref('')
@@ -462,6 +473,7 @@ const tmdbApiHostOptions = [
   {label: 'NAStool 代理', value: 'https://tmdb.nastool.org'},
 ]
 const userAgent = ref('')
+const trustedProxies = ref('')
 const atvPass = ref('')
 const apiKey = ref('')
 const basicAuthUser = ref('')
@@ -583,6 +595,12 @@ const setUserAgent = () => {
 const updateUserAgent = (value: string) => {
   axios.post('/api/settings', {name: 'user_agent', value: value}).then(({data}) => {
     userAgent.value = data.value
+    ElMessage.success('更新成功')
+  })
+}
+
+const updateTrustedProxies = () => {
+  axios.post('/api/settings', {name: 'trusted_proxies', value: trustedProxies.value}).then(() => {
     ElMessage.success('更新成功')
   })
 }
@@ -745,6 +763,17 @@ const updateIndex115 = () => {
   })
 }
 
+const forceUpdateIndex115 = () => {
+  index115ForceLoading.value = true
+  axios.post('/api/index115/force').then(() => {
+    ElMessage.success('115索引强制更新完成')
+  }).catch((e) => {
+    ElMessage.error('115索引强制更新失败：' + (e?.response?.data?.message || e.message))
+  }).finally(() => {
+    index115ForceLoading.value = false
+  })
+}
+
 onMounted(() => {
   axios.get('/api/basic-auth-credentials').then(({data}) => {
     basicAuthUser.value = data.username
@@ -767,6 +796,7 @@ onMounted(() => {
     tmdbApiKey.value = data.tmdb_api_key
     tmdbApiHost.value = data.tmdb_api_host || ''
     userAgent.value = data.user_agent
+    trustedProxies.value = data.trusted_proxies || ''
     autoCheckin.value = data.auto_checkin === 'true'
     aListRestart.value = data.alist_restart_required === 'true'
     replaceAliToken.value = data.replace_ali_token === 'true'

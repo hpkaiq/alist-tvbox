@@ -70,11 +70,10 @@ public class Pan123CommunitySearchService {
     private static final List<String> REPLY_TEMPLATES = List.of(
             "感谢楼主分享！", "这个资源太棒了！", "已收藏，谢谢！", "不错的资源，支持一下",
             "楼主辛苦了！", "内容很有用，感谢分享");
+    // 只留 123 族:normalizeShare 只认 123 系 share key,quark/uc/ali 等域名候选 100% 被丢弃(死配置误导维护)
     private static final List<String> PAN_DOMAINS = List.of(
             "123pan.com", "123pan.cn", "share.123pan.cn", "123684.com", "123865.com",
-            "123912.com", "123592.com", "pan.quark.cn", "drive.uc.cn", "alipan.com",
-            "aliyundrive.com", "pan.aliyun.com", "pan.baidu.com", "115.com", "anxia.com",
-            "cloud.189.cn", "pan.xunlei.com", "yun.139.com", "mcloud.139.com", "mypikpak.com");
+            "123912.com", "123592.com");
     private static final Pattern THREAD_ID = Pattern.compile("thread-(\\d+)");
     private static final Pattern SHARE_123 = Pattern.compile(
             "(?:https?://)?(?:www\\.)?(?:(?:[\\w-]+\\.)?share\\.123pan\\.cn|123\\w{3}\\.com|123pan\\.(?:com|cn))/(?:s|123pan)/[^\\s\"'<>]+",
@@ -117,7 +116,7 @@ public class Pan123CommunitySearchService {
         String host = activeHost();
         String cookie = SiteSearchSupport.setting(settingRepository, COOKIE_SETTING).trim();
         long deadline = System.currentTimeMillis()
-                + appProperties.getSubscription().getPan123communityTimeoutSeconds() * 1000L;
+                + Math.max(5, appProperties.getSubscription().getPan123communityTimeoutSeconds()) * 1000L;
         try {
             List<Card> cards = parseSearchResults(getJson(host, searchUrl(host, keyword.trim()), cookie));
             List<Message> result = new ArrayList<>();
@@ -158,8 +157,10 @@ public class Pan123CommunitySearchService {
             log.info("Pan123Community search {} get {} results", keyword, result.size());
             return result;
         } catch (Exception e) {
+            // 上抛而非吞掉空表:聚合层 searchAsync 捕获后记 SearchSourceThrottle 退避并返空;
+            // 吞掉则死站被 recordSuccess 清零连击,退避闸门对站点源永不生效
             log.warn("pan123community search [{}] failed: {}", keyword, e.getMessage());
-            return List.of();
+            throw e instanceof RuntimeException runtimeException ? runtimeException : new IllegalStateException(e);
         }
     }
 

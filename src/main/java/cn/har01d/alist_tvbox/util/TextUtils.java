@@ -38,8 +38,8 @@ public class TextUtils {
     // 新增：编码和音视频格式
     private static final Pattern AV_FORMAT = Pattern.compile("\\.(HEVC|H265|H264|x265|x264|AVC|AV1|VP9|VC-1|mp4|mkv|MPEG-2|Xvid)", Pattern.CASE_INSENSITIVE);
     private static final Pattern AUDIO_FORMAT = Pattern.compile("(DTS|DDP|DD\\+|AC3|AAC|FLAC|MP3|Opus|Atmos|TrueHD)([.\\s]?\\d+\\.?\\d*)?", Pattern.CASE_INSENSITIVE);
-    // 新增：分辨率标签
-    private static final Pattern RESOLUTION = Pattern.compile("\\.?(\\d{3,4}p|4K|2K|8K|UHD|FHD|QHD|SDR|HDR10|HDR|HD\\+?|Dolby\\s*Vision|DoVi)", Pattern.CASE_INSENSITIVE);
+    // 新增：分辨率标签(首尾词边界:防 1024K 内嵌 4K、SDRip 误伤 SDR 等)
+    private static final Pattern RESOLUTION = Pattern.compile("(?<![A-Za-z0-9])\\.?(\\d{3,4}p|4K|2K|8K|UHD|FHD|QHD|SDR|HDR10|HDR|HD\\+?|Dolby\\s*Vision|DoVi)(?![A-Za-z0-9])", Pattern.CASE_INSENSITIVE);
     // 新增：发布组和字幕组
     private static final Pattern RELEASE_GROUP = Pattern.compile("\\[([^]]+(字幕组|发布组|制作|Subs|Rip))]");
     // 行首装饰性符号：空白、间隔号(U+00B7/U+0387/U+30FB)、不可见变体选择符(U+FE0F/U+FE0E)、
@@ -260,7 +260,7 @@ public class TextUtils {
 
         int start = newName.indexOf('《');
         if (start > -1) {
-            int end = newName.indexOf('》', index + 1);
+            int end = newName.indexOf('》', start + 1);
             if (end > start) {
                 newName = newName.substring(start + 1, end);
             }
@@ -656,8 +656,8 @@ public class TextUtils {
                 .replace("+", " ")
                 .replace("Ⅰ", "第一季")
                 .replace("Ⅱ", "第二季")
-                .replace("II", "第二季")
                 .replace("III", "第三季")
+                .replace("II", "第二季")
                 .replace("Ⅲ", "第三季")
                 .replace("Ⅳ", "第四季")
                 .replace("Ⅴ", "第五季")
@@ -686,7 +686,7 @@ public class TextUtils {
                 .replaceAll(" \\d{4}", " ")
                 .replaceAll("\\s*全\\d+集", " ")
                 .replaceAll("第?\\d-\\d+([季部])", " ")
-                .replaceAll(".([季部])全", " ")
+                .replaceAll("\\.([季部])全", " ")
                 .replaceAll("[0-9.]+GB", " ")
                 .replaceAll("豆瓣评分：?[0-9.]+", " ")
                 .replaceAll("豆瓣\\d\\.\\d", " ")
@@ -701,7 +701,8 @@ public class TextUtils {
                 newName = newName.replace("第" + text + "季", " 第" + text + "季");
             }
             String newNum = number2text(text);
-            newName = newName.replace(text, newNum);
+            // 只替换季名整体,防 String.replace 全文误伤(「300勇士 第3季」的 300 不能变「三00」)
+            newName = newName.replaceFirst(java.util.regex.Pattern.quote("第" + text + "季"), "第" + newNum + "季");
         } else {
             m = NUMBER2.matcher(newName);
             if (m.find()) {
@@ -714,7 +715,7 @@ public class TextUtils {
                 if (m.find()) {
                     String text = m.group(1);
                     String newNum = number2text(text.substring(1));
-                    newName = newName.replace(text, " 第" + newNum + "季");
+                    newName = newName.replaceFirst(java.util.regex.Pattern.quote(text), " 第" + newNum + "季");
                 }
             }
         }
@@ -813,7 +814,13 @@ public class TextUtils {
         if (text.isEmpty()) {
             return text;
         }
-        int num = Integer.parseInt(text);
+        int num;
+        try {
+            num = Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            // NUMBER 正则允许「第2.5季」小数形态,非整数直接原样返回,防 parseInt 崩掉调用链
+            return text;
+        }
         String newNum;
         if (num <= 10) {
             newNum = NUMBERS.get(num);

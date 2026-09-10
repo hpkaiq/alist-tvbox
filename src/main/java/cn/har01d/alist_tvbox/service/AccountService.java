@@ -57,6 +57,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
+import java.time.Duration;
 
 import static cn.har01d.alist_tvbox.util.Constants.ACCESS_TOKEN;
 import static cn.har01d.alist_tvbox.util.Constants.ALIST_LOGIN;
@@ -112,8 +113,8 @@ public class AccountService {
         this.scheduler = scheduler;
         this.objectMapper = objectMapper;
         this.alistJdbcTemplate = alistJdbcTemplate;
-        this.aListClient = builder.rootUri("http://localhost:" + aListLocalService.getInternalPort()).build();
-        this.restTemplate = builder.build();
+        this.aListClient = builder.rootUri("http://localhost:" + aListLocalService.getInternalPort()).connectTimeout(Duration.ofSeconds(10)).readTimeout(Duration.ofSeconds(60)).build();
+        this.restTemplate = builder.connectTimeout(Duration.ofSeconds(10)).readTimeout(Duration.ofSeconds(30)).build();
     }
 
     @PostConstruct
@@ -417,7 +418,9 @@ public class AccountService {
 
         try {
             time = account.getRefreshTokenTime();
-            if ((time == null || time.plus(1, ChronoUnit.DAYS).isAfter(now)) && account.getRefreshToken() != null) {
+            // 距上次轮换超过 24h 才刷(305b9173 曾把 isBefore 误翻成 isAfter,变成「24h 内才刷」,
+            // 每日调度首轮刷完即永久跳过,token 不再轮换)
+            if ((time == null || time.plus(1, ChronoUnit.DAYS).isBefore(now)) && account.getRefreshToken() != null) {
                 log.info("update refresh token {}: {}", account.getId(), time);
                 account.setRefreshTokenTime(Instant.now());
                 Map<Object, Object> response = getAliToken(account.getRefreshToken());
@@ -621,7 +624,7 @@ public class AccountService {
                     aListLocalService.executeUpdate(sql);
                     sql = "delete from x_users where id = 3";
                     aListLocalService.executeUpdate(sql);
-                    sql = "INSERT INTO x_users (id,username,password,base_path,role,permission) VALUES (3,'" + login.getUsername() + "','" + login.getPassword() + "','/',0,380)";
+                    sql = "INSERT INTO x_users (id,username,password,base_path,role,permission) VALUES (3,'" + sqlEscape(login.getUsername()) + "','" + sqlEscape(login.getPassword()) + "','/',0,380)";
                     aListLocalService.executeUpdate(sql);
                 }
             } else {
@@ -677,16 +680,25 @@ public class AccountService {
         List<Account> list = accountRepository.findAll();
         log.info("updateTokens {}", list.size());
         for (Account account : list) {
-            String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s',%d,'%s')";
-            aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), getTime(account.getRefreshTokenTime())));
-            sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s',%d,'%s')";
-            aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), getTime(account.getOpenTokenTime())));
+            // key 是主键:裸 INSERT 二次启动全部冲突,executeUpdate 又吞错 → AList 侧 token 永远陈旧;先删后插幂等
+            aListLocalService.executeUpdate(String.format("DELETE FROM x_tokens WHERE `key` = 'RefreshToken-%d'", account.getId()));
+            if (StringUtils.isNotBlank(account.getRefreshToken())) {
+                String sql = "INSERT INTO x_tokens VALUES('RefreshToken-%d','%s',%d,'%s')";
+                aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getRefreshToken(), account.getId(), getTime(account.getRefreshTokenTime())));
+            }
+            aListLocalService.executeUpdate(String.format("DELETE FROM x_tokens WHERE `key` = 'RefreshTokenOpen-%d'", account.getId()));
+            if (StringUtils.isNotBlank(account.getOpenToken())) {
+                String sql = "INSERT INTO x_tokens VALUES('RefreshTokenOpen-%d','%s',%d,'%s')";
+                aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getOpenToken(), account.getId(), getTime(account.getOpenTokenTime())));
+            }
             if (StringUtils.isNotBlank(account.getAccessToken())) {
-                sql = "INSERT INTO x_tokens VALUES('AccessToken-%d','%s',%d,'%s')";
+                aListLocalService.executeUpdate(String.format("DELETE FROM x_tokens WHERE `key` = 'AccessToken-%d'", account.getId()));
+                String sql = "INSERT INTO x_tokens VALUES('AccessToken-%d','%s',%d,'%s')";
                 aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getAccessToken(), account.getId(), getTime(account.getAccessTokenTime())));
             }
             if (StringUtils.isNotBlank(account.getOpenAccessToken())) {
-                sql = "INSERT INTO x_tokens VALUES('AccessTokenOpen-%d','%s',%d,'%s')";
+                aListLocalService.executeUpdate(String.format("DELETE FROM x_tokens WHERE `key` = 'AccessTokenOpen-%d'", account.getId()));
+                String sql = "INSERT INTO x_tokens VALUES('AccessTokenOpen-%d','%s',%d,'%s')";
                 aListLocalService.executeUpdate(String.format(sql, account.getId(), account.getOpenAccessToken(), account.getId(), getTime(account.getOpenAccessTokenTime())));
             }
         }
@@ -697,6 +709,11 @@ public class AccountService {
             return OffsetDateTime.now();
         }
         return time.atOffset(ZONE_OFFSET);
+    }
+
+    /** executeUpdate 只收裸 SQL:拼接值里的单引号会破坏语句(admin 输入面),按 SQL 字面量转义。 */
+    private static String sqlEscape(String value) {
+        return value == null ? "" : value.replace("'", "''");
     }
 
     public AListLogin updateAListLogin(AListLogin login) {
@@ -1199,6 +1216,8 @@ public class AccountService {
         if (account != null) {
             // 先清 AList 侧状态再删本地行:AList 失败(启动中/不可用)时行保留,删除可重试
             account.setShowMyAli(false);
+            // 删除路径强制走移除分支:主账号若保持 master,showMyAliWithAPI 尾部会把两个阿里 storage 重建+启用,本地行删掉后即成永久孤儿
+            account.setMaster(false);
             showMyAliWithAPI(account);
             accountRepository.deleteById(id);
         }
@@ -1227,7 +1246,8 @@ public class AccountService {
 
     public String getAliRefreshToken(String id) {
         String aliSecret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElse("");
-        if (aliSecret.equals(id)) {
+        // 常量时间比较:secret 校验用 equals 可被计时侧信道逐字节探测
+        if (constantTimeEquals(aliSecret, id)) {
             return accountRepository.getFirstByMasterTrue()
                     .map(Account::getRefreshToken)
                     .orElseThrow(NotFoundException::new);
@@ -1237,11 +1257,20 @@ public class AccountService {
 
     public String getAliOpenRefreshToken(String id) {
         String aliSecret = settingRepository.findById(ALI_SECRET).map(Setting::getValue).orElse("");
-        if (aliSecret.equals(id)) {
+        if (constantTimeEquals(aliSecret, id)) {
             return accountRepository.getFirstByMasterTrue()
                     .map(Account::getOpenToken)
                     .orElseThrow(NotFoundException::new);
         }
         return null;
+    }
+
+    private static boolean constantTimeEquals(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+                a.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                b.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }

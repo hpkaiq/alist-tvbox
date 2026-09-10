@@ -59,6 +59,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -131,6 +132,8 @@ public class IndexService {
         this.restTemplate = builder
                 .defaultHeader(HttpHeaders.ACCEPT, Constants.ACCEPT)
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.USER_AGENT1)
+                .connectTimeout(Duration.ofSeconds(10))
+                .readTimeout(Duration.ofSeconds(60))
                 .build();
         this.objectMapper = objectMapper;
         this.environment = environment;
@@ -331,7 +334,7 @@ public class IndexService {
             downloadZipFile(site, url, name);
         } else {
             log.info("download index file from {}", url);
-            FileUtils.copyURLToFile(new URL(url), file);
+            FileUtils.copyURLToFile(new URL(url), file, 10_000, 60_000);
         }
 
         return file.getAbsolutePath();
@@ -359,8 +362,12 @@ public class IndexService {
     private static String getRemoteTime(Site site, String url) {
         try {
             File file = Files.createTempFile(String.valueOf(site.getId()), ".info").toFile();
-            FileUtils.copyURLToFile(new URL(url), file);
-            return FileUtils.readFileToString(file, StandardCharsets.UTF_8);
+            try {
+                FileUtils.copyURLToFile(new URL(url), file, 10_000, 60_000);
+                return FileUtils.readFileToString(file, StandardCharsets.UTF_8);
+            } finally {
+                Files.deleteIfExists(file.toPath());
+            }
         } catch (Exception e) {
             // ignore
         }
@@ -369,7 +376,7 @@ public class IndexService {
 
     private static void downloadZipFile(Site site, String url, String name) throws IOException {
         File zipFile = new File(".cache/" + site.getId() + "/" + name);
-        FileUtils.copyURLToFile(new URL(url), zipFile);
+        FileUtils.copyURLToFile(new URL(url), zipFile, 10_000, 60_000);
         unzip(zipFile);
         Files.delete(zipFile.toPath());
     }
@@ -432,7 +439,7 @@ public class IndexService {
         List<IndexTemplate> list = indexTemplateRepository.findByScheduledTrue();
         log.debug("auto index: {}", list.size());
         for (IndexTemplate template : list) {
-            if (template.getScheduleTime() != null && template.getScheduleTime().contains(hour)) {
+            if (template.getScheduleTime() != null && Arrays.asList(template.getScheduleTime().split("\\|")).contains(hour)) {
                 try {
                     log.info("auto index for template: {}", template.getId());
                     IndexRequest indexRequest = objectMapper.readValue(template.getData(), IndexRequest.class);
@@ -504,14 +511,18 @@ public class IndexService {
                 context.getTime().clear();
                 path = customize(context, indexRequest, path);
                 stopWatch.start("index " + path);
-                var shareInfo = getShareInfo(site, path);
-                if (shareInfo != null) {
-                    index(context, shareInfo, shareInfo.getFileId(), path, 0);
-                } else {
-                    index(context, path, 0);
+                try {
+                    var shareInfo = getShareInfo(site, path);
+                    if (shareInfo != null) {
+                        index(context, shareInfo, shareInfo.getFileId(), path, 0);
+                    } else {
+                        index(context, path, 0);
+                    }
+                    handleUpdateTime(path, context.getTime());
+                } finally {
+                    // 路径异常跳出若不 stop,下一轮 start 抛 IllegalStateException 掩盖原始异常
+                    stopWatch.stop();
                 }
-                handleUpdateTime(path, context.getTime());
-                stopWatch.stop();
                 log.info("{} {}", path, context.stats.indexed - total);
                 total = context.stats.indexed;
             }

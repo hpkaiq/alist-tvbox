@@ -74,12 +74,14 @@ import cn.har01d.alist_tvbox.util.BiliCookieRefreshUtils;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
+import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
@@ -110,6 +112,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.time.Duration;
 
 import static cn.har01d.alist_tvbox.util.Constants.ALI_SECRET;
 import static cn.har01d.alist_tvbox.util.Constants.BILIBILI_CODE;
@@ -303,17 +306,37 @@ public class BiliBiliService {
     private final LoadingCache<String, BiliBiliInfo> cache = Caffeine.newBuilder()
             .maximumSize(10)
             .build(this::getInfo);
-    private MovieDetail searchPlaylist;
-    private String keyword = "";
-    private int searchPage;
-    private String favId = "";
-    private Long mid;
+    /** 已删/失效视频的负缓存:getInfo 失败时抛 NotFoundException(loader 返 null 不落 Caffeine),短 TTL 防重试风暴。 */
+    private final Cache<String, Boolean> infoMissCache = Caffeine.newBuilder()
+            .expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES)
+            .maximumSize(500)
+            .build();
+    /** 单设备翻页会话:游标/搜索词/收藏夹选择原先存单例字段,共享 token 部署(亲友同链)多设备并发互串页 ——
+     *  按客户端标识(配置下发时烤进 BILIBILI_URL 的 ?client=,一次性随机)分桶隔离,30 分钟无访问过期回收。 */
+    static final class BiliSession {
+        MovieDetail searchPlaylist;
+        String keyword = "";
+        int searchPage;
+        String favId = "";
+        List<BiliBiliHistoryResult.Cursor> cursors = new ArrayList<>();
+        List<String> feedOffsets = new ArrayList<>(); // 动态列表
+        List<String> chanOffsets = new ArrayList<>(); // 频道列表
+        List<String> channelOffsets = new ArrayList<>();
+    }
 
-    private List<String> feedOffsets = new ArrayList<>(); // 动态列表
-    private List<String> chanOffsets = new ArrayList<>(); // 频道列表
-    private String imgKey;
-    private String subKey;
-    private LocalDate keyTime;
+    private final Cache<String, BiliSession> sessions = Caffeine.newBuilder()
+            .expireAfterAccess(30, java.util.concurrent.TimeUnit.MINUTES)
+            .maximumSize(200)
+            .build();
+
+    private BiliSession sessionOf(String client) {
+        return sessions.get(StringUtils.defaultString(client), k -> new BiliSession());
+    }
+
+    private Long mid;
+    private volatile String imgKey;
+    private volatile String subKey;
+    private volatile LocalDate keyTime;
 
     public BiliBiliService(SettingRepository settingRepository,
                            NavigationService navigationService,
@@ -331,6 +354,8 @@ public class BiliBiliService {
                 .build();
         this.restTemplate = builder
                 .defaultHeader(HttpHeaders.USER_AGENT, Constants.USER_AGENT)
+                .connectTimeout(Duration.ofSeconds(10))
+                .readTimeout(Duration.ofSeconds(30))
                 .build();
         this.objectMapper = objectMapper;
     }
@@ -440,8 +465,12 @@ public class BiliBiliService {
         return 1;
     }
 
-    public CategoryList getCategoryList() {
-        getLoginStatus();
+    public CategoryList getCategoryList(String client) {
+        BiliSession s = sessionOf(client);
+        // NAV 别每请求一发:mid/wbi key 拉过一次就留在内存(游客态也缓存),冷启动或 key 缺失才再拉
+        if (mid == null || keyTime == null) {
+            getLoginStatus();
+        }
         List<NavigationDto> ups = new ArrayList<>();
         List<NavigationDto> list = navigationService.list();
         boolean merge = list.stream().filter(NavigationDto::isShow).map(NavigationDto::getValue).anyMatch("ups"::equals);
@@ -488,8 +517,8 @@ public class BiliBiliService {
                     }
                     try {
                         if (value.equals("fav$0")) {
-                            List<Filter> filters = getFavFilters();
-                            category.setType_id(value + "$" + favId);
+                            List<Filter> filters = getFavFilters(s);
+                            category.setType_id(value + "$" + s.favId);
                             result.getFilters().put(category.getType_id(), filters);
                         }
                     } catch (Exception e) {
@@ -519,13 +548,13 @@ public class BiliBiliService {
         return result;
     }
 
-    private List<Filter> getFavFilters() {
+    private List<Filter> getFavFilters(BiliSession s) {
         String url = "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=" + mid;
         HttpEntity<Void> entity = buildHttpEntity(null);
         ResponseEntity<BiliBiliFavListResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliFavListResponse.class);
         log.debug("getFavlist: {}", response.getBody());
         List<FilterValue> filters = response.getBody().getData().getList().stream().map(e -> new FilterValue(e.getTitle(), String.valueOf(e.getId()))).collect(Collectors.toList());
-        favId = filters.get(0).getV();
+        s.favId = filters.get(0).getV();
         return List.of(new Filter("sort", "排序", filters4), new Filter("type", "分类", filters));
     }
 
@@ -850,7 +879,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -896,7 +925,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -937,7 +966,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -965,7 +994,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -993,7 +1022,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -1020,7 +1049,7 @@ public class BiliBiliService {
         if (mid == null) {
             getLoginStatus();
         }
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return new FavItems();
         }
 
@@ -1037,7 +1066,7 @@ public class BiliBiliService {
             getLoginStatus();
         }
         MovieList result = new MovieList();
-        if (mid == BiliBiliUtils.getMid()) {
+        if (mid != null && mid == BiliBiliUtils.getMid()) {
             return result;
         }
 
@@ -1558,14 +1587,18 @@ public class BiliBiliService {
         return result;
     }
 
-    private List<BiliBiliHistoryResult.Cursor> cursors = new ArrayList<>();
-
-    public MovieList getHistory(int page) {
+    public MovieList getHistory(int page, BiliSession s) {
         if (page == 1) {
-            cursors = new ArrayList<>();
-            cursors.add(new BiliBiliHistoryResult.Cursor());
+            s.cursors = new ArrayList<>();
+            s.cursors.add(new BiliBiliHistoryResult.Cursor());
         }
-        BiliBiliHistoryResult.Cursor cursor = cursors.get(page - 1);
+        if (page - 1 < 0 || page - 1 >= s.cursors.size()) {
+            // 直达高页码(会话过期游标列表为空/深链跳页):回退第 1 页重建游标
+            page = 1;
+            s.cursors = new ArrayList<>();
+            s.cursors.add(new BiliBiliHistoryResult.Cursor());
+        }
+        BiliBiliHistoryResult.Cursor cursor = s.cursors.get(page - 1);
         String url = String.format(HISTORY_API, cursor.getMax(), cursor.getViewAt());
         HttpEntity<Void> entity = buildHttpEntity(null);
         ResponseEntity<BiliBiliHistoryResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliHistoryResponse.class);
@@ -1576,7 +1609,7 @@ public class BiliBiliService {
             MovieDetail movieDetail = getMovieDetail(info);
             result.getList().add(movieDetail);
         }
-        cursors.add(hotResponse.getData().getCursor());
+        s.cursors.add(hotResponse.getData().getCursor());
 
         result.setLimit(result.getList().size());
         result.setTotal(2000);
@@ -1588,12 +1621,13 @@ public class BiliBiliService {
 
     public MovieList getDetail(String bvid, String client) throws IOException {
         log.debug("--- getDetail --- {}", bvid);
+        BiliSession s = sessionOf(client);
         if (bvid.startsWith("channel$")) {
-            return getChannelPlaylist(bvid);
+            return getChannelPlaylist(bvid, s);
         }
 
         if (bvid.startsWith("search$")) {
-            return getSearchPlaylist(bvid);
+            return getSearchPlaylist(bvid, s);
         }
 
         if (bvid.startsWith("up:")) {
@@ -1647,21 +1681,12 @@ public class BiliBiliService {
         BiliBiliInfo info = cache.get(bvid);
         MovieDetail movieDetail = getMovieDetail(info, client, true);
 
-        try {
-            String url = String.format(RELATED_API, bvid);
-            HttpEntity<Void> entity = buildHttpEntity(null);
-            ResponseEntity<BiliBiliRelatedResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliRelatedResponse.class);
-            List<BiliBiliInfo> list = response.getBody().getData();
-            log.debug("related videos: {} {}", url, list);
-            if (!list.isEmpty()) {
-                movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$相关视频");
-                String related = list.stream().map(e -> buildTitle(e, client) + "$" + e.getAid() + "-" + e.getCid()).collect(Collectors.joining("#"));
-                movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + related);
-            }
-        } catch (Exception e) {
-            log.warn("get related videos failed", e);
-        }
-
+        // 相关视频与 UP 主列表并发拉取(原 view→related→UP 串行三连发是详情打开慢的主体);
+        // 两个块都改写 movieDetail 的播放字段,并发只拉数据、装配回主线程串行做,防丢更新
+        final String bvidKey = bvid;
+        java.util.concurrent.CompletableFuture<List<BiliBiliInfo>> relatedFuture =
+                java.util.concurrent.CompletableFuture.supplyAsync(() -> fetchRelatedList(bvidKey));
+        String upPlayUrl = null;
         if (info.getOwner() != null) {
             if ("com.fongmi.android.tv".equals(client)) {
                 long id = info.getOwner().getMid();
@@ -1669,15 +1694,18 @@ public class BiliBiliService {
                 String owner = String.format("[a=cr:{\"id\":\"up:%d\",\"name\":\"%s\"}/]%s[/a]", id, name, name);
                 movieDetail.setVod_director(owner);
             }
+            upPlayUrl = fetchUpPlayUrl(info.getOwner().getMid(), client);
+        }
 
-            try {
-                MovieList movieList = getUpPlaylist("up$" + info.getOwner().getMid(), client);
-                movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$UP主视频");
-                String others = movieList.getList().get(0).getVod_play_url();
-                movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + others);
-            } catch (Exception e) {
-                log.warn("get UP playlist failed", e);
-            }
+        List<BiliBiliInfo> list = relatedFuture.join();
+        if (list != null && !list.isEmpty()) {
+            movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$相关视频");
+            String related = list.stream().map(e -> buildTitle(e, client) + "$" + e.getAid() + "-" + e.getCid()).collect(Collectors.joining("#"));
+            movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + related);
+        }
+        if (upPlayUrl != null) {
+            movieDetail.setVod_play_from(movieDetail.getVod_play_from() + "$$$UP主视频");
+            movieDetail.setVod_play_url(movieDetail.getVod_play_url() + "$$$" + upPlayUrl);
         }
 
         MovieList result = new MovieList();
@@ -1686,6 +1714,30 @@ public class BiliBiliService {
         result.setLimit(result.getList().size());
         log.debug("--- detail --- {}", result);
         return result;
+    }
+
+    private List<BiliBiliInfo> fetchRelatedList(String bvid) {
+        try {
+            String url = String.format(RELATED_API, bvid);
+            HttpEntity<Void> entity = buildHttpEntity(null);
+            ResponseEntity<BiliBiliRelatedResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliRelatedResponse.class);
+            List<BiliBiliInfo> list = response.getBody().getData();
+            log.debug("related videos: {} {}", url, list);
+            return list == null ? List.of() : list;
+        } catch (Exception e) {
+            log.warn("get related videos failed", e);
+            return List.of();
+        }
+    }
+
+    private String fetchUpPlayUrl(long ownerMid, String client) {
+        try {
+            MovieList movieList = getUpPlaylist("up$" + ownerMid, client);
+            return movieList.getList().isEmpty() ? null : movieList.getList().get(0).getVod_play_url();
+        } catch (Exception e) {
+            log.warn("get UP playlist failed", e);
+            return null;
+        }
     }
 
     private MovieList getBangumi(String tid) {
@@ -1758,15 +1810,15 @@ public class BiliBiliService {
         return title;
     }
 
-    public MovieList getSearchPlaylist(String tid) {
+    public MovieList getSearchPlaylist(String tid, BiliSession s) {
         String[] parts = tid.split("\\$");
         String wd = parts[1];
         int type = Integer.parseInt(parts[2]);
         int page = Integer.parseInt(parts[3]);
         MovieList result = new MovieList();
 
-        if (searchPlaylist != null && page == searchPage && wd.equals(keyword)) {
-            result.getList().add(searchPlaylist);
+        if (s.searchPlaylist != null && page == s.searchPage && wd.equals(s.keyword)) {
+            result.getList().add(s.searchPlaylist);
             return result;
         }
 
@@ -1774,7 +1826,7 @@ public class BiliBiliService {
 
         List<BiliBiliSearchResult.Video> list = new ArrayList<>();
 
-        searchPage = page;
+        s.searchPage = page;
         int size = type > 0 ? 1 : 2;
         int start = page * size;
         int end = start + size;
@@ -1787,17 +1839,17 @@ public class BiliBiliService {
         }
 
         long seconds = list.stream().map(BiliBiliSearchResult.Video::getDuration).mapToLong(Utils::durationToSeconds).sum();
-        searchPlaylist = new MovieDetail();
-        searchPlaylist.setVod_id("search$" + wd + "$0$" + page);
-        searchPlaylist.setVod_name(wd + "合集" + (page + 1));
-        searchPlaylist.setVod_tag(FILE);
-        searchPlaylist.setVod_pic(getListPic());
-        searchPlaylist.setVod_play_from(BILI_BILI);
+        s.searchPlaylist = new MovieDetail();
+        s.searchPlaylist.setVod_id("search$" + wd + "$0$" + page);
+        s.searchPlaylist.setVod_name(wd + "合集" + (page + 1));
+        s.searchPlaylist.setVod_tag(FILE);
+        s.searchPlaylist.setVod_pic(getListPic());
+        s.searchPlaylist.setVod_play_from(BILI_BILI);
         String playUrl = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + buildPlayUrl(e.getBvid())).collect(Collectors.joining("#"));
-        searchPlaylist.setVod_play_url(playUrl);
-        searchPlaylist.setVod_content("共" + list.size() + "个视频");
-        searchPlaylist.setVod_remarks(Utils.secondsToDuration(seconds));
-        result.getList().add(searchPlaylist);
+        s.searchPlaylist.setVod_play_url(playUrl);
+        s.searchPlaylist.setVod_content("共" + list.size() + "个视频");
+        s.searchPlaylist.setVod_remarks(Utils.secondsToDuration(seconds));
+        result.getList().add(s.searchPlaylist);
 
         return result;
     }
@@ -1839,14 +1891,19 @@ public class BiliBiliService {
         if (bvid.startsWith("av")) {
             bvid = BiliBiliUtils.av2bv(Long.parseLong(bvid.substring(2)));
         }
+        // 负缓存:Caffeine loader 返 null 不落缓存,已删视频每请求都重打 INFO_API(重试风暴) —— 短 TTL 直接抛 404
+        if (infoMissCache.getIfPresent(bvid) != null) {
+            throw new NotFoundException("视频不存在或已删除: " + bvid);
+        }
         BiliBiliInfoResponse infoResponse = restTemplate.getForObject(INFO_API + bvid, BiliBiliInfoResponse.class);
         log.debug("get info {} : {}", INFO_API + bvid, infoResponse);
         if (infoResponse.getCode() == 0) {
             return infoResponse.getData();
         } else {
             log.warn("get BiliBili video info failed: {}", infoResponse.getMessage());
+            infoMissCache.put(bvid, Boolean.TRUE);
         }
-        return null;
+        throw new NotFoundException("视频不存在或已删除: " + bvid);
     }
 
     private String getToken(long aid, long cid, String cookie) {
@@ -2091,7 +2148,8 @@ public class BiliBiliService {
         return bvid;
     }
 
-    public MovieList getMovieList(String tid, FilterDto filter, int page) throws IOException {
+    public MovieList getMovieList(String tid, FilterDto filter, int page, String client) throws IOException {
+        BiliSession s = sessionOf(client);
         if (tid.equals("ups")) {
             String id = filter.getType();
             if (StringUtils.isBlank(id)) {
@@ -2112,10 +2170,10 @@ public class BiliBiliService {
 
         if (tid.startsWith("search:")) {
             String[] parts = tid.split(":");
-            return search(parts[1], filter.getSort(), filter.getDuration(), page, false);
+            return search(parts[1], filter.getSort(), filter.getDuration(), page, false, client);
         } else if (tid.startsWith("channel:")) {
             String[] parts = tid.split(":");
-            return getChannel(parts[1], filter.getSort(), page);
+            return getChannel(parts[1], filter.getSort(), page, s);
         } else if (tid.startsWith("up:")) {
             String[] parts = tid.split(":");
             return getUpMedia(parts[1], filter.getSort(), page);
@@ -2144,13 +2202,13 @@ public class BiliBiliService {
         } else if ("pop".equals(parts[0])) {
             return getPopular(page);
         } else if ("history".equals(parts[0])) {
-            return getHistory(page);
+            return getHistory(page, s);
         } else if ("fav".equals(parts[0])) {
-            return getFavList(tid, filter.getType(), filter.getSort(), page);
+            return getFavList(tid, filter.getType(), filter.getSort(), page, s);
         } else if ("channel".equals(parts[0])) {
-            return getChannels(filter.getType(), page);
+            return getChannels(filter.getType(), page, s);
         } else if ("feed".equals(parts[0])) {
-            return getFeeds(page);
+            return getFeeds(page, s);
         } else if ("recommend".equals(parts[0])) {
             return recommend(page, true);
         } else if ("follow".equals(parts[0])) {
@@ -2186,14 +2244,14 @@ public class BiliBiliService {
         return result;
     }
 
-    private MovieList getFavList(String tid, String type, String sort, int page) {
+    private MovieList getFavList(String tid, String type, String sort, int page, BiliSession s) {
         MovieList result = new MovieList();
         if (StringUtils.isBlank(sort)) {
             sort = "mtime";
         }
 
         if (StringUtils.isBlank(type)) {
-            type = favId;
+            type = s.favId;
         }
 
         if (StringUtils.isBlank(type)) {
@@ -2236,16 +2294,21 @@ public class BiliBiliService {
         return result;
     }
 
-    private MovieList getChannels(String tid, int page) {
+    private MovieList getChannels(String tid, int page, BiliSession s) {
         if (page == 1) {
-            chanOffsets = new ArrayList<>();
-            chanOffsets.add("");
+            s.chanOffsets = new ArrayList<>();
+            s.chanOffsets.add("");
+        }
+        if (page - 1 < 0 || page - 1 >= s.chanOffsets.size()) {
+            page = 1;
+            s.chanOffsets = new ArrayList<>();
+            s.chanOffsets.add("");
         }
         MovieList result = new MovieList();
-        if (chanOffsets.get(page - 1) == null) {
+        if (s.chanOffsets.get(page - 1) == null) {
             return result;
         }
-        String url = String.format(CHAN_API, tid, chanOffsets.get(page - 1));
+        String url = String.format(CHAN_API, tid, s.chanOffsets.get(page - 1));
         HttpEntity<Void> entity = buildHttpEntity(null);
         log.debug("getChannels: {}", url);
         ResponseEntity<BiliBiliChannelListResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliChannelListResponse.class);
@@ -2262,9 +2325,9 @@ public class BiliBiliService {
             }
         }
         if (channelList.isHas_more()) {
-            chanOffsets.add(channelList.getOffset());
+            s.chanOffsets.add(channelList.getOffset());
         } else {
-            chanOffsets.add(null);
+            s.chanOffsets.add(null);
         }
         result.setPage(page);
         result.setLimit(result.getList().size());
@@ -2273,16 +2336,21 @@ public class BiliBiliService {
         return result;
     }
 
-    private MovieList getFeeds(int page) {
+    private MovieList getFeeds(int page, BiliSession s) {
         if (page == 1) {
-            feedOffsets = new ArrayList<>();
-            feedOffsets.add("");
+            s.feedOffsets = new ArrayList<>();
+            s.feedOffsets.add("");
+        }
+        if (page - 1 < 0 || page - 1 >= s.feedOffsets.size()) {
+            page = 1;
+            s.feedOffsets = new ArrayList<>();
+            s.feedOffsets.add("");
         }
         MovieList result = new MovieList();
-        if (feedOffsets.get(page - 1) == null) {
+        if (s.feedOffsets.get(page - 1) == null) {
             return result;
         }
-        String url = String.format(FEED_API, feedOffsets.get(page - 1), page);
+        String url = String.format(FEED_API, s.feedOffsets.get(page - 1), page);
         HttpEntity<Void> entity = buildHttpEntity(null);
         log.debug("getFeeds: {}", url);
         ResponseEntity<JsonNode> response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
@@ -2290,9 +2358,9 @@ public class BiliBiliService {
         log.trace("{}", node);
         ObjectNode data = (ObjectNode) node.get("data");
         if (data.get("has_more").asBoolean()) {
-            feedOffsets.add(data.get("offset").asText());
+            s.feedOffsets.add(data.get("offset").asText());
         } else {
-            feedOffsets.add(null);
+            s.feedOffsets.add(null);
         }
         ArrayNode items = (ArrayNode) data.get("items");
         for (int i = 0; i < items.size(); ++i) {
@@ -2432,22 +2500,25 @@ public class BiliBiliService {
         return result;
     }
 
-    private List<String> channelOffsets = new ArrayList<>();
-
-    public MovieList getChannel(String id, String sort, int page) {
+    public MovieList getChannel(String id, String sort, int page, BiliSession s) {
         if (page == 1) {
-            channelOffsets = new ArrayList<>();
-            channelOffsets.add("");
+            s.channelOffsets = new ArrayList<>();
+            s.channelOffsets.add("");
         }
         if (StringUtils.isBlank(sort)) {
             sort = "new";
         }
+        if (page - 1 < 0 || page - 1 >= s.channelOffsets.size()) {
+            page = 1;
+            s.channelOffsets = new ArrayList<>();
+            s.channelOffsets.add("");
+        }
         MovieList result = new MovieList();
-        if (channelOffsets.get(page - 1) == null) {
+        if (s.channelOffsets.get(page - 1) == null) {
             return result;
         }
         HttpEntity<Void> entity = buildHttpEntity(null);
-        String url = String.format(CHANNEL_API, id, sort, channelOffsets.get(page - 1));
+        String url = String.format(CHANNEL_API, id, sort, s.channelOffsets.get(page - 1));
         ResponseEntity<BiliBiliChannelResponse> response = restTemplate1.exchange(url, HttpMethod.GET, entity, BiliBiliChannelResponse.class);
         log.debug("getChannel {} {}", url, response.getBody());
 
@@ -2474,9 +2545,9 @@ public class BiliBiliService {
         result.getList().add(movieDetail);
 
         if (list.size() < 30) {
-            channelOffsets.add(null);
+            s.channelOffsets.add(null);
         } else {
-            channelOffsets.add(response.getBody().getData().getOffset());
+            s.channelOffsets.add(response.getBody().getData().getOffset());
         }
         result.getList().addAll(list);
         result.setTotal(1020);
@@ -2486,7 +2557,7 @@ public class BiliBiliService {
         return result;
     }
 
-    public MovieList getChannelPlaylist(String tid) {
+    public MovieList getChannelPlaylist(String tid, BiliSession s) {
         String[] parts = tid.split("\\$");
         String id = parts[1];
         String sort = "new";
@@ -2498,8 +2569,16 @@ public class BiliBiliService {
             page = Integer.parseInt(parts[3]);
         }
 
+        if (page - 1 < 0 || page - 1 >= s.channelOffsets.size()) {
+            // 会话里列表为空(只在 getChannel 初始化):历史记录直达高页码会越界,回退第 1 页
+            log.debug("channel offsets missing for page {}, fallback to page 1", page);
+            page = 1;
+            if (s.channelOffsets.isEmpty()) {
+                s.channelOffsets.add("");
+            }
+        }
         HttpEntity<Void> entity = buildHttpEntity(null);
-        String url = String.format(CHANNEL_API, id, sort, channelOffsets.get(page - 1));
+        String url = String.format(CHANNEL_API, id, sort, s.channelOffsets.get(page - 1));
         ResponseEntity<BiliBiliChannelResponse> response = restTemplate1.exchange(url, HttpMethod.GET, entity, BiliBiliChannelResponse.class);
         log.debug("getChannelPlaylist: url {}", url, response.getBody());
         List<BiliBiliChannelItem> list = new ArrayList<>();
@@ -2522,7 +2601,8 @@ public class BiliBiliService {
         return result;
     }
 
-    public MovieList search(String wd, String sort, String duration, int pg, boolean quick) {
+    public MovieList search(String wd, String sort, String duration, int pg, boolean quick, String client) {
+        BiliSession s = sessionOf(client);
         MovieList result = new MovieList();
         if (!appProperties.isSearchable()) {
             return result;
@@ -2539,8 +2619,8 @@ public class BiliBiliService {
             List<BiliBiliSearchResult.Video> videos = response.getBody().getData().getResult();
 
             long seconds = videos.stream().map(BiliBiliSearchResult.Video::getDuration).mapToLong(Utils::durationToSeconds).sum();
-            keyword = wd;
-            searchPage = pg - 1;
+            s.keyword = wd;
+            s.searchPage = pg - 1;
             MovieDetail movieDetail = new MovieDetail();
             movieDetail.setVod_id("search$" + wd + "$" + getType(sort) + "$" + (pg - 1));
             movieDetail.setVod_name(wd + "合集" + pg);
@@ -2551,7 +2631,7 @@ public class BiliBiliService {
             movieDetail.setVod_play_url(playUrl);
             movieDetail.setVod_content("共" + videos.size() + "个视频");
             movieDetail.setVod_remarks(Utils.secondsToDuration(seconds));
-            searchPlaylist = movieDetail;
+            s.searchPlaylist = movieDetail;
             result.getList().add(movieDetail);
 
             list.addAll(videos);
@@ -2573,8 +2653,8 @@ public class BiliBiliService {
             }
 
             long seconds = list.stream().map(BiliBiliSearchResult.Video::getDuration).mapToLong(Utils::durationToSeconds).sum();
-            keyword = wd;
-            searchPage = 0;
+            s.keyword = wd;
+            s.searchPage = 0;
             pages = (pages + 1) / 2;
             for (int i = 0; i < pages && !quick; i++) {
                 MovieDetail movieDetail = new MovieDetail();
@@ -2588,7 +2668,7 @@ public class BiliBiliService {
                     movieDetail.setVod_play_url(playUrl);
                     movieDetail.setVod_content("共" + list.size() + "个视频");
                     movieDetail.setVod_remarks(Utils.secondsToDuration(seconds));
-                    searchPlaylist = movieDetail;
+                    s.searchPlaylist = movieDetail;
                 }
                 result.getList().add(movieDetail);
             }

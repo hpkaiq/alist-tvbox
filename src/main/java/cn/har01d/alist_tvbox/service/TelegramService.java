@@ -103,6 +103,8 @@ public class TelegramService {
     private final ExecutorService executorService = Executors.newFixedThreadPool(Math.min(10, Runtime.getRuntime().availableProcessors() * 2));
     private final OkHttpClient httpClient = new OkHttpClient();
     private final LoadingCache<String, List<Message>> searchCache = Caffeine.newBuilder().expireAfterWrite(Duration.ofMinutes(15)).build(this::getFromChannel);
+    /** 共享缓存对象契约:返回的 MovieList/MovieDetail 被多请求复用,消费方要么只读、要么先拷贝再改写
+     *  (MediaLibraryController/pianDan toNavigationList 均为拷贝式)—— 就地 set 会跨请求污染缓存。 */
     private final Cache<String, MovieList> douban = Caffeine.newBuilder().expireAfterWrite(Duration.ofHours(1)).build();
     private final Cache<String, String> lastId = Caffeine.newBuilder().expireAfterWrite(Duration.ofHours(1)).build();
     private final Cache<String, MovieDetail> movies = Caffeine.newBuilder().maximumSize(200).expireAfterWrite(Duration.ofHours(2)).build();
@@ -768,7 +770,8 @@ public class TelegramService {
     }
 
     private MovieList getDoubanList(String type, String ac, String sort, Integer year, String genre, String region, int page, int size) {
-        String key = ac + "-" + type + "-" + page + "-" + StringUtils.defaultString(sort) + "-" + year
+        // key 含 size:用户可控 size(默认 30)不同值同 key 会互相污染,命中缓存返回错乱页大小
+        String key = ac + "-" + type + "-" + page + "-" + size + "-" + StringUtils.defaultString(sort) + "-" + year
                 + "-" + StringUtils.defaultString(genre) + "-" + StringUtils.defaultString(region);
         MovieList result = douban.getIfPresent(key);
         if (result != null) {
@@ -784,11 +787,11 @@ public class TelegramService {
         }
 
         if (type.startsWith("suggestion_")) {
-            return getDoubanItems(type, ac, page, size, region);
+            return getDoubanItems(type, ac, page, size, region, key);
         }
 
         if (type.startsWith("hot_")) {
-            return getDoubanItems(type, ac, page, size, region);
+            return getDoubanItems(type, ac, page, size, region, key);
         }
 
         result = new MovieList();
@@ -902,7 +905,8 @@ public class TelegramService {
 
         int total = (int) movieRepository.count();
         int count = size + size / 2;
-        int page = ThreadLocalRandom.current().nextInt(total / count);
+        // 空库(total=0)或 total<count 时 nextInt(0) 抛 IllegalArgumentException → 固定第 0 页
+        int page = total > count ? ThreadLocalRandom.current().nextInt(total / count) : 0;
         Collections.shuffle(fields);
         List<Sort.Order> orders = fields.stream().limit(3).map(e -> ThreadLocalRandom.current().nextBoolean() ? Sort.Order.asc(e) : Sort.Order.desc(e)).toList();
         Sort sort = Sort.by(orders);
@@ -939,8 +943,7 @@ public class TelegramService {
         return result;
     }
 
-    private MovieList getDoubanItems(String type, String ac, int page, int size, String region) {
-        String key = ac + "-" + type + "-" + page + "-" + StringUtils.defaultString(region);
+    private MovieList getDoubanItems(String type, String ac, int page, int size, String region, String cacheKey) {
         int start = (page - 1) * size;
         String url = "https://m.douban.com/rexxar/api/v2/subject/recent_hot/movie?limit=" + size + "&start=" + start;
         if (type.equals("hot_tv")) {
@@ -982,7 +985,7 @@ public class TelegramService {
         result.setTotal(total);
         result.setPagecount((total + size - 1) / size);
 
-        douban.put(key, result);
+        douban.put(cacheKey, result);
         log.debug("list result: {}", result);
         return result;
     }
@@ -997,7 +1000,7 @@ public class TelegramService {
     }
 
     private static MovieDetail getMovieDetail(JsonNode item) {
-        double score = item.get("rating").get("value").asDouble();
+        double score = item.path("rating").path("value").asDouble(0);
         MovieDetail movieDetail = new MovieDetail();
         String title = item.get("title").asText();
         Integer year = parseYear(item.path("year").asText(item.path("card_subtitle").asText("")));
@@ -1010,7 +1013,7 @@ public class TelegramService {
             movieDetail.setVod_id(PianDanService.subjectId(title, year));
         }
         movieDetail.setVod_name(title);
-        movieDetail.setVod_pic(item.get("pic").get("normal").asText());
+        movieDetail.setVod_pic(item.path("pic").path("normal").asText(""));
         if (score > 0) {
             movieDetail.setVod_remarks(String.valueOf(score));
         }
@@ -1357,7 +1360,9 @@ public class TelegramService {
         if (!api.endsWith("/search")) {
             api = api + "/search";
         }
-        String url = api + "?channels=" + channels + "&query=" + keyword + "&size=" + size + "&timeout=" + appProperties.getTgTimeout();
+        // keyword 硬拼 URL:含 & / # 的词会把 query 截断或注入参数,须编码
+        String url = api + "?channels=" + channels + "&query=" + URLEncoder.encode(keyword, StandardCharsets.UTF_8)
+                + "&size=" + size + "&timeout=" + appProperties.getTgTimeout();
         try {
             var response = restTemplate.getForObject(url, SearchResponse.class);
             return response.getMessages().stream().flatMap(this::parseMessage).toList();
@@ -1627,6 +1632,12 @@ public class TelegramService {
     }
 
     public TelegramChannel getChannelByName(String username) {
+        // 真查库:new 旧行为是每次 new 一条(id=count()),create() 反复调用同 username 会插重复行,
+        // id=count() 与 channels.json 显式 id 撞车时 save 变更新静默覆盖已有频道配置
+        TelegramChannel existing = telegramChannelRepository.findByUsername(username);
+        if (existing != null) {
+            return existing;
+        }
         TelegramChannel channel = new TelegramChannel();
         channel.setId(telegramChannelRepository.count());
         channel.setUsername(username);

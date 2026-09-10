@@ -642,7 +642,10 @@ public class SubscriptionService {
         }
         json = json.replace("VOD_URL", readHostAddress("/vod" + secret));
         json = json.replace("VOD1_URL", readHostAddress("/vod1" + secret));
-        json = json.replace("BILIBILI_URL", readHostAddress("/bilibili" + secret));
+        // B站 api URL 烤入一次性设备标识:token 是共享的(亲友同链),翻页会话按"下载配置的设备"隔离;
+        // query 参数形态 —— 个别客户端若拼接丢参,只是回落共享桶(软失败),协议无破坏
+        String biliDeviceKey = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        json = json.replace("BILIBILI_URL", readHostAddress("/bilibili" + secret) + "?client=" + biliDeviceKey);
         json = json.replace("YOUTUBE_URL", readHostAddress("/youtube" + secret));
         json = json.replace("EMBY_URL", readHostAddress("/emby" + secret));
         // 凭证注入按 token 归属:u- token 只注入本人账号凭证,全局 master 凭证不下发给普通用户
@@ -894,8 +897,11 @@ public class SubscriptionService {
     private void sortSites(Map<String, Object> config, String sort) {
         List<Map<String, String>> list = (List<Map<String, String>>) config.get("sites");
         if (StringUtils.isNotBlank(sort)) {
+            if (list == null) {
+                return;
+            }
             log.info("sort by filed {}", sort);
-            list.sort(Comparator.comparing(a -> a.get(sort)));
+            list.sort(Comparator.comparing(a -> String.valueOf(a.get(sort)), Comparator.nullsFirst(Comparator.naturalOrder())));
         } else {
             List<Map<String, Object>> sites = (List<Map<String, Object>>) config.get("sites");
             if (sites == null) {
@@ -1405,6 +1411,8 @@ public class SubscriptionService {
         // 配置里嵌入的 token 一律升级为凭证形态:spider 拿它调 /vod、tokenm 等,
         // 裸 u-{username} 可猜测,凭证明文下发只认带密钥形态
         String embedToken = token.startsWith(USER_TOKEN_PREFIX) ? secret : token;
+        // 启用的过滤器循环外取一次:逐插件调 buildPluginFilters 会 N 个插件 N 次同一全表查询
+        List<PluginFilter> enabledFilters = null;
         for (SubscriptionSourceService.SubscriptionSourceRef source : subscriptionSourceService.findEnabledSources()) {
             try {
                 if (source.builtin()) {
@@ -1444,8 +1452,11 @@ public class SubscriptionService {
                         // 自定义网页源(webhome/pages/*.html):csp_WebHome 形态,非 spider 插件站点
                         site = buildWebPageSite(source.plugin(), token, playbackToken);
                     } else {
+                        if (enabledFilters == null) {
+                            enabledFilters = pluginFilterRepository.findByEnabledTrueOrderBySortOrderAscIdAsc();
+                        }
                         site = buildPluginSite(source.plugin(), embedToken, secret,
-                                playbackToken, configUrl);
+                                playbackToken, configUrl, enabledFilters);
                     }
                     site.put("order", order);
                     String overrideKey = (String) site.get("key");
@@ -1811,7 +1822,8 @@ public class SubscriptionService {
     }
 
     private Map<String, Object> buildPluginSite(Plugin plugin, String token, String secret,
-                                                String playbackToken, String configUrl) throws JsonProcessingException {
+                                                String playbackToken, String configUrl,
+                                                List<PluginFilter> enabledFilters) throws JsonProcessingException {
         Map<String, Object> site = new HashMap<>();
         site.put("filterable", 1);
         site.put("quickSearch", 1);
@@ -1842,7 +1854,7 @@ public class SubscriptionService {
         map.put("playbackToken", playbackToken);
         map.put("playbackConfigUrl", configUrl);
         // 每个插件站点只下发与自己作用域匹配的过滤器
-        List<Map<String, Object>> filters = buildPluginFilters(plugin);
+        List<Map<String, Object>> filters = buildPluginFilters(plugin, enabledFilters);
         if (!filters.isEmpty()) {
             map.put("filters", filters);
         }
@@ -1852,11 +1864,11 @@ public class SubscriptionService {
         return site;
     }
 
-    private List<Map<String, Object>> buildPluginFilters(Plugin plugin) {
+    private List<Map<String, Object>> buildPluginFilters(Plugin plugin, List<PluginFilter> enabledFilters) {
         List<Map<String, Object>> filters = new ArrayList<>();
         String token = getCurrentOrFirstToken();
         String address = readHostAddress("");
-        for (PluginFilter filter : pluginFilterRepository.findByEnabledTrueOrderBySortOrderAscIdAsc()) {
+        for (PluginFilter filter : enabledFilters) {
             if (!isPluginFilterInScope(filter, plugin)) {
                 continue;
             }

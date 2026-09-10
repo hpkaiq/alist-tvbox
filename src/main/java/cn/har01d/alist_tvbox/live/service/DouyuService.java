@@ -1,5 +1,7 @@
 package cn.har01d.alist_tvbox.live.service;
 
+import org.apache.commons.lang3.StringUtils;
+import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.live.model.DouyuCategoryResponse;
 import cn.har01d.alist_tvbox.live.model.DouyuRoomResponse;
 import cn.har01d.alist_tvbox.live.model.DouyuRoomsResponse;
@@ -175,6 +177,9 @@ public class DouyuService implements LivePlatform {
     @Override
     public MovieList detail(String tid, String client) throws IOException {
         String[] parts = tid.split("\\$");
+        if (parts.length < 2) {
+            throw new BadRequestException("无效的直播间ID: " + tid);
+        }
         String id = parts[1];
         MovieList result = new MovieList();
         MovieDetail detail = new MovieDetail();
@@ -257,14 +262,29 @@ public class DouyuService implements LivePlatform {
 
         DouyuStreamResponse douyuStreamResponse = objectMapper.readValue(response.getBody(), DouyuStreamResponse.class);
         var stream = douyuStreamResponse.getData();
-        for (var cdn : stream.getCdnsWithName()) {
-            playFrom.add(cdn.getName());
+        // 未开播/签名失败返回错误 JSON 无 data:无流即不出线路(此前 getCdnsWithName 直接 NPE,detail 500)
+        if (stream == null || stream.getCdnsWithName() == null || stream.getCdnsWithName().isEmpty()) {
+            log.debug("douyu room {} has no stream data (offline or sign failed)", id);
+            return;
+        }
+        var cdns = stream.getCdnsWithName();
+        List<cn.har01d.alist_tvbox.live.model.DouyuLiveStream.BitRate> rates =
+                stream.getMultirates() != null ? stream.getMultirates() : java.util.Collections.emptyList();
+        // 每条线路取全清晰度:实测(2026-09-10)斗鱼已把每房 CDN 收敛到 1~2 条(hw-h5/hs-h5),
+        // 全档成本回到 4~10 次请求可接受;曾按「默认线路全档、其余单档」砍请求,CDN 收敛后
+        // 第二条线路的清晰度菜单价值 > 省下的几次请求,恢复全档
+        for (var cdn : cdns) {
             List<String> urls = new ArrayList<>();
-            for (var bitRate : stream.getMultirates()) {
-                url = getPlayUrl(id, dataUse, bitRate.getRate(), cdn.getCdn());
-                urls.add(bitRate.getName() + "$" + url);
+            for (var bitRate : rates) {
+                String playUrlItem = getPlayUrl(id, dataUse, bitRate.getRate(), cdn.getCdn());
+                if (StringUtils.isNotBlank(playUrlItem)) {
+                    urls.add(bitRate.getName() + "$" + playUrlItem);
+                }
             }
-            playUrl.add(String.join("#", urls));
+            if (!urls.isEmpty()) {
+                playFrom.add(cdn.getName());
+                playUrl.add(String.join("#", urls));
+            }
         }
 
         movieDetail.setVod_play_from(String.join("$$$", playFrom));
@@ -286,6 +306,10 @@ public class DouyuService implements LivePlatform {
         );
 
         ObjectNode data = (ObjectNode) response.getBody().get("data");
+        if (data == null || data.path("rtmp_url").isMissingNode() || data.path("rtmp_live").isMissingNode()) {
+            // 该清晰度无流(错误响应无 data):返回空串让调用方跳过此条目,不让整次 detail 崩掉
+            return "";
+        }
         String rtmpUrl = data.get("rtmp_url").asText();
         String rtmpLive = data.get("rtmp_live").asText();
         rtmpLive = StringEscapeUtils.unescapeHtml4(rtmpLive);

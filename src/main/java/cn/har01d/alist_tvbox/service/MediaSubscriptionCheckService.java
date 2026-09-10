@@ -162,12 +162,19 @@ public class MediaSubscriptionCheckService {
      * 英文词必须带词边界:百度分享错误 JSON 全量携带 {@code "expired_type":0} 字段(值 0 恰表示非过期),
      * 无边界 {@code expired} 会把会话过期(errno -9)误判死链,整源 RETIRED + 90 天黑名单(线上:
      * 分享在 App 里可正常访问,巡检列目录撞 -9 后主源被退役、订阅落 ERROR)。
+     * errno 数字支(-21/105)是 ASCII 兜底:百度死链错误 JSON 的 err_msg/show_msg 恒空或全
+     * \\uXXXX 转义,无中文词根可匹配(同 THROTTLE_ERROR 的 -19 教训);105 = 分享页 404
+     * (分享不存在,线上实证),-21 = 分享已取消,均为确定死链,旧驱动未翻译的裸 body 也能判死。
+     * 分类顺序保证 {@code "errno":-9} 先被 {@link #SESSION_EXPIRED_ERROR} 接走,不会落到这里。
      * 其余未识别错误一律按瞬时处理(见 {@link #classifyProbeFailure}) */
     private static final Pattern GONE_ERROR = Pattern.compile(
             "(?i)分享已?失效|链接错误|链接已?过期|提取码(错误|不正确)|密码(错误|不正确)|已取消|不存在|参数错误|"
-                    + "\\bobject not found\\b|\\bnot exist\\b|\\bexpired\\b|\\bcancel\\b|\\binvalid\\b");
+                    + "\\bobject not found\\b|\\bnot exist\\b|\\bexpired\\b|\\bcancel\\b|\\binvalid\\b"
+                    + "|errno\"?\\s*:\\s*(-21|105)");
     /** 百度分享会话票据过期(errno -9,sekey/BDCLND 失效,show_msg「提取码验证失败,请重试」):
-     * 瞬时态 —— PowerList 驱动清 Token 重验证即可自愈,分享、提取码与文件全部存活,绝不判死。 */
+     * 瞬时态 —— PowerList 驱动清 Token 重验证即可自愈。注意 -9 是<b>混合态</b>:分享页对已被
+     * 取消的分享同样返回 -9(线上实证「啊哦,你来晚了,分享的文件已经被取消了」),errno 单值
+     * 无法区分死活,故只归瞬时靠 streak 连击封顶兜底退役,绝不直接判死。 */
     private static final Pattern SESSION_EXPIRED_ERROR = Pattern.compile("(?i)errno\"?\\s*:\\s*-9|提取码验证失败");
 
     // ---------- 夸克分享游客存活验证(判死前的第二信源) ----------
@@ -204,7 +211,13 @@ public class MediaSubscriptionCheckService {
         if (!code.find()) {
             return null;
         }
-        int c = Integer.parseInt(code.group(1));
+        int c;
+        try {
+            c = Integer.parseInt(code.group(1));
+        } catch (NumberFormatException e) {
+            // 响应里 code 为超长数字等脏形态:无结论返回 null,别把整轮巡检炸进 ERROR
+            return null;
+        }
         if (c == 0 && body.contains("\"stoken\":\"")) {
             return Boolean.TRUE;
         }
@@ -342,6 +355,8 @@ public class MediaSubscriptionCheckService {
     private final MediaSubscriptionNotificationService notificationService;
 
     private final Set<Integer> inFlight = ConcurrentHashMap.newKeySet();
+    /** 跨订阅探测同一链接的互斥:temp share 按 link 全局一行,两订阅并发探测会互删对方正用的临时挂载(误判死+黑名单)。 */
+    private final Set<String> probingLinks = ConcurrentHashMap.newKeySet();
     /** 已删除订阅的取消标记(delete() 卸载/删行前第一时间打上):订阅创建即触发首轮巡检,
      * 搜索+挂载可达数分钟,期间删除若巡检不感知,会继续搜索、把已删剧的挂载重新建回 AList,
      * 尾部对 detached 实体的 save 更会把无 @Version 的整行 INSERT 复活(线上 #40)。 */
@@ -640,6 +655,10 @@ public class MediaSubscriptionCheckService {
         for (MediaSubscription subscription : due) {
             int id = subscription.getId();
             executor.submit(() -> {
+                // 与 check 同款互斥:元数据拉取(数秒)期间并发巡检尾部 save,锁外整行 save 会互相回滚覆盖
+                if (!tryLock(id)) {
+                    return;
+                }
                 try {
                     // 任务内取新实体:排队等待期间(巡检长轮可达数分钟)旧实体再整行 save
                     // 会把并发巡检刚写的集数/调度字段回滚覆盖
@@ -654,6 +673,8 @@ public class MediaSubscriptionCheckService {
                     subscriptionRepository.save(current);
                 } catch (Exception e) {
                     log.warn("refresh airing metadata {} failed: {}", id, e.getMessage());
+                } finally {
+                    inFlight.remove(id);
                 }
             });
         }
@@ -934,6 +955,8 @@ public class MediaSubscriptionCheckService {
         lastPoolSearch.remove(subscriptionId);
         mainDriveSearchTime.remove(subscriptionId);
         driveLineKickTime.remove(subscriptionId);
+        magnetCooldown.remove(subscriptionId);
+        magnetCandidates.remove(subscriptionId);
         preheatAheadTime.remove(subscriptionId);
         aheadRescueTime.remove(subscriptionId);
         if (resourceIds != null) {
@@ -967,7 +990,14 @@ public class MediaSubscriptionCheckService {
         if (subscription == null || subscription.getUid() != uid) {
             throw new cn.har01d.alist_tvbox.exception.BadRequestException("订阅不存在: " + id);
         }
-        executor.submit(() -> check(id));
+        executor.submit(() -> {
+            try {
+                check(id);
+            } catch (Exception e) {
+                // check 主体有 catch,但尾部 saveUnlessDeleted 再抛(DB 抖动)会被 Future 静默吞掉且无日志
+                log.warn("manual check {} failed: {}", id, e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -989,6 +1019,11 @@ public class MediaSubscriptionCheckService {
         preheatAheadTime.put(subscriptionId, now);
         try {
             executor.submit(() -> {
+                // 与巡检/换源互斥:markVerified/retireResource 整行 save 与持锁 doCheck 的 syncInventory
+                // 并发写同一批集源行会 last-write-wins 互滚;抢不到锁跳过本轮(下个播放窗口再来)
+                if (!tryLock(subscriptionId)) {
+                    return;
+                }
                 try {
                     MediaSubscription subscription = subscriptionRepository.findById(subscriptionId).orElse(null);
                     if (subscription == null || subscription.getUid() != uid) {
@@ -1000,6 +1035,7 @@ public class MediaSubscriptionCheckService {
                     log.warn("preheat ahead for subscription {} failed: {}", subscriptionId, e.getMessage());
                 } finally {
                     preheatAheadInFlight.remove(subscriptionId);
+                    inFlight.remove(subscriptionId);
                 }
             });
         } catch (Exception e) {
@@ -1204,10 +1240,12 @@ public class MediaSubscriptionCheckService {
             try {
                 // 锁内取新实体:排队期间 doCheck/手动刷新可能已整行保存,旧实体再 save 会回滚覆盖
                 MediaSubscription current = subscriptionRepository.findById(id).orElse(null);
-                if (current == null) {
+                // resource 同理锁内重取:排队期间并发巡检写过该行(pinned/score/state),旧实体再 save 会回滚
+                MediaSubscriptionResource fresh = resourceRepository.findById(resourceId).orElse(null);
+                if (current == null || fresh == null) {
                     return;
                 }
-                activate(current, resource);
+                activate(current, fresh);
                 if (stopIfDeleted(id)) {
                     return;
                 }
@@ -1258,10 +1296,12 @@ public class MediaSubscriptionCheckService {
             try {
                 // 锁内取新实体:排队期间 doCheck/手动刷新可能已整行保存,旧实体再 save 会回滚覆盖
                 MediaSubscription current = subscriptionRepository.findById(id).orElse(null);
-                if (current == null) {
+                // resource 同理锁内重取:排队期间并发巡检写过该行,旧实体再 save 会回滚这些字段
+                MediaSubscriptionResource fresh = resourceRepository.findById(resourceId).orElse(null);
+                if (current == null || fresh == null) {
                     return;
                 }
-                mountCandidate(current, resource);
+                mountCandidate(current, fresh);
             } finally {
                 inFlight.remove(id);
             }
@@ -1825,6 +1865,11 @@ public class MediaSubscriptionCheckService {
             throw new cn.har01d.alist_tvbox.exception.BadRequestException("订阅不存在: " + id);
         }
         executor.submit(() -> {
+            // 与 check 同款互斥:外网元数据拉取期间并发巡检尾部 save,锁外整行 save 会互相回滚覆盖
+            if (!tryLock(id)) {
+                log.debug("refresh metadata {} skipped: check in flight", id);
+                return;
+            }
             try {
                 MediaSubscription current = subscriptionRepository.findById(id).orElse(null);
                 if (current == null || StringUtils.isBlank(current.getMetaProvider())
@@ -1845,6 +1890,8 @@ public class MediaSubscriptionCheckService {
                 log.info("media subscription {} metadata refreshed by user", id);
             } catch (Exception e) {
                 log.warn("refresh metadata {} failed: {}", id, e.getMessage());
+            } finally {
+                inFlight.remove(id);
             }
         });
     }
@@ -1872,6 +1919,19 @@ public class MediaSubscriptionCheckService {
 
     /** 轻量检查核心:刷新元数据 → 完结条件达标即落完结 → 官方已播 vs 本地已有 → 结论进事件流并返回文本。 */
     private String checkUpdateInternal(int id) {
+        // 与 check 同款互斥:本路径(checkUpdateAsync 异步 + checkUpdateNow HTTP 线程同步)会整行 save
+        // 同一无版本实体,与持锁巡检并发写互相回滚(status 翻转/集源字段被旧快照覆盖)
+        if (!tryLock(id)) {
+            return "检查更新未执行:完整巡检正在进行中,请稍后再试";
+        }
+        try {
+            return checkUpdateLocked(id);
+        } finally {
+            inFlight.remove(id);
+        }
+    }
+
+    private String checkUpdateLocked(int id) {
         try {
             MediaSubscription current = subscriptionRepository.findById(id).orElse(null);
             if (current == null) {
@@ -4365,6 +4425,7 @@ public class MediaSubscriptionCheckService {
         EpisodeSizePolicy policy = episodeSizePolicy(subscription);
         MediaSubscriptionPoolFilter global = poolFilterFor(subscription);
         MediaSubscriptionFilter filter = parseFilter(subscription);
+        int attempts = 0;
         for (cn.har01d.alist_tvbox.dto.tg.Message message : magnets) {
             if (message == null || !isOfflineLink(message.getLink())) {
                 continue;
@@ -4377,6 +4438,12 @@ public class MediaSubscriptionCheckService {
             if (!names.isEmpty() && !matchesTitle(names, title)) {
                 continue;
             }
+            // 每候选提交同步等待最长 30s:全部被网盘拒绝时逐个试会把共享 check 池阻塞数分钟 —— 尝试上限兜底
+            if (attempts >= 3) {
+                log.info("magnet submit attempts reached cap for subscription {} episode {}", subscription.getId(), episode);
+                return false;
+            }
+            attempts++;
             // 磁力解析:文件列表级预筛(真实体积+集号命中+文件名排除词);失败降级 dn 名口径
             cn.har01d.alist_tvbox.service.magnet.MagnetResolver.MagnetInfo info =
                     magnetResolver == null ? null : magnetResolver.resolve(message.getLink()).orElse(null);
@@ -4746,9 +4813,18 @@ public class MediaSubscriptionCheckService {
     /** 主网盘:订阅级 main_drives 覆盖 > 全局 Setting msub_main_drives(均为逗号分隔分享类型码,取前 2)。
      * 巡检保证该盘完整剧集覆盖,播放列表固定出该盘线路。subscription 为 null 时只看全局(preview 无订阅上下文)。 */
     List<String> mainDrives(MediaSubscription subscription) {
+        return doMainDrives(subscription, settingRepository.findById(MSUB_MAIN_DRIVES).map(s -> s.getValue()).orElse(""));
+    }
+
+    /** 批量装配版:globalRaw 请求内取一次传入,消逐订阅 Setting 读。 */
+    List<String> mainDrives(MediaSubscription subscription, String globalMainDrivesRaw) {
+        return doMainDrives(subscription, globalMainDrivesRaw);
+    }
+
+    private List<String> doMainDrives(MediaSubscription subscription, String globalRaw) {
         String raw = subscription == null ? null : subscription.getMainDrives();
         if (StringUtils.isBlank(raw)) {
-            raw = settingRepository.findById(MSUB_MAIN_DRIVES).map(s -> s.getValue()).orElse("");
+            raw = globalRaw;
         }
         if (StringUtils.isBlank(raw)) {
             return List.of();
@@ -4784,8 +4860,17 @@ public class MediaSubscriptionCheckService {
     /** 候选盘白名单:主网盘 ∪ 扩展网盘。空 = 主/扩展均未配置,不限盘(兼容旧行为);
      * 配置了主网盘后白名单以外的盘不再入池/探测/换源/补线 —— 默认只有主网盘的源。 */
     Set<String> allowedCandidateDrives(MediaSubscription subscription) {
-        Set<String> allowed = new java.util.LinkedHashSet<>(mainDrives(subscription));
-        allowed.addAll(extendedDrives());
+        return doAllowedCandidateDrives(mainDrives(subscription), extendedDrives());
+    }
+
+    /** 批量装配版:extended/globalRaw 请求内取一次传入,消逐订阅 Setting 读。 */
+    Set<String> allowedCandidateDrives(MediaSubscription subscription, List<String> extended, String globalMainDrivesRaw) {
+        return doAllowedCandidateDrives(mainDrives(subscription, globalMainDrivesRaw), extended);
+    }
+
+    private Set<String> doAllowedCandidateDrives(List<String> main, List<String> extended) {
+        Set<String> allowed = new java.util.LinkedHashSet<>(main);
+        allowed.addAll(extended);
         return allowed;
     }
 
@@ -5168,6 +5253,19 @@ public class MediaSubscriptionCheckService {
      * 列得出 ≠ 播得了:临时挂载窗口内抽一行做字节级取链,链死(过期/假页)以「链接已过期」上抛,
      * 按失效退役+黑名单 —— 不再把"分享页活着但文件链已和谐"的资源挂上来占名额,等下轮采样才发现。 */
     void probeShare(MediaSubscription subscription, MediaSubscriptionResource resource) {
+        // 跨订阅互斥:temp share 按 link 全局一行,并发探测同一链接时 finally 互删对方正用的临时挂载,
+        // 列目录中途报"不存在"会被判 GONE_ERROR 误退役+黑名单 —— 后到者直接按瞬时冲突上抛,下轮再探
+        if (!probingLinks.add(resource.getLink())) {
+            throw new IllegalStateException("候选探测冲突(同链接另一订阅正在探测):" + resource.getTitle());
+        }
+        try {
+            doProbeShare(subscription, resource);
+        } finally {
+            probingLinks.remove(resource.getLink());
+        }
+    }
+
+    void doProbeShare(MediaSubscription subscription, MediaSubscriptionResource resource) {
         ShareLink shareLink = new ShareLink();
         shareLink.setLink(resource.getLink());
         shareLink.setCode(StringUtils.defaultString(resource.getPassword()));
@@ -5696,6 +5794,13 @@ public class MediaSubscriptionCheckService {
         String mountPath = subscription.getMountPath();
         Share old = shareRepository.findByPath(mountPath);
         if (old != null) {
+            // FOLLOW 共享挂载:同路径背后可能是其它订阅正在看的主源,无守卫直删会炸掉对方播放;
+            // 仍被引用时跳过本次换源(本订阅留在现源,下轮再试),与 unmountShareIfUnused 同款引用判定
+            if (subscriptionRepository.existsByShareIdAndIdNot(old.getId(), subscription.getId())
+                    || resourceRepository.existsByShareIdAndSubscriptionIdNot(old.getId(), subscription.getId())) {
+                log.info("skip activate: mount {} still referenced by another subscription", mountPath);
+                throw new IllegalStateException("挂载被其它订阅共用,跳过换源:" + mountPath);
+            }
             shareService.deleteShare(old.getId());
         }
         ShareLink shareLink = new ShareLink();
@@ -6401,13 +6506,17 @@ public class MediaSubscriptionCheckService {
      * 段内含技术信号才剔;写了显式集号({@code [第05集 1080P]})或纯内容段({@code [01]})保留。
      * fixName 剥公共后缀会把 {@code GB].mkv} 吃掉留下未闭合尾段({@code ...tv_6.72}),同样按信号剔到 '[' 为止。
      */
+    /** 列目录热路径(每文件名×每次列举)调用:预编译,别每次重新 compile。 */
+    private static final java.util.regex.Pattern TECH_BRACKETS =
+            java.util.regex.Pattern.compile("[\\[【]([^\\[\\]【】]*)[\\]】]?");
+
     static String stripTechBrackets(String name) {
         if (name == null || (name.indexOf('[') < 0 && name.indexOf('【') < 0)) {
             return name;
         }
         StringBuilder result = new StringBuilder();
         int last = 0;
-        Matcher matcher = java.util.regex.Pattern.compile("[\\[【]([^\\[\\]【】]*)[\\]】]?").matcher(name);
+        Matcher matcher = TECH_BRACKETS.matcher(name);
         while (matcher.find()) {
             result.append(name, last, matcher.start());
             if (!isTechSegment(matcher.group(1))) {
@@ -6598,7 +6707,11 @@ public class MediaSubscriptionCheckService {
             log.info("{} search skipped for [{}] (source backoff)", source, keyword);
             return CompletableFuture.completedFuture(List.of());
         }
+        // 超时从提交起算:并发巡检×多关键词补搜时共享池排队深,排队中的源未发一包即超时 ——
+        // 排队超时不该记源失败(误伤源信誉退避),只有真正开始执行后到点才算源超时
+        java.util.concurrent.atomic.AtomicBoolean executionStarted = new java.util.concurrent.atomic.AtomicBoolean(false);
         return CompletableFuture.<List<Message>>supplyAsync(() -> {
+            executionStarted.set(true);
             try {
                 List<Message> messages = task.get();
                 if (respectBackoff && searchSourceThrottle != null) {
@@ -6615,12 +6728,16 @@ public class MediaSubscriptionCheckService {
         }, searchExecutor)
                 .orTimeout(90, TimeUnit.SECONDS)
                 .exceptionally(e -> {
-                    // 90s 硬顶到点(源内部超时失效):按超时记退避;底层任务迟到返回的成功会被
-                    // recordSuccess 抵消一次计数 —— 罕见且只影响连击数,可接受
-                    if (respectBackoff && searchSourceThrottle != null) {
-                        searchSourceThrottle.recordFailure(source, e);
+                    // 90s 硬顶到点(源内部超时失效):执行中到点按超时记退避,排队中被掐不记;
+                    // 底层任务迟到返回的成功会被 recordSuccess 抵消一次计数 —— 罕见且只影响连击数,可接受
+                    if (executionStarted.get()) {
+                        if (respectBackoff && searchSourceThrottle != null) {
+                            searchSourceThrottle.recordFailure(source, e);
+                        }
+                        log.warn("{} search timed out for [{}] (execution)", source, keyword);
+                    } else {
+                        log.info("{} search timed out while queued for [{}] (no failure recorded)", source, keyword);
                     }
-                    log.warn("{} search timed out for [{}]", source, keyword);
                     return List.<Message>of();
                 });
     }
@@ -7295,8 +7412,17 @@ public class MediaSubscriptionCheckService {
                 || subscription.getCurrentEpisodes() == null || subscription.getCurrentEpisodes() < expected;
     }
 
-    /** 系统已配置的网盘账号类型集合(账号全局,与订阅归属用户无关)。DriverType 枚举 → 分享类型码。 */
+    /** 系统已配置的网盘账号类型集合(账号全局,与订阅归属用户无关)。DriverType 枚举 → 分享类型码。
+     *  60s 短缓存:score() 每条搜索消息都要这份集合,无缓存即每次 2×findAll+Setting 读(百条结果=数百次冗余查询)。 */
+    private volatile long accountTypesCacheTime;
+    private volatile Set<Integer> accountTypesCache;
+
     private Set<Integer> driveAccountTypes() {
+        long now = System.currentTimeMillis();
+        Set<Integer> cached = accountTypesCache;
+        if (cached != null && now - accountTypesCacheTime < 60_000) {
+            return cached;
+        }
         Set<Integer> types = new java.util.HashSet<>();
         try {
             driverAccountRepository.findAll().forEach(account -> {
@@ -7308,6 +7434,8 @@ public class MediaSubscriptionCheckService {
         } catch (Exception e) {
             log.debug("load accounts failed: {}", e.getMessage());
         }
+        accountTypesCache = java.util.Collections.unmodifiableSet(types);
+        accountTypesCacheTime = now;
         return types;
     }
 

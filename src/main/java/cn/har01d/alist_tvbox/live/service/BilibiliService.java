@@ -1,5 +1,6 @@
 package cn.har01d.alist_tvbox.live.service;
 
+import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
@@ -30,6 +31,7 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
 import java.time.LocalDate;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -48,8 +50,8 @@ import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 public class BilibiliService implements LivePlatform {
     /** 推荐流正常至少返回 10+ 条,低于该阈值视为源质量不足,继续尝试兜底链。 */
     private static final int MIN_RECOMMEND_ROOMS = 10;
-    private final Map<String, String> userMap = new HashMap<>();
-    private final Map<String, List<BilibiliCategory>> categoryMap = new HashMap<>();
+    private final Map<String, String> userMap = new ConcurrentHashMap<>();
+    private final Map<String, List<BilibiliCategory>> categoryMap = new ConcurrentHashMap<>();
     private final RestTemplate restTemplate;
     private final AppProperties appProperties;
     private final SettingRepository settingRepository;
@@ -244,7 +246,13 @@ public class BilibiliService implements LivePlatform {
             }
 
             String id = parts[1];
-            for (var item : categoryMap.get(id)) {
+            // 未知/失效分类 id:get 返 null 直接遍历 NPE —— 回退构造一次,仍无则空列表
+            List<BilibiliCategory> items = categoryMap.get(id);
+            if (items == null) {
+                category();
+                items = categoryMap.getOrDefault(id, List.of());
+            }
+            for (var item : items) {
                 MovieDetail detail = new MovieDetail();
                 detail.setVod_id(tid + "-" + item.getId());
                 detail.setVod_name(item.getName());
@@ -376,6 +384,9 @@ public class BilibiliService implements LivePlatform {
     @Override
     public MovieList detail(String tid, String client) throws IOException {
         String[] parts = tid.split("\\$");
+        if (parts.length < 2) {
+            throw new BadRequestException("无效的直播间ID: " + tid);
+        }
         String id = parts[1];
         MovieList result = new MovieList();
         // 关注刷新会对这两个接口产生持续请求,带上 buvid3/Referer(与 home 一致),避免裸请求被游客风控(-352)

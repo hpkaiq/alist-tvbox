@@ -120,10 +120,10 @@ public class KuafuSearchService {
                 SiteSearchSupport.setting(settingRepository, HOST_SETTING), DEFAULT_HOST);
         String cookie = SiteSearchSupport.setting(settingRepository, COOKIE_SETTING).trim();
         long deadline = System.currentTimeMillis()
-                + appProperties.getSubscription().getKuafuTimeoutSeconds() * 1000L;
+                + Math.max(5, appProperties.getSubscription().getKuafuTimeoutSeconds()) * 1000L;
         try {
             List<Card> cards = parseCards(getHtml(host, host + "/search-"
-                    + URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8) + "-1.htm", cookie));
+                    + URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8).replace("+", "%20") + "-1.htm", cookie));
             List<Message> result = new ArrayList<>();
             Set<String> seen = new HashSet<>();
             int details = 0;
@@ -167,8 +167,10 @@ public class KuafuSearchService {
             log.info("Kuafu search {} get {} results", keyword, result.size());
             return result;
         } catch (Exception e) {
+            // 上抛而非吞掉空表:聚合层 searchAsync 捕获后记 SearchSourceThrottle 退避并返空;
+            // 吞掉则死站被 recordSuccess 清零连击,退避闸门对站点源永不生效
             log.warn("kuafu search [{}] failed: {}", keyword, e.getMessage());
-            return List.of();
+            throw e instanceof RuntimeException runtimeException ? runtimeException : new IllegalStateException(e);
         }
     }
 

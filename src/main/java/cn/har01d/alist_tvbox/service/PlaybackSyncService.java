@@ -106,8 +106,12 @@ public class PlaybackSyncService {
         }
         PlaybackToken pt = tokenRepository.findByToken(token).orElse(null);
         if (pt != null) {
-            pt.setLastUsedAt(System.currentTimeMillis());
-            tokenRepository.save(pt);
+            // 采样写 lastUsedAt:进度 tick 秒级高频,每次校验都 UPDATE 是写放大;5 分钟一跳足够观测活性
+            long now = System.currentTimeMillis();
+            if (now - pt.getLastUsedAt() > 300_000) {
+                pt.setLastUsedAt(now);
+                tokenRepository.save(pt);
+            }
             return new TokenIdentity(pt.getUid(), pt.getSyncScope());
         }
         try {
@@ -140,6 +144,8 @@ public class PlaybackSyncService {
                 applyRecord(id, record, null, null);
             }
         }
+        // 每 tick 全量拉取看着重,但 trim 恒把表压在 ~SYNC_HISTORY_LIMIT 量级,扫描有界;
+        // 计数触发会让「单批灌 151 条裁到 100」的窗口语义破坏(测试即契约),保持逐次 trim
         trimHistory(id.uid(), id.syncScope());
     }
 

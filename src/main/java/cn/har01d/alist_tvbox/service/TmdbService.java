@@ -50,6 +50,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.time.Duration;
 
 import static cn.har01d.alist_tvbox.util.Constants.TMDB_API_KEY;
 
@@ -73,7 +74,8 @@ public class TmdbService {
     );
     private Map<String, String> countryNames = new HashMap<>();
 
-    private long lastRequestTime;
+    private volatile long lastRequestTime;
+    private final Object rateLimitLock = new Object();
     private final ThreadLocal<Integer> siteId = ThreadLocal.withInitial(() -> 1);
 
     public TmdbService(TmdbRepository tmdbRepository,
@@ -89,7 +91,7 @@ public class TmdbService {
         this.metaRepository = metaRepository;
         this.siteService = siteService;
         this.taskService = taskService;
-        this.restTemplate = builder.build();
+        this.restTemplate = builder.connectTimeout(Duration.ofSeconds(10)).readTimeout(Duration.ofSeconds(30)).build();
         this.objectMapper = objectMapper;
         this.tmdbEndpoint = tmdbEndpoint;
     }
@@ -150,7 +152,7 @@ public class TmdbService {
     }
 
     public void sync() {
-        var page = metaRepository.findAll(PageRequest.of(1, 1, Sort.Direction.DESC, "id"));
+        var page = metaRepository.findAll(PageRequest.of(0, 1, Sort.Direction.DESC, "id"));
         if (page.hasContent() && page.getContent().get(0).getId() < 500000) {
             new Thread(this::syncMeta).start();
         }
@@ -245,7 +247,7 @@ public class TmdbService {
                 db.setYear(movie.getYear());
                 db.setName(movie.getName());
                 if (StringUtils.isNotBlank(movie.getDbScore())) {
-                    db.setScore((int) (Double.parseDouble(movie.getDbScore()) * 10));
+                    db.setScore((int) (parseScoreSafe(movie.getDbScore()) * 10));
                 }
                 metaRepository.save(db);
                 log.info("update TMDB meta {}", db.getId());
@@ -601,7 +603,7 @@ public class TmdbService {
         meta.setYear(movie.getYear());
         meta.setName(movie.getName());
         if (StringUtils.isNotBlank(movie.getScore())) {
-            meta.setScore((int) (Double.parseDouble(movie.getScore()) * 10));
+            meta.setScore((int) (parseScoreSafe(movie.getScore()) * 10));
         }
     }
 
@@ -709,6 +711,30 @@ public class TmdbService {
         return search(type, name, Objects.toString(year, ""), match);
     }
 
+    /** 库内评分可能是占位符等非数值:直接 parseDouble 会中断删除/绑定流程。 */
+    private static double parseScoreSafe(String value) {
+        if (StringUtils.isBlank(value)) {
+            return 0;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** 全局限流:锁内等待并写回醒来后的真实时刻(旧实现记 sleep 前时刻,两请求实际相隔 1ms 速率翻倍,且无锁并发穿透)。 */
+    private void rateLimitWait() {
+        synchronized (rateLimitLock) {
+            long now = System.currentTimeMillis();
+            if (!log.isDebugEnabled() && TMDB_API_KEY.equals(tmdbEndpoint.apiKey()) && now - lastRequestTime < rateLimit) {
+                sleep(lastRequestTime + rateLimit - now);
+                now = System.currentTimeMillis();
+            }
+            lastRequestTime = now;
+        }
+    }
+
     private void sleep(long time) {
         try {
             Thread.sleep(time);
@@ -729,17 +755,14 @@ public class TmdbService {
         String url = UriComponentsBuilder.fromUriString(tmdbEndpoint.apiHost() + "/3/search/" + type)
                 .queryParam("query", name)
                 .queryParam("language", "zh-CN")
-                .queryParam("year", year)
+                // tv 搜索 TMDB 只认 first_air_date_year,传 year 会被静默忽略致年份消歧失效
+                .queryParam("tv".equals(type) ? "first_air_date_year" : "year", year)
                 .build()
                 .encode()
                 .toUriString();
-        long now = System.currentTimeMillis();
-        if (!log.isDebugEnabled() && TMDB_API_KEY.equals(tmdbEndpoint.apiKey()) && now - lastRequestTime < rateLimit) {
-            sleep(lastRequestTime + rateLimit - now);
-        }
+        rateLimitWait();
         log.debug("search: {}", url);
         TmdbList list = tmdbGet(url, TmdbList.class);
-        lastRequestTime = now;
         if (list != null && list.getResults() != null) {
             log.debug("get {} reasults", list.getResults().size());
             for (TmdbDto dto : list.getResults()) {
@@ -769,13 +792,9 @@ public class TmdbService {
                 .build()
                 .encode()
                 .toUriString();
-        long now = System.currentTimeMillis();
-        if (!log.isDebugEnabled() && TMDB_API_KEY.equals(tmdbEndpoint.apiKey()) && now - lastRequestTime < rateLimit) {
-            sleep(lastRequestTime + rateLimit - now);
-        }
+        rateLimitWait();
         log.debug("getDetails: {}", url);
         TmdbDto dto = tmdbGet(url, TmdbDto.class);
-        lastRequestTime = now;
         log.debug("getDetails: {} {} {}", type, id, dto);
         Tmdb tmdb = new Tmdb();
         tmdb.setType(type);
