@@ -230,6 +230,10 @@
             当前离线下载: {{ offlineAccountLabel }}
           </span>
         </el-form-item>
+        <el-form-item v-if="form.mode !== 'TRANSFER'" label="115自有分享">
+          <el-switch v-model="form.selfShare"/>
+          <span class="sub-text" style="margin-left:8px">可看集转存到自有115盘建永久分享快照后删源释放空间,上游失效不影响已追集数;需 cookie 版115账号,单批转存瞬时占盘(空间大再开);超过{{ globalSelfShareLimit === 0 ? '不限(0)' : globalSelfShareLimit + '集' }}的长番自动跳过;与转存模式互斥</span>
+        </el-form-item>
         <el-form-item label="巡检周期(时)">
           <el-input-number v-model="form.checkIntervalHours" :min="1" :max="168"/>
           <span class="sub-text" style="margin-left:8px">绑定元数据后按播出日程自动调度</span>
@@ -518,6 +522,7 @@
           </el-button>
           <el-button size="small" @click="checkFromDetail">检查更新</el-button>
           <el-button size="small" type="primary" plain @click="openManualMagnet">磁力补缺</el-button>
+          <el-button v-if="current?.selfShare" size="small" plain @click="selfShareNow(current)">固化分享</el-button>
           <el-button v-if="current?.status === 'ENDED' && hasNextSeason" size="small" type="warning" plain
                      @click="current && subscribeNextSeason(current)">下一季</el-button>
           <el-button v-if="detailData?.subscription?.mountPath" size="small" link type="primary"
@@ -675,6 +680,14 @@
                 <el-option v-for="drive in driveOptions" :key="drive.value" :label="driveLabel(drive)" :value="drive.value"/>
               </el-select>
               <span class="sub-text">主网盘以外允许进候选池的网盘;不配置则候选/补缺/分盘线路只有主网盘的源(主网盘也未配置时才不限盘)</span>
+            </el-form-item>
+            <el-form-item v-if="store.admin" label="115自有分享">
+              <el-switch v-model="notifyForm.selfShareEnabled"/>
+              <span class="sub-text">总闸(默认关):开启后订阅级打了开关的追剧把可看集转存到自有 115 盘建永久分享快照后删源释放空间;需 cookie 版 115 账号,单批转存瞬时占盘,空间大的用户才适合</span>
+            </el-form-item>
+            <el-form-item v-if="store.admin" label="自有分享集数上限">
+              <el-input-number v-model="notifyForm.selfShareMaxEpisodes" :min="0" :max="5000"/>
+              <span class="sub-text">集数规模(官方总集数与可看集数取大)超过上限的剧不启用自有分享——长番分享数会随更新无限增长且首批占盘过大;已有批次照常供播;0 = 不限</span>
             </el-form-item>
             <el-form-item label="Bot Token">
               <el-input v-model="notifyForm.botToken" placeholder="123456:ABC-...,留空关闭通知"/>
@@ -1072,6 +1085,7 @@ interface SubscriptionDto {
   mountPath: string | null
   crossDrive: boolean
   magnetOffline: boolean
+  selfShare: boolean
   filter: Filter | null
 }
 
@@ -1214,6 +1228,20 @@ const loadGlobalMainDrives = () => {
     const raw = (response.data || {})['msub_main_drives'] || ''
     globalMainDrives.value = raw.split(',').map((v: string) => parseInt(v.trim()))
         .filter((v: number) => v > 0).slice(0, 2)
+  }).catch(() => {
+  })
+}
+
+// 115 自有分享集数上限的展示值(订阅表单提示与实际配置一致;拉不到回落默认 200)
+const globalSelfShareLimit = ref(200)
+
+const loadGlobalSelfShareLimit = () => {
+  axios.get('/api/settings').then(response => {
+    const raw = (response.data || {})['msub_self_share_max_episodes'] || ''
+    const value = parseInt(raw)
+    if (!isNaN(value)) {
+      globalSelfShareLimit.value = value
+    }
   }).catch(() => {
   })
 }
@@ -1397,6 +1425,8 @@ const notifyForm = ref({
   tmdbApiKey: '',
   tmdbApiHost: '',
   vipAccounts: [] as number[],
+  selfShareEnabled: false,
+  selfShareMaxEpisodes: 200,
   mainDrives: [] as number[],
   extendedDrives: [] as number[],
   poolMinQuality: '',
@@ -1510,6 +1540,7 @@ const navDetailSubscribe = () => {
 onMounted(() => {
   loadAll()
   loadGlobalMainDrives()
+  loadGlobalSelfShareLimit()
   loadGlobalPoolFilter()
   axios.get('/api/pan/accounts').then(response => {
     accounts.value = response.data || []
@@ -1669,6 +1700,7 @@ const handleAdd = () => {
     accountIds: [] as string[],
     crossDrive: false,
     magnetOffline: false,
+    selfShare: false,
     checkIntervalHours: 6,
     customAirClock: null,
     airWeekdays: [] as number[],
@@ -1708,6 +1740,7 @@ const handleEdit = (row: SubscriptionDto) => {
     accountIds: row.accountIds?.length ? row.accountIds : (row.accountId ? ['pan:' + row.accountId] : []),
     crossDrive: !!row.crossDrive,
     magnetOffline: !!row.magnetOffline,
+    selfShare: !!row.selfShare,
     checkIntervalHours: row.checkIntervalHours ?? 6,
     customAirClock: row.customAirClock ?? null,
     airWeekdays: row.airWeekdays || [],
@@ -1813,6 +1846,7 @@ const buildBody = () => ({
   accountIds: form.value.accountIds,
   crossDrive: form.value.crossDrive,
   magnetOffline: form.value.magnetOffline,
+    selfShare: form.value.selfShare,
   checkIntervalHours: form.value.checkIntervalHours,
   customAirClock: form.value.customAirClock || '',
   airWeekdays: [...new Set(form.value.airWeekdays || [])],
@@ -2326,6 +2360,17 @@ const checkFromDetail = () => {
   })
 }
 
+/** 固化分享(115 自有分享手动批次):可看集转存自有 115 盘建永久分享后删源,结果消息回显 */
+const selfShareNow = (row: SubscriptionDto) => {
+  axios.post(`/api/media-subscriptions/${row.id}/self-share`).then((response) => {
+    ElMessage.success(String(response.data?.message || '完成'))
+    schedule(() => {
+      reloadDetail()
+      loadAll()
+    }, 3000)
+  })
+}
+
 const showEvents = (row: SubscriptionDto) => {
   current.value = row
   eventsVisible.value = true
@@ -2472,6 +2517,8 @@ const openNotify = () => {
     notifyForm.value.magnetTotalQuota = parseInt(settings['msub_magnet_total_quota'] || '200') || 200
     notifyForm.value.vipAccounts = (settings['msub_vip_accounts'] || '')
         .split(',').map((v: string) => parseInt(v.trim())).filter((v: number) => v > 0)
+    notifyForm.value.selfShareEnabled = (settings['msub_self_share_enabled'] || '') === 'true'
+    notifyForm.value.selfShareMaxEpisodes = parseInt(settings['msub_self_share_max_episodes'] || '200') || 200
     notifyForm.value.mainDrives = (settings['msub_main_drives'] || '')
         .split(',').map((v: string) => parseInt(v.trim())).filter((v: number) => v > 0).slice(0, 2)
     notifyForm.value.extendedDrives = (settings['msub_extended_drives'] || '')
@@ -2553,6 +2600,8 @@ const saveNotify = () => {
     axios.post('/api/settings', {name: 'msub_magnet_subscription_quota', value: String(notifyForm.value.magnetSubscriptionQuota)}),
     axios.post('/api/settings', {name: 'msub_magnet_total_quota', value: String(notifyForm.value.magnetTotalQuota)}),
     axios.post('/api/settings', {name: 'msub_vip_accounts', value: notifyForm.value.vipAccounts.join(',')}),
+    axios.post('/api/settings', {name: 'msub_self_share_enabled', value: String(notifyForm.value.selfShareEnabled)}),
+    axios.post('/api/settings', {name: 'msub_self_share_max_episodes', value: String(notifyForm.value.selfShareMaxEpisodes)}),
     axios.post('/api/settings', {
       name: 'msub_main_drives',
       value: [...new Set(notifyForm.value.mainDrives)].slice(0, 2).join(','),
@@ -2768,6 +2817,7 @@ const eventType = (type: string) => {
       return 'danger'
     case 'SOURCE_REPLACED':
     case 'DRIVE_LINE':
+    case 'SELF_SHARE':
       return 'primary'
     default:
       return 'info'
@@ -2790,6 +2840,7 @@ const eventTypeName = (type: string) => {
     ENDED: '完结',
     RESUMED: '自动重开',
     UPDATE_CHECK: '更新检查',
+    SELF_SHARE: '自有分享',
   }
   return names[type] || type
 }
