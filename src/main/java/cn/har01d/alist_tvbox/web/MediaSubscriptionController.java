@@ -4,11 +4,13 @@ import cn.har01d.alist_tvbox.dto.MediaSubscriptionDto;
 import cn.har01d.alist_tvbox.dto.MediaSubscriptionEventDto;
 import cn.har01d.alist_tvbox.dto.MediaSubscriptionRequest;
 import cn.har01d.alist_tvbox.dto.MediaSubscriptionResourceDto;
+import cn.har01d.alist_tvbox.dto.PanLianAccountStatus;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionCheckService;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionService;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionTransferService;
 import cn.har01d.alist_tvbox.service.PianDanService;
+import cn.har01d.alist_tvbox.service.sitesearch.PanLianSearchService;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -34,15 +36,24 @@ public class MediaSubscriptionController {
     private final MediaSubscriptionCheckService checkService;
     private final MediaSubscriptionTransferService transferService;
     private final PianDanService pianDanService;
+    private final PanLianSearchService panLianSearchService;
 
     public MediaSubscriptionController(MediaSubscriptionService subscriptionService,
                                        MediaSubscriptionCheckService checkService,
                                        MediaSubscriptionTransferService transferService,
-                                       PianDanService pianDanService) {
+                                       PianDanService pianDanService,
+                                       PanLianSearchService panLianSearchService) {
         this.subscriptionService = subscriptionService;
         this.checkService = checkService;
         this.transferService = transferService;
         this.pianDanService = pianDanService;
+        this.panLianSearchService = panLianSearchService;
+    }
+
+    /** 盘链账号池状态:逐号拉站点配额/签到/账号信息(只读,不触发签到);与设置同权限面,仅 ADMIN。 */
+    @GetMapping("/panlian/accounts")
+    public List<PanLianAccountStatus> panlianAccounts() {
+        return panLianSearchService.accountStatuses();
     }
 
     /** 片单追更:片单导航分类(豆瓣/TMDB 榜单与筛选定义,排除电影类目——追更只对剧集/综艺有意义)。管理端代理,走登录态鉴权,免 vod token。 */

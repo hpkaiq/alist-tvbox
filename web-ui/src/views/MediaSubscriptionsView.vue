@@ -794,15 +794,69 @@
         <el-form-item label="站点">
           <el-input v-model="notifyForm.panlianHost" placeholder="留空用内置地址;自定义镜像站填 https://..."/>
         </el-form-item>
+        <el-form-item label="账号池">
+          <div style="width:100%">
+            <div v-for="(account, index) in panlianAccountRows" :key="index"
+                 style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+              <el-select v-model="account.type" style="width:100px">
+                <el-option label="账号密码" value="account"/>
+                <el-option label="Cookie" value="cookie"/>
+              </el-select>
+              <el-input v-if="account.type === 'cookie'" v-model="account.cookie"
+                        placeholder="浏览器登录后复制的 Cookie" style="flex:1"/>
+              <template v-else>
+                <el-input v-model="account.username" placeholder="账号(邮箱或用户名)" style="flex:1"/>
+                <el-input v-model="account.password" type="password" show-password placeholder="密码" style="flex:1"/>
+              </template>
+              <el-button link type="danger" @click="panlianAccountRows.splice(index, 1)">删除</el-button>
+            </div>
+            <div style="margin-top:4px">
+              <el-button size="small" @click="panlianAccountRows.push({type: 'account', username: '', password: '', cookie: ''})">+ 添加账号</el-button>
+              <el-button size="small" type="primary" :loading="panlianPoolSaving" :disabled="!notifyLoaded" @click="savePanlianPool">保存账号池</el-button>
+            </div>
+            <span class="sub-text">每个账号独立一行(类型可切换账号密码/Cookie),保存为 JSON;多账号配额叠加(每日签到 +20/号)轮换搜索,单号解锁配额用尽自动切下一号续链;同一账号配了用户名/邮箱/Cookie 多种形态会自动去重(保留优先级:用户名 &gt; 邮箱 &gt; Cookie);全部留空该搜索源自动关闭</span>
+          </div>
+        </el-form-item>
         <el-form-item label="账号">
-          <el-input v-model="notifyForm.panlianUsername" placeholder="注册邮箱;账号密码或 Cookie 至少配一样"/>
+          <el-input v-model="notifyForm.panlianUsername" placeholder="单账号填这里;多个账号用上方账号池"/>
         </el-form-item>
         <el-form-item label="密码">
           <el-input v-model="notifyForm.panlianPassword" type="password" show-password placeholder="与账号配套"/>
         </el-form-item>
         <el-form-item label="Cookie">
           <el-input v-model="notifyForm.panlianCookie" type="textarea" :rows="2"
-                    placeholder="可代替账号密码:浏览器登录后复制 Cookie;无凭证时该搜索源自动关闭"/>
+                    placeholder="可代替账号密码:浏览器登录后复制 Cookie;作为池内一个成员参与轮换"/>
+        </el-form-item>
+        <el-form-item label="账号状态">
+          <el-button size="small" :loading="panlianStatusLoading" @click="loadPanlianAccounts">刷新账号状态</el-button>
+          <el-table v-if="panlianAccounts.length" :data="panlianAccounts" size="small" border style="margin-top:8px">
+            <el-table-column prop="identity" label="账号" min-width="150"/>
+            <el-table-column prop="username" label="昵称" min-width="90"/>
+            <el-table-column label="邮箱" min-width="170">
+              <template #default="{row}">
+                <span>{{ row.email || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="签到" width="90" align="center">
+              <template #default="{row}">
+                <el-tag v-if="row.checkinDone" type="success" size="small">已签 +{{ row.checkinBonus }}</el-tag>
+                <el-tag v-else type="warning" size="small">未签</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="解锁配额" width="150" align="center">
+              <template #default="{row}">
+                <span>{{ row.quotaRemaining }}/{{ row.quotaLimit }}<span v-if="row.quotaUsed"> · 已用 {{ row.quotaUsed }}</span></span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="130">
+              <template #default="{row}">
+                <el-tag v-if="row.status === 'ok' && !row.exhaustedToday" type="success" size="small">正常</el-tag>
+                <el-tag v-else-if="row.status === 'ok'" type="info" size="small">今日配额尽</el-tag>
+                <el-tag v-else type="danger" size="small">{{ row.message || row.status }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+          <span class="sub-text">实时查询站点(逐号登录拉任务与资料,只读不触发签到);签到由搜索时自动完成,配额每日重置</span>
         </el-form-item>
           </el-tab-pane>
           <el-tab-pane v-if="store.admin" label="观影" name="guanying">
@@ -1409,6 +1463,93 @@ const loadPanSouAuth = () => {
   }).catch(() => {
     panSouAuthEnabled.value = false
   })
+}
+interface PanLianAccountStatusDto {
+  identity: string
+  username?: string | null
+  email?: string | null
+  cookieBased: boolean
+  status: string
+  message?: string | null
+  exhaustedToday: boolean
+  checkinDone: boolean
+  checkinBonus: number
+  quotaRemaining: number
+  quotaLimit: number
+  quotaUsed: number
+}
+interface PanLianAccountRow {
+  type: 'account' | 'cookie'
+  username: string
+  password: string
+  cookie: string
+}
+const parsePanlianAccounts = (raw: string): PanLianAccountRow[] => {
+  if (!raw.trim()) return []
+  try {
+    const list = JSON.parse(raw)
+    if (!Array.isArray(list)) return []
+    return list.flatMap((item: any): PanLianAccountRow[] => {
+      if (item && typeof item.cookie === 'string' && item.cookie.trim()) {
+        return [{type: 'cookie' as const, username: '', password: '', cookie: item.cookie.trim()}]
+      }
+      const username = (item?.username ?? '').toString().trim()
+      const password = item?.password == null ? '' : String(item.password)
+      if (username && password) {
+        return [{type: 'account' as const, username, password, cookie: ''}]
+      }
+      return []
+    })
+  } catch {
+    return []
+  }
+}
+const panlianAccountRows = ref<PanLianAccountRow[]>([])
+const panlianAccounts = ref<PanLianAccountStatusDto[]>([])
+const panlianStatusLoading = ref(false)
+const loadPanlianAccounts = () => {
+  panlianStatusLoading.value = true
+  axios.get('/api/media-subscriptions/panlian/accounts').then(response => {
+    panlianAccounts.value = response.data || []
+  }).catch(() => {
+    panlianAccounts.value = []
+  }).finally(() => {
+    panlianStatusLoading.value = false
+  })
+}
+/** 账号池独立输入行 → JSON 存储值({"username","password"}/{"cookie"},残行丢弃) */
+const panlianPoolJson = () => JSON.stringify(panlianAccountRows.value.reduce(
+    (pool: ({ username: string, password: string } | { cookie: string })[], row: PanLianAccountRow) => {
+      if (row.type === 'cookie') {
+        const cookie = row.cookie.trim()
+        if (cookie) {
+          pool.push({cookie})
+        }
+      } else {
+        const username = row.username.trim()
+        if (username && row.password) {
+          pool.push({username, password: row.password})
+        }
+      }
+      return pool
+    }, []))
+const panlianPoolSaving = ref(false)
+/** 只保存账号池,不关设置对话框;保存成功后自动刷新账号状态 */
+const savePanlianPool = () => {
+  if (!notifyLoaded.value) {
+    ElMessage.warning('设置项尚未加载成功,暂不能保存(防止覆盖为空)')
+    return
+  }
+  panlianPoolSaving.value = true
+  axios.post('/api/settings', {name: 'panlian_accounts', value: panlianPoolJson()})
+      .then(() => {
+        ElMessage.success('账号池已保存')
+        loadPanlianAccounts()
+      })
+      .catch(() => ElMessage.error('账号池保存失败'))
+      .finally(() => {
+        panlianPoolSaving.value = false
+      })
 }
 const notifyForm = ref({
   botToken: '',
@@ -2530,6 +2671,8 @@ const openNotify = () => {
     notifyForm.value.poolMinEpisodeSizeMb = poolFilter.minEpisodeSizeMb
     notifyForm.value.poolMaxEpisodeSizeMb = poolFilter.maxEpisodeSizeMb
     notifyForm.value.panlianHost = settings['panlian_host'] || ''
+    // 账号池 JSON 拆行回填:{"username","password"} 或 {"cookie"} → 独立输入行
+    panlianAccountRows.value = parsePanlianAccounts(settings['panlian_accounts'] || '')
     notifyForm.value.panlianUsername = settings['panlian_username'] || ''
     notifyForm.value.panlianPassword = settings['panlian_password'] || ''
     notifyForm.value.panlianCookie = settings['panlian_cookie'] || ''
@@ -2615,6 +2758,8 @@ const saveNotify = () => {
       value: poolFilterValue,
     }),
     axios.post('/api/settings', {name: 'panlian_host', value: notifyForm.value.panlianHost.trim()}),
+    // 账号池:独立输入行合并回 JSON 数组({"username","password"} 或 {"cookie"},残行丢弃)
+    axios.post('/api/settings', {name: 'panlian_accounts', value: panlianPoolJson()}),
     axios.post('/api/settings', {name: 'panlian_username', value: notifyForm.value.panlianUsername.trim()}),
     axios.post('/api/settings', {name: 'panlian_password', value: notifyForm.value.panlianPassword}),
     axios.post('/api/settings', {name: 'panlian_cookie', value: notifyForm.value.panlianCookie.trim()}),
@@ -2798,6 +2943,7 @@ const retireReasonText = (resource: ResourceDto) => {
   const kind = resource.failKind
   const reason = kind === 'DEAD' ? '链接失效'
       : kind === 'ALIEN' ? '内容与订阅不符(异剧)'
+      : kind === 'POLICY' ? '单集体积不在筛选范围(追剧设置-资源筛选可调)'
       : kind === 'TRANSIENT' ? '瞬时故障连续超限'
       : '未知(旧数据)'
   const checked = resource.checkedTime ? `,检测于 ${formatTime(resource.checkedTime)}` : ''

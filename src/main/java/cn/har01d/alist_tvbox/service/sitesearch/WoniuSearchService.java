@@ -1,6 +1,7 @@
 package cn.har01d.alist_tvbox.service.sitesearch;
 
 import cn.har01d.alist_tvbox.dto.tg.Message;
+import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -8,16 +9,19 @@ import lombok.extern.slf4j.Slf4j;
 import okhttp3.FormBody;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -37,11 +41,16 @@ import java.util.regex.Pattern;
  * 或直接 {@code woniu_cookie},站点 {@code woniu_host} 可覆盖双线路测速),未配置时源静默关闭。
  * 登录:POST {@code /user/login.html}(user_name/user_pwd)→ code=="1" → 只保留
  * {@code user_check/user_id/user_name} 最小凭证集(须有 user_check);链接被打码即视为
- * 登录态失效,自动续期一次,失败 10 分钟冷却防凭证错误刷接口。
+ * 登录态失效,自动续期一次,失败 10 分钟冷却防凭证错误刷接口。登录取得的凭证 Cookie
+ * 落库 Setting {@code woniu_session}(账号密码形态专属,Cookie 形态由用户配置自管),
+ * 重启播种回内存免重登,被站点打码且续期失败才清除 —— 失效前不重复登录。
  *
  * <p>搜索页 {@code /vodsearch/-------------/?wd=}(第 1 页),卡片 {@code a.video-card};
  * 详情 {@code /voddetail/{id}/} 的 {@code .pan-link-item}:链接候选 =
  * {@code a.pan-link-btn@href} + {@code .pan-link-meta} 文本,含 {@code *} 的打码串跳过。
+ *
+ * <p><b>每日签到</b>:定时 POST {@code /user/checkin.html}(签到积分),同日幂等,
+ * 详见 {@link #dailyCheckin()}。
  */
 @Slf4j
 @Service
@@ -50,6 +59,8 @@ public class WoniuSearchService {
     public static final String USERNAME_SETTING = "woniu_username";
     public static final String PASSWORD_SETTING = "woniu_password";
     public static final String COOKIE_SETTING = "woniu_cookie";
+    /** 登录会话持久化:登录凭证 Cookie 头(k=v; k=v),重启播种免重登 */
+    public static final String SESSION_SETTING = "woniu_session";
 
     private static final List<String> DEFAULT_HOSTS = List.of("https://wn4k.com", "https://zmi.kdns.fr");
     private static final String USER_AGENT =
@@ -69,7 +80,9 @@ public class WoniuSearchService {
     private final OkHttpClient httpClient = new OkHttpClient();
     private volatile String cookie = "";
     private volatile String activeHost = "";
+    private volatile String lastCheckinDay = "";
     private volatile boolean seededConfigCookie;
+    private volatile boolean seededSession;
     private final LoginCooldown loginCooldown = new LoginCooldown();
     private volatile boolean warnedNoCredentials;
 
@@ -198,6 +211,9 @@ public class WoniuSearchService {
             }
             cookie = SiteSearchSupport.joinCookies(auth);
             log.info("蜗牛登录成功(username={})", config.username());
+            if (config.cookie().isEmpty()) {
+                persistSession(cookie);
+            }
             return true;
         } catch (Exception e) {
             return loginFailed(e.getMessage());
@@ -205,7 +221,86 @@ public class WoniuSearchService {
     }
 
     private boolean loginFailed(String reason) {
+        // 走到登录说明旧会话已被打码或从未建立,过期凭证不得留在库里等重启回灌
+        persistSession("");
         return loginCooldown.fail("蜗牛", reason, RELOGIN_COOLDOWN_MS);
+    }
+
+    /** 会话落库:cookie 空 = 清除;失败只告警不阻断(大不了下次重启重登)。值含凭证绝不进日志。 */
+    private void persistSession(String value) {
+        try {
+            settingRepository.save(new Setting(SESSION_SETTING, StringUtils.defaultString(value)));
+        } catch (Exception e) {
+            log.warn("蜗牛会话持久化失败(下次重启需重新登录):{}", e.getMessage());
+        }
+    }
+
+    // ---------- 签到 ----------
+
+    /**
+     * 每日定时签到(2026-09-13 抓包契约):POST {@code /user/checkin.html} 空 body,
+     * XHR/Origin/Referer 头缺一会被 MacCMS 口径拒;响应 {@code code==1} 为成功,
+     * {@code info} 带积分与连签天数,"已签"文案同样记当日完成。先保证登录态
+     * (落库会话优先,失效重登走冷却),Cookie 形态直接用用户配置;签到不成只记日志。
+     */
+    @Scheduled(cron = "0 7 6 * * *")
+    public void dailyCheckin() {
+        Config config = loadConfig();
+        if (!config.hasCredentials()) {
+            return;
+        }
+        String today = LocalDate.now().toString();
+        if (today.equals(lastCheckinDay)) {
+            return;
+        }
+        if (StringUtils.isBlank(cookie) && !relogin(config)) {
+            return;
+        }
+        try {
+            JsonNode payload = SiteSearchSupport.parseJson(objectMapper, checkinRequest(config));
+            String msg = payload.path("msg").asText("");
+            if ("1".equals(payload.path("code").asText(""))) {
+                lastCheckinDay = today;
+                JsonNode info = payload.path("info");
+                log.info("蜗牛每日签到完成:{}(+{} 积分,连续 {} 天)", msg,
+                        info.path("points").asInt(0), info.path("serial_days").asInt(0));
+            } else if (SiteSearchSupport.alreadyCheckedIn(msg)) {
+                lastCheckinDay = today;
+                log.debug("woniu checkin already done today: {}", msg);
+            } else {
+                log.debug("woniu checkin failed: code={} msg={}", payload.path("code").asText(""), msg);
+            }
+        } catch (Exception e) {
+            log.debug("woniu checkin failed: {}", e.getMessage());
+        }
+    }
+
+    /** 双线路逐条尝试(粘滞线路优先),任一线路 200 即返回响应体;全失败返回末次响应体。 */
+    private String checkinRequest(Config config) throws IOException {
+        List<String> hosts = new ArrayList<>(config.hosts());
+        if (StringUtils.isNotBlank(activeHost)) {
+            hosts.remove(activeHost);
+            hosts.add(0, activeHost);
+        }
+        String body = "";
+        for (String host : hosts) {
+            Resp resp = http(new Request.Builder()
+                    .url(host + "/user/checkin.html")
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("Origin", host)
+                    .header("Referer", host + "/user/checkin.html")
+                    .header("Cookie", StringUtils.defaultString(cookie))
+                    .post(RequestBody.create(new byte[0]))
+                    .build());
+            if (resp.code() == 200) {
+                activeHost = host;
+                return resp.body();
+            }
+            body = resp.body();
+        }
+        return body;
     }
 
     // ---------- 解析 ----------
@@ -292,6 +387,21 @@ public class WoniuSearchService {
                 SiteSearchSupport.setting(settingRepository, USERNAME_SETTING).trim(),
                 SiteSearchSupport.setting(settingRepository, PASSWORD_SETTING).trim(),
                 normalizeCookie(SiteSearchSupport.setting(settingRepository, COOKIE_SETTING)));
+        // 播种落库会话只在进程生命周期发生一次:被续期换掉/被冷却清空的内存态不回灌旧 Cookie
+        if (!seededSession) {
+            synchronized (this) {
+                if (!seededSession) {
+                    seededSession = true;
+                    if (config.cookie().isEmpty() && StringUtils.isBlank(cookie)) {
+                        String persisted = SiteSearchSupport.setting(settingRepository, SESSION_SETTING).trim();
+                        if (!persisted.isEmpty()) {
+                            cookie = persisted;
+                            log.info("蜗牛复用持久化登录态(免重登)");
+                        }
+                    }
+                }
+            }
+        }
         if (seededConfigCookie || config.cookie().isEmpty()) {
             return config;
         }

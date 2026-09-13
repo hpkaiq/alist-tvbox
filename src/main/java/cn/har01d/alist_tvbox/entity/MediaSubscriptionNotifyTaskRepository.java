@@ -7,6 +7,9 @@ import java.util.List;
 
 public interface MediaSubscriptionNotifyTaskRepository extends JpaRepository<MediaSubscriptionNotifyTask, Integer> {
 
+    /** 诊断报告:通知 outbox 各状态计数(PENDING/SENT/FAILED)。 */
+    long countByStatus(String status);
+
     /** 兜底扫描:到期的 PENDING 任务(旧任务优先,限额防积压拖长单轮) */
     List<MediaSubscriptionNotifyTask> findTop50ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedTimeAsc(String status, long cutoff);
 

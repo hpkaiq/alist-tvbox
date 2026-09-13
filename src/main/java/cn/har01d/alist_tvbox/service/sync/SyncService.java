@@ -353,7 +353,7 @@ public class SyncService {
             for (Share remote : shares) {
                 try {
                     Optional<Share> existing = shareRepository.findByTypeAndShareId(
-                        remote.getType(), remote.getShareId());
+                        remote.getType(), remote.getShareId()).stream().findFirst();
 
                     if (existing.isPresent()) {
                         Share local = existing.get();

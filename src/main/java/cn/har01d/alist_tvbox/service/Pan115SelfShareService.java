@@ -6,6 +6,7 @@ import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.entity.MediaSubscription;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
+import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.model.FsResponse;
 import cn.har01d.alist_tvbox.model.ShareCreateData;
 import cn.har01d.alist_tvbox.entity.Site;
@@ -54,10 +55,15 @@ public class Pan115SelfShareService {
     }
 
     /**
-     * 目标 115 账号:订阅转存目标(accountIds)里第一个 cookie 版 PAN115 —— 开放平台账号
-     * 无分享 API 不考虑;无则 master PAN115;都没有返回 null(调用方记事件跳过)。
+     * 目标 115 账号:master PAN115 优先(用户定规:分享统一固化为一个账号便于管理);
+     * 无 master 再取订阅转存目标(accountIds)里第一个 cookie 版 PAN115 —— 开放平台账号
+     * 无分享 API 不考虑;都没有返回 null(调用方记事件跳过)。
      */
     public DriverAccount resolveAccount(MediaSubscription subscription) {
+        DriverAccount master = accountRepository.findByTypeAndMasterTrue(DriverType.PAN115).orElse(null);
+        if (master != null) {
+            return master;
+        }
         for (String id : accountIds(subscription)) {
             try {
                 DriverAccount account = accountRepository
@@ -69,7 +75,7 @@ public class Pan115SelfShareService {
                 // 非法目标 id 跳过
             }
         }
-        return accountRepository.findByTypeAndMasterTrue(DriverType.PAN115).orElse(null);
+        return null;
     }
 
     /** 订阅目标 id 列表("pan:{id}"/"ali:{id}" JSON 数组;兼容旧单值 accountId)。 */
@@ -136,11 +142,25 @@ public class Pan115SelfShareService {
         }
     }
 
-    /** 服务端转存一组对象(每批 ≤10 控制同步请求时长,与 TRANSFER 同款分批)。 */
+    /** 服务端转存一组对象(每批 ≤10 控制同步请求时长,与 TRANSFER 同款分批)。
+     * 115 对已收过的文件报 400「文件已接收，无需重复接收！」(上轮批次死在建分享/挂载步、
+     * 目录里留着已转存文件的残留场景)——幂等信号不是错误,吞掉继续;
+     * 是否真的到位由调用方的目录完整性校验兜底。 */
     public void transferObjects(Site site, String srcDir, List<String> names, String dstDir) {
         for (int i = 0; i < names.size(); i += 10) {
-            aListService.shareSave(site, srcDir, names.subList(i, Math.min(i + 10, names.size())), dstDir);
+            try {
+                aListService.shareSave(site, srcDir, names.subList(i, Math.min(i + 10, names.size())), dstDir);
+            } catch (BadRequestException e) {
+                if (!isAlreadyReceived(e.getMessage())) {
+                    throw e;
+                }
+                log.info("share save already received (idempotent), continue: {}", e.getMessage());
+            }
         }
+    }
+
+    static boolean isAlreadyReceived(String message) {
+        return message != null && message.contains("文件已接收");
     }
 
     /** 列目录下的对象名(残留感知与删源清单)。 */

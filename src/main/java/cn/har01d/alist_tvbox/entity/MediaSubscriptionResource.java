@@ -41,10 +41,12 @@ public class MediaSubscriptionResource {
     /** 用户手动移除(终态墓碑:保留行防重复入池,不参与冷却重探/自动换源;恢复走 restore) */
     public static final String STATE_REMOVED = "REMOVED";
 
-    /** 退役原因分类:链接失效/异剧(确定性不符)→ 长冷却;瞬时故障连击达上限 → 短冷却快重探 */
+    /** 退役原因分类:链接失效/异剧(确定性不符)→ 长冷却;瞬时故障连击达上限 → 短冷却快重探;
+     *  体积筛选不符 → 长冷却(用户调配置后冷却期满重探自愈) */
     public static final String FAIL_KIND_DEAD = "DEAD";
     public static final String FAIL_KIND_ALIEN = "ALIEN";
     public static final String FAIL_KIND_TRANSIENT = "TRANSIENT";
+    public static final String FAIL_KIND_POLICY = "POLICY";
     /** 来源标记:用户手动粘贴分享链接入池(区别于搜索自动发现)——豁免入池/探测的自动门禁(盘白名单/年份/标题/排除词)。 */
     public static final String SOURCE_MANUAL = "manual";
     /** 来源标记:磁力离线产物(非分享链接,shareId 恒 null,link 形如 offline:{产物名})——

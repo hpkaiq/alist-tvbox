@@ -267,6 +267,10 @@ public class MediaSubscriptionCheckService {
     private static final Set<String> INVALID_STATES = Set.of("BAD", "INVALID", "FAILED", "EXPIRED", "DEAD", "ERROR");
     /** 集号范围门禁拒绝消息的识别标记:调用方据此退役候选但不进跨订阅失效黑名单(链接没死,只是不属于本剧) */
     private static final String FOREIGN_SHOW_MARK = "疑似同名异剧";
+    /** 体积筛选拒收消息的识别标记:目录里全是正片、只是单集体积不在用户配置范围内 —— 资源本身没病,
+     * 按异剧/失效分流都会误导排障方向(线上:用户配了全局单集体积上下限,整部 4K 剧的候选全部被
+     * 「无可识别的本季剧集文件」误判成同名异剧连环退役) */
+    private static final String SIZE_POLICY_MARK = "体积筛选拒收";
     /** 池枯竭释放 BAD 冷却的最小年龄:本轮刚判死的不参与释放 */
     private static final long BAD_RELEASE_MIN_AGE_MS = 30 * 60_000L;
     /** 播放历史里的逻辑链接 msubep-{订阅}-{集},集号即观看进度 */
@@ -2967,8 +2971,15 @@ public class MediaSubscriptionCheckService {
     void collectResourceEpisodeFiles(Site site, MediaSubscription subscription, MediaSubscriptionResource resource,
                                      String path, TreeMap<Integer, EpisodeFile> files,
                                      EpisodeSizePolicy policy, boolean refresh) {
+        collectResourceEpisodeFiles(site, subscription, resource, path, files, policy, refresh, null);
+    }
+
+    /** 同上,附体积过滤统计(激活/探测的空集真因分流用:区分「无可识别」与「全被体积筛选拒收」)。 */
+    void collectResourceEpisodeFiles(Site site, MediaSubscription subscription, MediaSubscriptionResource resource,
+                                     String path, TreeMap<Integer, EpisodeFile> files,
+                                     EpisodeSizePolicy policy, boolean refresh, EpisodeCollectStats stats) {
         collectEpisodeFiles(site, collectSeason(subscription, resource), path, 1, files, policy, refresh,
-                metaYear(subscription), seasonPackMap(subscription, resource));
+                metaYear(subscription), seasonPackMap(subscription, resource), stats);
     }
 
     /** 编号归一:资源级起始集号 &gt; 订阅级季起始集号 &gt; 自动重映射(remapAbsoluteNumbering);
@@ -3089,6 +3100,37 @@ public class MediaSubscriptionCheckService {
     /** 异剧拒绝消息识别(activate/probeShare 集号门禁抛出):调用方退役候选但不进失效黑名单。 */
     static boolean isForeignShowRejection(String message) {
         return message != null && message.contains(FOREIGN_SHOW_MARK);
+    }
+
+    /** 体积筛选拒收消息识别(activate/probeShare 空集分流抛出):同款「退役不拉黑」处理,失败类别独立。 */
+    static boolean isSizePolicyRejection(String message) {
+        return message != null && message.contains(SIZE_POLICY_MARK);
+    }
+
+    /** 空集真因留痕:拒收统计进日志 —— 「无可识别」不再是一笔糊涂账(0 字节/体积与解析混合拒收都有数可查)。 */
+    private void logCollectStats(String where, EpisodeSizePolicy policy, EpisodeCollectStats stats) {
+        if (stats == null || stats.considered == 0) {
+            log.info("{}: 目录里没有格式合规的媒体文件", where);
+            return;
+        }
+        log.info("{}: 格式合规媒体文件 {} 个(单集 {}~{} MB),体积下限拒 {}、上限拒 {},配置下限 {} MB/上限 {} MB",
+                where, stats.considered, stats.minSize / 1024 / 1024, stats.maxSize / 1024 / 1024,
+                stats.floorRejected, stats.maxRejected, policy.floorBytes() / 1024 / 1024,
+                policy.maxBytes() > 0 ? policy.maxBytes() / 1024 / 1024 : 0);
+    }
+
+    /** 体积筛选拒收消息:带实际体积区间与配置边界,用户对照日志即可定位是自己的哪条设置拒了整目录。 */
+    static String sizePolicyRejectionReason(EpisodeSizePolicy policy, EpisodeCollectStats stats, String title) {
+        StringBuilder bounds = new StringBuilder();
+        if (policy.floorBytes() > 0) {
+            bounds.append("下限 ").append(policy.floorBytes() / 1024 / 1024).append(" MB");
+        }
+        if (policy.maxBytes() > 0) {
+            bounds.append(bounds.length() > 0 ? "/" : "").append("上限 ").append(policy.maxBytes() / 1024 / 1024).append(" MB");
+        }
+        return SIZE_POLICY_MARK + "全部文件(" + stats.considered + " 个,单集 "
+                + stats.minSize / 1024 / 1024 + "~" + stats.maxSize / 1024 / 1024 + " MB"
+                + (bounds.length() > 0 ? "," + bounds : "") + "):" + StringUtils.defaultString(title);
     }
 
     /** 集号门禁拒绝消息(含 {@link #FOREIGN_SHOW_MARK} 标记,供调用方识别分流)。 */
@@ -3322,6 +3364,16 @@ public class MediaSubscriptionCheckService {
      * (真人版订阅可能正用着它);官方集数修正后冷却期满会重探自愈。
      */
     void retireAlienCandidate(MediaSubscription subscription, MediaSubscriptionResource resource) {
+        retireExcludedCandidate(subscription, resource, MediaSubscriptionResource.FAIL_KIND_ALIEN);
+    }
+
+    /** 体积筛选不符候选退役:与异剧同款「不拉黑」机制 —— 文件是正片、体积不在用户配置范围,
+     *  链接与内容都没病;用户调宽「追剧设置-资源筛选」后冷却期满重探自愈。 */
+    void retirePolicyExcludedCandidate(MediaSubscription subscription, MediaSubscriptionResource resource) {
+        retireExcludedCandidate(subscription, resource, MediaSubscriptionResource.FAIL_KIND_POLICY);
+    }
+
+    private void retireExcludedCandidate(MediaSubscription subscription, MediaSubscriptionResource resource, String failKind) {
         if (Boolean.TRUE.equals(resource.getPinned())) {
             // 钉选是用户否决自动判定的最高信号:任何路径都不把钉选源判异剧退役
             // (probeShare 门禁已豁免,这里是 activate/补缺等 catch 路径的兜底)
@@ -3351,7 +3403,7 @@ public class MediaSubscriptionCheckService {
         resource.setShareId(null);
         resource.setMountPath(null);
         resource.setCheckedTime(System.currentTimeMillis());
-        resource.setFailKind(MediaSubscriptionResource.FAIL_KIND_ALIEN);
+        resource.setFailKind(failKind);
         resourceRepository.save(resource);
         for (MediaSubscriptionEpisodeSource row : episodeSourceRepository.findByResourceId(resource.getId())) {
             if (LIVE_STATES.contains(row.getState())) {
@@ -3623,7 +3675,7 @@ public class MediaSubscriptionCheckService {
     }
 
     /** 探测结果分级(供调用方决定是否跳过同盘后续候选)。 */
-    enum ProbeOutcome { PROBED, ALIEN, THROTTLED, TRANSIENT, DEAD }
+    enum ProbeOutcome { PROBED, ALIEN, THROTTLED, TRANSIENT, DEAD, POLICY }
 
     /**
      * 候选探测统一入口(与 {@link #activateNextCandidate} 的失败分级同口径):成功 → 刷新行时间戳并清 streak;
@@ -3645,6 +3697,11 @@ public class MediaSubscriptionCheckService {
             if (isForeignShowRejection(message)) {
                 retireAlienCandidate(subscription, resource);
                 return ProbeOutcome.ALIEN;
+            }
+            if (isSizePolicyRejection(message)) {
+                // 体积筛选不符:同款退役不拉黑(链接活着内容也对),失败类别独立落档便于诊断
+                retirePolicyExcludedCandidate(subscription, resource);
+                return ProbeOutcome.POLICY;
             }
             if (isThrottleError(message)) {
                 String drive = driveOf(resource);
@@ -4431,6 +4488,11 @@ public class MediaSubscriptionCheckService {
     }
 
     private String doSelfShareBatch(MediaSubscription subscription, boolean manual) {
+        if (!MediaSubscription.MODE_FOLLOW.equals(subscription.getMode())) {
+            // 与 TRANSFER 互斥:转存副本已达成同等稳定性,且共享转存目录会互相踩;手动入口同样拦截。
+            String message = "转存模式订阅不适用自有分享";
+            return message;
+        }
         if (!manual && !selfShareEnabled(subscription)) {
             return "未开启";
         }
@@ -5546,10 +5608,17 @@ public class MediaSubscriptionCheckService {
         List<String> genres = metaGenres(subscription);
         try {
             TreeMap<Integer, EpisodeFile> files = new TreeMap<>();
-            collectResourceEpisodeFiles(site(), subscription, resource, share.getPath(), files,
-                    episodeSizePolicy(subscription), true);
+            EpisodeSizePolicy sizePolicy = episodeSizePolicy(subscription);
+            EpisodeCollectStats stats = new EpisodeCollectStats();
+            collectResourceEpisodeFiles(site(), subscription, resource, share.getPath(), files, sizePolicy, true, stats);
             sanitizeEpisodeFiles(subscription, resource, files, resource.getTitle());
             if (files.isEmpty()) {
+                logCollectStats("probe 空集(" + StringUtils.abbreviate(StringUtils.defaultString(resource.getTitle()), 40) + ")",
+                        sizePolicy, stats);
+                if (stats.allSizeRejected()) {
+                    // 与 activate 同款真因分流:全被体积筛选拒收 ≠ 无可识别,让调用方按配置不符退役不拉黑
+                    throw new IllegalStateException(sizePolicyRejectionReason(sizePolicy, stats, resource.getTitle()));
+                }
                 throw new IllegalStateException("资源无可识别的剧集文件:" + resource.getTitle());
             }
             boolean pinOverride = Boolean.TRUE.equals(resource.getPinned());
@@ -5944,6 +6013,15 @@ public class MediaSubscriptionCheckService {
                                         + StringUtils.defaultIfBlank(resource.getTitle(), resource.getLink()), false);
                         continue;
                     }
+                    if (isSizePolicyRejection(e.getMessage())) {
+                        // 体积筛选不符:文件是正片只是体积不在用户配置范围 —— 退役冷却不拉黑,
+                        // 事件直接指出可操作方向(调「追剧设置-资源筛选」),别让用户对着「同名异剧」瞎排障
+                        retirePolicyExcludedCandidate(subscription, resource);
+                        addEvent(subscription.getId(), MediaSubscriptionEvent.TYPE_SOURCE_INVALID,
+                                "候选体积不符已跳过(" + e.getMessage() + ";可在追剧设置-资源筛选调宽单集体积)",
+                                false);
+                        continue;
+                    }
                     if (classifyProbeFailure(e) == ProbeFailure.TRANSIENT && !transientStreakReached(resource)) {
                         continue; // 瞬时故障不下结论(误判失效会进跨订阅黑名单);连续达上限才按失效处理
                     }
@@ -6088,8 +6166,10 @@ public class MediaSubscriptionCheckService {
             throw new IllegalStateException("挂载失败:" + resource.getLink());
         }
         TreeMap<Integer, EpisodeFile> files = new TreeMap<>();
+        EpisodeSizePolicy sizePolicy = episodeSizePolicy(subscription);
+        EpisodeCollectStats stats = new EpisodeCollectStats();
         try {
-            collectResourceEpisodeFiles(site(), subscription, resource, mountPath, files, episodeSizePolicy(subscription), true);
+            collectResourceEpisodeFiles(site(), subscription, resource, mountPath, files, sizePolicy, true, stats);
         } catch (Exception e) {
             // 列目录失败同样要卸刚挂分享:固定路径不能残留孤儿挂载(追剧索引会收录它),
             // 且此时 resource.shareId 还没指向新 share,调用方退役删的是旧 share,孤儿没人清
@@ -6098,7 +6178,15 @@ public class MediaSubscriptionCheckService {
         }
         sanitizeEpisodeFiles(subscription, resource, files, resource.getTitle());
         if (files.isEmpty()) {
-            deleteJustMountedShareQuietly(share, "no recognizable episode files");
+            boolean sizeWiped = stats.allSizeRejected();
+            logCollectStats("activate 空集(" + StringUtils.abbreviate(StringUtils.defaultString(resource.getTitle()), 40) + ")",
+                    sizePolicy, stats);
+            deleteJustMountedShareQuietly(share, sizeWiped ? "size policy rejected all files" : "no recognizable episode files");
+            if (sizeWiped) {
+                // 目录里全是正片、只是体积不在用户配置范围:链接活着内容也对,不是异剧 ——
+                // 按异剧分流会误导排障方向(资源没病),单独标记交调用方按「配置不符」退役不拉黑
+                throw new IllegalStateException(sizePolicyRejectionReason(sizePolicy, stats, resource.getTitle()));
+            }
             // 带 FOREIGN_SHOW_MARK:换季后旧季资源挂上即空(季目录/集号全被 season 口径拒收),
             // 链接活着,走异剧分流退役不拉黑;按瞬时故障累积会把活链接烧成跨订阅黑名单
             throw new IllegalStateException(FOREIGN_SHOW_MARK + "(无可识别的本季剧集文件):" + resource.getTitle());
@@ -6289,6 +6377,22 @@ public class MediaSubscriptionCheckService {
         }
     }
 
+    /** 列举过程的体积过滤统计(空集真因分流):considered=通过格式/EXTRA 检查的候选文件,
+     * 其中被体积下限/单集上限拒收的数量。全体积拒收才算「体积筛选拒收」—— 有一个文件
+     * 是因集号/季号解析不出而丢的,维持「无可识别」原语义。全部 0 字节(驱动不给体积)
+     * 同样不算:那是列目录异常,不是用户配置问题。 */
+    static final class EpisodeCollectStats {
+        int considered;
+        int floorRejected;
+        int maxRejected;
+        long minSize = Long.MAX_VALUE;
+        long maxSize;
+
+        boolean allSizeRejected() {
+            return considered > 0 && maxSize > 0 && floorRejected + maxRejected == considered;
+        }
+    }
+
     Set<Integer> walkEpisodes(Site site, Integer season, String path, EpisodeSizePolicy policy) {
         TreeSet<Integer> episodes = new TreeSet<>();
         walk(site, season, path, 1, episodes, policy);
@@ -6376,6 +6480,13 @@ public class MediaSubscriptionCheckService {
     /** 同上,附季包编号映射(非 null 时文件集号在 preferPut 之前按各自季映射进全剧连续集号空间)。 */
     void collectEpisodeFiles(Site site, Integer season, String path, int depth, TreeMap<Integer, EpisodeFile> result,
                                      EpisodeSizePolicy policy, boolean refresh, Integer firstAirYear, SeasonPackMap packMap) {
+        collectEpisodeFiles(site, season, path, depth, result, policy, refresh, firstAirYear, packMap, null);
+    }
+
+    /** 同上,附体积过滤统计:被拒文件静默 continue,调用方只见空集无从分辨真因,统计交给空集分流。 */
+    void collectEpisodeFiles(Site site, Integer season, String path, int depth, TreeMap<Integer, EpisodeFile> result,
+                                     EpisodeSizePolicy policy, boolean refresh, Integer firstAirYear, SeasonPackMap packMap,
+                                     EpisodeCollectStats stats) {
         if (depth > appProperties.getSubscription().getMaxListDepth()) {
             return;
         }
@@ -6389,10 +6500,25 @@ public class MediaSubscriptionCheckService {
             if (file.getType() == 1) {
                 continue;
             }
-            if (policy.hardRejected(file.getSize()) || !isMediaFormat(file.getName()) || EXTRA.matcher(file.getName()).find()) {
+            boolean eligible = isMediaFormat(file.getName()) && !EXTRA.matcher(file.getName()).find();
+            if (stats != null && eligible) {
+                stats.considered++;
+                stats.minSize = Math.min(stats.minSize, file.getSize());
+                stats.maxSize = Math.max(stats.maxSize, file.getSize());
+            }
+            if (!eligible) {
+                continue;
+            }
+            if (policy.hardRejected(file.getSize())) {
+                if (stats != null) {
+                    stats.floorRejected++;
+                }
                 continue;
             }
             if (policy.overMax(file.getSize())) {
+                if (stats != null) {
+                    stats.maxRejected++;
+                }
                 continue; // 超过单集上限:过滤捆绑大文件/异常资源
             }
             int episode = packMap != null
@@ -6407,7 +6533,7 @@ public class MediaSubscriptionCheckService {
                     && !EXTRA.matcher(file.getName()).find()
                     && !otherSeasonDir(file.getName(), season, firstAirYear)
                     && !spinOffDir(file.getName(), season)) {
-                collectEpisodeFiles(site, season, path + "/" + file.getName(), depth + 1, result, policy, refresh, firstAirYear, packMap);
+                collectEpisodeFiles(site, season, path + "/" + file.getName(), depth + 1, result, policy, refresh, firstAirYear, packMap, stats);
             }
         }
     }

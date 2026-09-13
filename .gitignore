@@ -68,3 +68,4 @@ musl-toolchain/
 default.conf
 /docs/security/
 telemetry.properties
+/src/test/python/

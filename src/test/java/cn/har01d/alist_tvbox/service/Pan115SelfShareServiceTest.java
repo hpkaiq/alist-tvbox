@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,7 +35,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 115 自有分享执行器:目标账号解析(订阅目标优先、开放平台排除、master 兜底)、
+ * 115 自有分享执行器:目标账号解析(master 优先、无 master 回退订阅目标、开放平台排除)、
  * 批次转存目录规格(与 TRANSFER 同根)、建分享空码上抛、删源逐文件提交。
  */
 class Pan115SelfShareServiceTest {
@@ -49,6 +50,7 @@ class Pan115SelfShareServiceTest {
     void setUp() {
         service = new Pan115SelfShareService(aListService, accountRepository, settingRepository, new ObjectMapper());
         when(settingRepository.findById(anyString())).thenReturn(Optional.empty());
+        when(accountRepository.findByTypeAndMasterTrue(DriverType.PAN115)).thenReturn(Optional.empty());
     }
 
     private static DriverAccount account(int id, DriverType type) {
@@ -67,29 +69,28 @@ class Pan115SelfShareServiceTest {
         return subscription;
     }
 
-    /** 订阅转存目标里的 cookie 版 PAN115 优先(开放平台账号无分享 API,跳过)。 */
+    /** master PAN115 优先(用户定规:分享统一固化为一个账号便于管理),压过订阅目标。 */
     @Test
-    void resolveAccountPrefersCookiePan115FromTargets() {
+    void resolveAccountPrefersMaster() {
+        when(accountRepository.findByTypeAndMasterTrue(DriverType.PAN115))
+                .thenReturn(Optional.of(account(11, DriverType.PAN115)));
+        when(accountRepository.findById(5)).thenReturn(Optional.of(account(5, DriverType.PAN115)));
+        DriverAccount resolved = service.resolveAccount(subscription("[\"pan:5\"]"));
+        assertEquals(11, resolved.getId());
+    }
+
+    /** 无 master:回退订阅转存目标里的 cookie 版 PAN115(开放平台账号无分享 API,跳过)。 */
+    @Test
+    void resolveAccountFallsBackToTargetsCookiePan115() {
         when(accountRepository.findById(7)).thenReturn(Optional.of(account(7, DriverType.OPEN115)));
         when(accountRepository.findById(5)).thenReturn(Optional.of(account(5, DriverType.PAN115)));
         DriverAccount resolved = service.resolveAccount(subscription("[\"pan:7\",\"pan:5\"]"));
         assertEquals(5, resolved.getId());
     }
 
-    /** 订阅目标没有 115:回退 master PAN115。 */
-    @Test
-    void resolveAccountFallsBackToMaster() {
-        when(accountRepository.findById(4)).thenReturn(Optional.of(account(4, DriverType.QUARK)));
-        when(accountRepository.findByTypeAndMasterTrue(DriverType.PAN115))
-                .thenReturn(Optional.of(account(11, DriverType.PAN115)));
-        DriverAccount resolved = service.resolveAccount(subscription("[\"pan:4\"]"));
-        assertEquals(11, resolved.getId());
-    }
-
-    /** 既无订阅目标也无 master:返回 null(调用方记事件跳过)。 */
+    /** 既无 master 也无订阅目标:返回 null(调用方记事件跳过)。 */
     @Test
     void resolveAccountAbsent() {
-        when(accountRepository.findByTypeAndMasterTrue(DriverType.PAN115)).thenReturn(Optional.empty());
         assertNull(service.resolveAccount(subscription(null)));
     }
 
@@ -152,6 +153,35 @@ class Pan115SelfShareServiceTest {
         }
         service.transferObjects(new Site(), "/src", names, "/dst");
         verify(aListService, times(2)).shareSave(any(), eq("/src"), anyList(), eq("/dst"));
+    }
+
+    /** 上轮批次失败的残留场景:115 对已收过的文件报 400「文件已接收，无需重复接收！」——
+     * 幂等信号吞掉继续(完整性由调用方 listNames 校验兜底),后续批次照常提交。 */
+    @Test
+    void transferObjectsToleratesAlreadyReceived() {
+        org.mockito.Mockito.doThrow(new BadRequestException("文件已接收，无需重复接收！"))
+                .when(aListService).shareSave(any(), eq("/src"), anyList(), eq("/dst"));
+        List<String> names = new java.util.ArrayList<>();
+        for (int i = 1; i <= 11; i++) {
+            names.add("第" + i + "集.mkv");
+        }
+
+        service.transferObjects(new Site(), "/src", names, "/dst");
+
+        verify(aListService, times(2)).shareSave(any(), eq("/src"), anyList(), eq("/dst"));
+        assertTrue(Pan115SelfShareService.isAlreadyReceived("error 400 文件已接收，无需重复接收！"));
+    }
+
+    /** 其它转存错误(真失效/风控)原样上抛 —— 容忍只针对已识别的幂等信号。 */
+    @Test
+    void transferObjectsPropagatesOtherErrors() {
+        org.mockito.Mockito.doThrow(new BadRequestException("分享地址已失效"))
+                .when(aListService).shareSave(any(), eq("/src"), anyList(), eq("/dst"));
+
+        assertThrows(BadRequestException.class,
+                () -> service.transferObjects(new Site(), "/src", List.of("第1集.mkv"), "/dst"));
+        assertFalse(Pan115SelfShareService.isAlreadyReceived("分享地址已失效"));
+        assertFalse(Pan115SelfShareService.isAlreadyReceived(null));
     }
 
     /** 删源:目录下全部文件逐个提交 remove。 */

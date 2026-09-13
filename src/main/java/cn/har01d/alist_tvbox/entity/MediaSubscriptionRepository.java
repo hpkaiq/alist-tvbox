@@ -12,6 +12,9 @@ import java.util.List;
 public interface MediaSubscriptionRepository extends JpaRepository<MediaSubscription, Integer> {
     List<MediaSubscription> findByUidOrderByCreatedTimeDesc(int uid);
 
+    /** 诊断报告:按状态计数(ACTIVE/PAUSED/ENDED/ERROR)。 */
+    long countByStatus(String status);
+
     boolean existsByMountPath(String mountPath);
 
     /** 共享挂载守卫:该 share 是否仍被其它订阅的主源引用。 */

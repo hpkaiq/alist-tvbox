@@ -4439,6 +4439,110 @@ class MediaSubscriptionCheckServiceTest {
         assertFalse(MediaSubscriptionCheckService.isThrottleError("疑似同名异剧(无可识别的本季剧集文件):末日地堡第一季"));
     }
 
+    // ---------- 体积筛选全拒真因分流(2026-09-13,线上冬城猎凶):空文件集不再一律误报同名异剧 ----------
+    // 用户全局资源筛选配了单集体积下限/上限后,4K 剧整目录文件可能全被拒收:文件是正片、链接活着,
+    // 此前一律落「无可识别的本季剧集文件」→ 疑似同名异剧连环退役,排障方向被带偏。
+
+    @Test
+    void collectEpisodeFilesTracksSizePolicyRejections() {
+        Fixture fixture = new Fixture();
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/temp/baidu@dc"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(filesOfSize(new String[]{"DONGCHEN/S01E01.mp4", "DONGCHEN/S01E02.mkv", "DONGCHEN/S01E03.mp4"},
+                        1440, 1420, 1562));
+        TreeMap<Integer, MediaSubscriptionCheckService.EpisodeFile> files = new TreeMap<>();
+        MediaSubscriptionCheckService.EpisodeCollectStats stats = new MediaSubscriptionCheckService.EpisodeCollectStats();
+        // 全局下限 2000MB:单集 1.4~1.6GB 的 4K 资源全被拒收,目录里其实全是正片
+        fixture.service.collectEpisodeFiles(new Site(), null, "/temp/baidu@dc", 1, files,
+                new MediaSubscriptionCheckService.EpisodeSizePolicy(2000L * 1024 * 1024, 0, 0), true, null, null, stats);
+        assertTrue(files.isEmpty());
+        assertEquals(3, stats.considered, "格式合规的候选文件都进了统计");
+        assertTrue(stats.allSizeRejected(), "全部文件被体积下限拒收:真因是配置而非资源");
+
+        TreeMap<Integer, MediaSubscriptionCheckService.EpisodeFile> maxFiles = new TreeMap<>();
+        MediaSubscriptionCheckService.EpisodeCollectStats maxStats = new MediaSubscriptionCheckService.EpisodeCollectStats();
+        // 上限同理(用户限带宽配小上限,4K 大文件全拒)
+        fixture.service.collectEpisodeFiles(new Site(), null, "/temp/baidu@dc", 1, maxFiles,
+                new MediaSubscriptionCheckService.EpisodeSizePolicy(0, 0, 100L * 1024 * 1024), true, null, null, maxStats);
+        assertTrue(maxFiles.isEmpty());
+        assertTrue(maxStats.allSizeRejected());
+
+        // 有一个文件过线:不算全拒,达标文件照收
+        TreeMap<Integer, MediaSubscriptionCheckService.EpisodeFile> mixed = new TreeMap<>();
+        MediaSubscriptionCheckService.EpisodeCollectStats mixedStats = new MediaSubscriptionCheckService.EpisodeCollectStats();
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/temp/baidu@dc"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(filesOfSize(new String[]{"S01E01.mp4", "S01E02.mp4"}, 300, 2400));
+        fixture.service.collectEpisodeFiles(new Site(), null, "/temp/baidu@dc", 1, mixed,
+                new MediaSubscriptionCheckService.EpisodeSizePolicy(2000L * 1024 * 1024, 0, 0), true, null, null, mixedStats);
+        assertEquals(Set.of(2), mixed.keySet(), "达标文件照收");
+        assertFalse(mixedStats.allSizeRejected());
+
+        // 列目录不给体积(全 0 字节):是列目录异常不是用户配置,不归「体积拒收」口径
+        TreeMap<Integer, MediaSubscriptionCheckService.EpisodeFile> zero = new TreeMap<>();
+        MediaSubscriptionCheckService.EpisodeCollectStats zeroStats = new MediaSubscriptionCheckService.EpisodeCollectStats();
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.eq("/temp/baidu@dc"),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(filesOfSize(new String[]{"S01E01.mp4", "S01E02.mp4"}, 0, 0));
+        fixture.service.collectEpisodeFiles(new Site(), null, "/temp/baidu@dc", 1, zero,
+                new MediaSubscriptionCheckService.EpisodeSizePolicy(20L * 1024 * 1024, 0, 0), true, null, null, zeroStats);
+        assertTrue(zero.isEmpty());
+        assertFalse(zeroStats.allSizeRejected());
+    }
+
+    @Test
+    void sizePolicyRejectionMessageForms() {
+        MediaSubscriptionCheckService.EpisodeSizePolicy policy =
+                new MediaSubscriptionCheckService.EpisodeSizePolicy(2000L * 1024 * 1024, 0, 0);
+        MediaSubscriptionCheckService.EpisodeCollectStats stats = new MediaSubscriptionCheckService.EpisodeCollectStats();
+        stats.considered = 3;
+        stats.floorRejected = 3;
+        stats.minSize = 1420L * 1024 * 1024;
+        stats.maxSize = 1562L * 1024 * 1024;
+        String message = MediaSubscriptionCheckService.sizePolicyRejectionReason(policy, stats,
+                "冬城猎凶（2026）4K 60FPS S01E01 - E03 DTS音轨");
+        assertTrue(MediaSubscriptionCheckService.isSizePolicyRejection(message));
+        assertFalse(MediaSubscriptionCheckService.isForeignShowRejection(message), "体积不符不是异剧:两条分流互斥");
+        assertTrue(message.contains("下限 2000 MB"), "带配置边界供用户对照: " + message);
+        assertTrue(message.contains("1420~1562"), "带实际体积区间: " + message);
+    }
+
+    @Test
+    void probeSizePolicyExclusionRetiresWithOwnKind() {
+        // 全局资源筛选配了 2000MB 单集下限:冬城猎凶 4K 单集 1.4~1.6GB 全被拒 —— 统一探测入口
+        // 按「体积不符」退役(独立失败类别、不拉黑),而不是混进同名异剧误导排障
+        Fixture fixture = new Fixture();
+        cn.har01d.alist_tvbox.entity.Setting filter =
+                new cn.har01d.alist_tvbox.entity.Setting("msub_pool_filter", "{\"minEpisodeSizeMb\":2000}");
+        Mockito.when(fixture.settingRepository.findById("msub_pool_filter")).thenReturn(Optional.of(filter));
+        MediaSubscriptionResource resource = new MediaSubscriptionResource();
+        resource.setId(15);
+        resource.setSubscriptionId(1);
+        resource.setLink("https://pan.baidu.com/s/dongchen");
+        resource.setTitle("冬城猎凶 4K 高码");
+        resource.setType(10);
+        resource.setState(MediaSubscriptionResource.STATE_CANDIDATE);
+        Share temp = new Share();
+        temp.setId(78);
+        temp.setPath("/我的百度分享/temp/baidu@dongchen@");
+        Share probe = new Share();
+        probe.setType(10);
+        probe.setShareId("dongchen");
+        Mockito.when(fixture.shareService.parseShareLink("https://pan.baidu.com/s/dongchen")).thenReturn(probe);
+        Mockito.when(fixture.shareRepository.findByTypeAndShareIdAndTempTrue(10, "dongchen")).thenReturn(List.of(temp));
+        Mockito.when(fixture.aListService.listFiles(Mockito.any(), Mockito.anyString(),
+                        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyBoolean()))
+                .thenReturn(filesOfSize(new String[]{"DONGCHEN/S01E01.mp4", "DONGCHEN/S01E02.mkv", "DONGCHEN/S01E03.mp4"},
+                        1440, 1420, 1562));
+
+        assertEquals(MediaSubscriptionCheckService.ProbeOutcome.POLICY,
+                fixture.service.probeCandidateSafely(fixture.subscription, resource));
+        assertEquals(MediaSubscriptionResource.STATE_RETIRED, resource.getState(), "体积不符退役冷却");
+        assertEquals(MediaSubscriptionResource.FAIL_KIND_POLICY, resource.getFailKind(), "独立失败类别:诊断不与异剧混淆");
+        Mockito.verifyNoInteractions(fixture.deadLinkRepository); // 链接没病:不进跨订阅黑名单
+        Mockito.verify(fixture.shareService).deleteShare(78); // 临时挂载用后即删
+    }
+
     // ---------- 改季残留检测(2026-08-24 二轮,线上末日地堡 S1→S3 播放实锤) ----------
     // 改季发生在重置功能上线之前,编辑路径不会再触发 —— 「检查」必须自己发现"集源行还挂在旧季
     // episode 行上"(可用性聚合不按季过滤,S1 的 LISTED 行冒领 S3 集号:逻辑线路标题是新季分集

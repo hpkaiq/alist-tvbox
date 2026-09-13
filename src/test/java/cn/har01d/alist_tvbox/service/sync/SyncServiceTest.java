@@ -136,7 +136,7 @@ class SyncServiceTest {
         share2.setType(1);
         share2.setShareId("share2");
 
-        when(shareRepository.findByTypeAndShareId(anyInt(), anyString())).thenReturn(Optional.empty());
+        when(shareRepository.findByTypeAndShareId(anyInt(), anyString())).thenReturn(List.of());
         when(shareRepository.findAll()).thenReturn(new ArrayList<>());
         when(shareRepository.save(any(Share.class))).thenAnswer(invocation -> invocation.getArgument(0));
 

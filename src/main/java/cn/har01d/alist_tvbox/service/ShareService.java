@@ -1365,8 +1365,13 @@ public class ShareService {
         if (probe == null) {
             return null;
         }
-        return shareRepository.findByTypeAndShareId(probe.getType(), probe.getShareId())
+        // The same (type, shareId) can legitimately have multiple rows (subscription
+        // mount + temp push, different passwords); pick the first row that has a title
+        // instead of a unique-result query that throws on duplicates.
+        return shareRepository.findByTypeAndShareId(probe.getType(), probe.getShareId()).stream()
                 .map(Share::getTitle)
+                .filter(StringUtils::isNotBlank)
+                .findFirst()
                 .orElse(null);
     }
 
@@ -1382,7 +1387,7 @@ public class ShareService {
             if (probe == null) {
                 return;
             }
-            shareRepository.findByTypeAndShareId(probe.getType(), probe.getShareId()).ifPresent(share -> {
+            shareRepository.findByTypeAndShareId(probe.getType(), probe.getShareId()).forEach(share -> {
                 if (!Objects.equals(title, share.getTitle())) {
                     share.setTitle(title);
                     shareRepository.save(share);
@@ -1435,7 +1440,7 @@ public class ShareService {
 
             shareRepository.save(share);
 
-            String error = enableStorage(share.getId(), token);
+            String error = enableStorageAwaitingSnapshot(share.getId(), token);
             share.setError(error);
             if (appProperties.isCleanInvalidShares() && invalid(error)) {
                 shareRepository.delete(share);
@@ -1578,6 +1583,36 @@ public class ShareService {
         } else {
             return null;
         }
+    }
+
+    /** 115 新建分享是快照语义:建完立刻挂载(追剧自有分享首批/补批)时,服务端可能尚未生成完快照,
+     * enable(init 即列分享根目录)必报「正在生成文件快照」。该态秒级自愈,按退避重试等就绪;
+     * 其它错误原样返回。重试节奏抽成方法供测试替换(免真实 sleep)。 */
+    private static final long[] SNAPSHOT_RETRY_DELAYS_MILLIS = {3_000, 5_000, 10_000, 20_000, 30_000};
+
+    static boolean isSnapshotPending(String error) {
+        return error != null && error.contains("正在生成文件快照");
+    }
+
+    long[] snapshotRetryDelayMillis() {
+        return SNAPSHOT_RETRY_DELAYS_MILLIS;
+    }
+
+    String enableStorageAwaitingSnapshot(Integer id, String token) {
+        String error = enableStorage(id, token);
+        long[] delays = snapshotRetryDelayMillis();
+        for (int i = 0; isSnapshotPending(error) && i < delays.length; i++) {
+            log.warn("storage {} enable blocked by pending share snapshot, retry {}/{} in {}ms: {}",
+                    id, i + 1, delays.length, delays[i], error);
+            try {
+                Thread.sleep(delays[i]);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            error = enableStorage(id, token);
+        }
+        return error;
     }
 
     public void deleteShares(List<Integer> ids) {

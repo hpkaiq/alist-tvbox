@@ -1660,9 +1660,17 @@ class Spider(HostSpider):
                 if direct_share_url is not None:
                     return self._parse(direct_share_url, resume_context)
                 vod = self._load_category_detail_vod(resume_context["id"])
-                share_url = self._decode_parse(self._select_resume_target(vod, resume_context))
+                if vod is None:
+                    raise ValueError(f"Atvp resume detail not found: {resume_context['id']}")
+                try:
+                    share_url = self._decode_parse(self._select_resume_target(vod, resume_context))
+                except ValueError:
+                    share_url = None
                 if share_url is None:
-                    raise ValueError(f"Atvp resume source is not a drive link: {resume_context['id']}")
+                    # 非网盘选集(如红果短剧的裸集 id/本地代理 URL)或坐标已失效:退回插件
+                    # 原始详情,把记录线路排到首位,由宿主按集名/集号续播。此前直接抛错,
+                    # 跨端同步(如 atv-player 推来)的这类记录在 FongMi 宿主里永远打不开。
+                    return self._reorder_resume_lines({"list": [vod]}, resume_context)
                 return self._parse(share_url, resume_context)
             share_url = self._decode_parse(raw_id)
             if share_url is not None:

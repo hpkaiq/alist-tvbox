@@ -5,7 +5,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
@@ -52,6 +56,21 @@ public class SearchSourceThrottle {
     public boolean blocked(String source) {
         SourceState state = sources.get(source);
         return state != null && System.currentTimeMillis() < state.nextAllowedAt;
+    }
+
+    /** 当前处于退避/恢复期的源快照(诊断报告用),如 "盘链: 连击 2, 还剩 300s";无则空表。 */
+    public List<String> blockedSnapshot() {
+        long now = System.currentTimeMillis();
+        List<String> result = new ArrayList<>();
+        for (Map.Entry<String, SourceState> entry : sources.entrySet()) {
+            SourceState state = entry.getValue();
+            long remaining = state.nextAllowedAt - now;
+            if (remaining > 0) {
+                result.add(entry.getKey() + ": 连击 " + state.consecutiveFailures + ", 还剩 " + remaining / 1000 + "s");
+            }
+        }
+        Collections.sort(result);
+        return result;
     }
 
     public void recordSuccess(String source) {

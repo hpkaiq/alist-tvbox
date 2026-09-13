@@ -1,10 +1,12 @@
 package cn.har01d.alist_tvbox.web;
 
 import cn.har01d.alist_tvbox.config.RestErrorHandler;
+import cn.har01d.alist_tvbox.dto.PanLianAccountStatus;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionCheckService;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionService;
 import cn.har01d.alist_tvbox.service.MediaSubscriptionTransferService;
 import cn.har01d.alist_tvbox.service.PianDanService;
+import cn.har01d.alist_tvbox.service.sitesearch.PanLianSearchService;
 import cn.har01d.alist_tvbox.tvbox.Category;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
@@ -44,15 +46,34 @@ class MediaSubscriptionControllerTest {
     private MediaSubscriptionTransferService transferService;
     @Mock
     private PianDanService pianDanService;
+    @Mock
+    private PanLianSearchService panLianSearchService;
 
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(
-                        new MediaSubscriptionController(subscriptionService, checkService, transferService, pianDanService))
+                        new MediaSubscriptionController(subscriptionService, checkService, transferService, pianDanService, panLianSearchService))
                 .setControllerAdvice(new RestErrorHandler())
                 .build();
+    }
+
+    @Test
+    void panlianAccountsDelegatesToService() throws Exception {
+        when(panLianSearchService.accountStatuses()).thenReturn(List.of(
+                new PanLianAccountStatus("u1@x.com", "moon", "3876534218@qq.com", false,
+                        "ok", null, false, true, 20, 49, 50, 1)));
+
+        mockMvc.perform(get("/api/media-subscriptions/panlian/accounts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].identity").value("u1@x.com"))
+                .andExpect(jsonPath("$[0].username").value("moon"))
+                .andExpect(jsonPath("$[0].quotaRemaining").value(49))
+                .andExpect(jsonPath("$[0].quotaLimit").value(50))
+                .andExpect(jsonPath("$[0].checkinDone").value(true))
+                .andExpect(jsonPath("$[0].checkinBonus").value(20));
+        verify(panLianSearchService).accountStatuses();
     }
 
     @Test
