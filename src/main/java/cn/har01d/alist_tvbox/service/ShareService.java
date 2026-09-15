@@ -7,6 +7,7 @@ import cn.har01d.alist_tvbox.dto.OpenApiDto;
 import cn.har01d.alist_tvbox.dto.ParseRequest;
 import cn.har01d.alist_tvbox.dto.ShareLink;
 import cn.har01d.alist_tvbox.dto.SharesDto;
+import cn.har01d.alist_tvbox.dto.StorageReloadProgress;
 import cn.har01d.alist_tvbox.entity.AListAlias;
 import cn.har01d.alist_tvbox.entity.AListAliasRepository;
 import cn.har01d.alist_tvbox.entity.Account;
@@ -84,10 +85,13 @@ import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -125,6 +129,20 @@ public class ShareService {
     private final AtomicInteger shareId = new AtomicInteger(20000);
     private final ObjectMapper objectMapper;
     private final UserService userService;
+
+    private static final int RELOAD_ALL_PAGE_SIZE = 500;
+    /** 风控/限流失败特征(判定整盘跳过):百度 errno -62/-19/-65 家族 + 通用限流措辞。
+     *  errno 支须兼容 reload 报错的 {@code (errno=-62)} 括号形态(PowerList baiduErrnoMessage 翻译文案)
+     *  与未翻译裸 body 的 {@code "errno":-62} JSON 形态。 */
+    private static final Pattern RELOAD_THROTTLED = Pattern.compile(
+            "(?i)errno\\s*[=:]\\s*(-62|-19|-65)|触发百度风控|访问频率太快|操作过于频繁|验证次数过多|请稍[后候]|too many (requests|attempts)|rate.?limit|\\b429\\b");
+    private final AtomicBoolean reloadAllRunning = new AtomicBoolean();
+    private volatile boolean reloadAllCancelled;
+    private volatile Thread reloadAllThread;
+    private final StorageReloadProgress reloadProgress = new StorageReloadProgress();
+
+    record FailedStorageRef(int id, String driver) {
+    }
 
     public ShareService(AppProperties appProperties,
                         ShareRepository shareRepository,
@@ -1760,6 +1778,170 @@ public class ShareService {
         ResponseEntity<Response> response = restTemplate.exchange("/api/admin/storage/reload?id=" + id, HttpMethod.POST, entity, Response.class);
         log.debug("reload storage {}: {}", id, response.getBody());
         return response.getBody();
+    }
+
+    public StorageReloadProgress getReloadAllProgress() {
+        return reloadProgress;
+    }
+
+    public StorageReloadProgress startReloadAllStorages(long intervalMs) {
+        if (intervalMs < 0 || intervalMs > 600_000) {
+            throw new BadRequestException("间隔必须在 0-600000 毫秒之间");
+        }
+        if (!reloadAllRunning.compareAndSet(false, true)) {
+            throw new BadRequestException("批量重载正在进行中");
+        }
+        reloadAllCancelled = false;
+        // 进度在启动线程同步初始化:后台线程被调度前查询方就能看到 running=true,不会误判"已完成";
+        // running=true 必须最后置位,否则并发查询会看到新任务叠加上一轮残留计数
+        reloadProgress.setCancelled(false);
+        reloadProgress.setTotal(0);
+        reloadProgress.setProcessed(0);
+        reloadProgress.setSuccess(0);
+        reloadProgress.setFailed(0);
+        reloadProgress.setThrottled(0);
+        reloadProgress.setThrottledDrivers(Set.of());
+        reloadProgress.setError(null);
+        reloadProgress.setInterval(intervalMs);
+        reloadProgress.setStartedTime(System.currentTimeMillis());
+        reloadProgress.setFinishedTime(0);
+        reloadProgress.setRunning(true);
+        Thread thread = new Thread(() -> {
+            try {
+                doReloadAllStorages(intervalMs);
+            } catch (Exception e) {
+                // doReloadAllStorages 内部不总揽异常,逃逸到这里必须收尾进度,
+                // 否则 running 永久 true、前端轮询不停
+                log.error("reload all storages crashed", e);
+                reloadProgress.setError("批量重载异常中断: " + e.getMessage());
+                finishReloadAll();
+            } finally {
+                reloadAllRunning.set(false);
+                reloadAllThread = null;
+            }
+        }, "storage-reload-all");
+        reloadAllThread = thread;
+        thread.start();
+        return reloadProgress;
+    }
+
+    public StorageReloadProgress cancelReloadAllStorages() {
+        if (reloadAllRunning.get()) {
+            reloadAllCancelled = true;
+            Thread thread = reloadAllThread;
+            if (thread != null) {
+                thread.interrupt();
+            }
+            log.info("cancel reload all storages requested");
+        }
+        return reloadProgress;
+    }
+
+    void doReloadAllStorages(long intervalMs) {
+        List<FailedStorageRef> storages;
+        try {
+            storages = collectFailedStorages();
+        } catch (Exception e) {
+            log.warn("collect failed storages failed", e);
+            reloadProgress.setError("获取失效资源列表失败: " + e.getMessage());
+            finishReloadAll();
+            return;
+        }
+
+        reloadProgress.setTotal(storages.size());
+        log.info("reload all storages begin: {} items, interval {}ms", storages.size(), intervalMs);
+
+        // 某网盘触发风控说明该盘在风控窗口内,继续请求必然失败且可能加重风控:
+        // 记下驱动名,后续同盘条目直接跳过(不请求),其他网盘正常处理
+        Set<String> throttledDrivers = new HashSet<>();
+        boolean first = true;
+        for (FailedStorageRef storage : storages) {
+            if (reloadAllCancelled) {
+                log.info("reload all storages cancelled at {}/{}", reloadProgress.getProcessed(), storages.size());
+                break;
+            }
+            if (storage.driver() != null && throttledDrivers.contains(storage.driver())) {
+                reloadProgress.setThrottled(reloadProgress.getThrottled() + 1);
+                reloadProgress.setProcessed(reloadProgress.getSuccess() + reloadProgress.getFailed() + reloadProgress.getThrottled());
+                continue;
+            }
+            if (!first && intervalMs > 0) {
+                try {
+                    Thread.sleep(intervalMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            first = false;
+            boolean ok = false;
+            String errorText = null;
+            try {
+                Response response = reloadStorage(storage.id());
+                if (response != null && response.getCode() != null && response.getCode() == 200) {
+                    ok = true;
+                } else {
+                    errorText = response == null ? "empty response" : response.getMessage();
+                }
+            } catch (Exception e) {
+                if (reloadAllCancelled) {
+                    break;
+                }
+                errorText = e.getMessage();
+            }
+            if (ok) {
+                reloadProgress.setSuccess(reloadProgress.getSuccess() + 1);
+            } else if (isThrottledReload(errorText)) {
+                log.warn("reload storage {} throttled ({}): {}, skip remaining storages of this driver",
+                        storage.id(), storage.driver(), errorText);
+                if (storage.driver() != null) {
+                    throttledDrivers.add(storage.driver());
+                    reloadProgress.setThrottledDrivers(Set.copyOf(throttledDrivers));
+                }
+                reloadProgress.setThrottled(reloadProgress.getThrottled() + 1);
+            } else {
+                log.warn("reload storage {} failed: {}", storage.id(), errorText);
+                reloadProgress.setFailed(reloadProgress.getFailed() + 1);
+            }
+            reloadProgress.setProcessed(reloadProgress.getSuccess() + reloadProgress.getFailed() + reloadProgress.getThrottled());
+        }
+        if (reloadAllCancelled) {
+            reloadProgress.setCancelled(true);
+        }
+        finishReloadAll();
+        log.info("reload all storages end: total {} success {} failed {} throttled {} cancelled {}",
+                reloadProgress.getTotal(), reloadProgress.getSuccess(), reloadProgress.getFailed(),
+                reloadProgress.getThrottled(), reloadProgress.isCancelled());
+    }
+
+    private boolean isThrottledReload(String message) {
+        return message != null && RELOAD_THROTTLED.matcher(message).find();
+    }
+
+    private void finishReloadAll() {
+        reloadProgress.setRunning(false);
+        reloadProgress.setFinishedTime(System.currentTimeMillis());
+    }
+
+    List<FailedStorageRef> collectFailedStorages() {
+        List<FailedStorageRef> storages = new ArrayList<>();
+        // AList 侧页码从 1 开始,cleanStorages 的 PageRequest.of(1, size) 同口径
+        for (int page = 1; ; page++) {
+            JsonNode result = listStorages(PageRequest.of(page, RELOAD_ALL_PAGE_SIZE));
+            JsonNode content = result == null ? null : result.get("data").get("content");
+            if (!(content instanceof ArrayNode array)) {
+                break;
+            }
+            for (JsonNode item : array) {
+                JsonNode driver = item.get("driver");
+                storages.add(new FailedStorageRef(item.get("id").asInt(),
+                        driver == null ? null : driver.asText()));
+            }
+            if (array.size() < RELOAD_ALL_PAGE_SIZE) {
+                break;
+            }
+        }
+        return storages;
     }
 
     private List<Share> loadLatestShare() {

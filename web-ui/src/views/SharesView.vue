@@ -77,6 +77,7 @@
             <el-button type="danger">清理</el-button>
           </template>
         </el-popconfirm>
+        <el-button type="warning" @click="showReloadAll">重载全部</el-button>
         <el-popconfirm @confirm="validateStorages" title="是否校验全部资源？">
           <template #reference>
             <el-button>校验</el-button>
@@ -362,10 +363,46 @@
     </template>
   </el-dialog>
 
+  <el-dialog v-model="reloadAllVisible" title="批量重载失效资源" width="30%">
+    <template v-if="reloadProgress.running">
+      <el-progress :percentage="reloadPercentage" :stroke-width="16" text-inside />
+      <p>已完成 {{ reloadProgress.processed }}/{{ reloadProgress.total }}
+        （成功 {{ reloadProgress.success }}，失败 {{ reloadProgress.failed }}<template v-if="reloadProgress.throttled">，风控跳过 {{ reloadProgress.throttled }}</template>）</p>
+      <p v-if="reloadProgress.throttledDrivers?.length" style="color: var(--el-color-warning);">
+        {{ reloadProgress.throttledDrivers.join('、') }} 已触发网盘风控，该网盘后续资源直接跳过不再请求，等待风控解除后可再次执行。
+      </p>
+      <p>每次重载间隔 {{ reloadProgress.interval }} 毫秒，关闭窗口不打断任务。</p>
+    </template>
+    <template v-else>
+      <p v-if="reloadProgress.error" style="color: var(--el-color-danger);">{{ reloadProgress.error }}</p>
+      <p>将对全部失效资源逐个执行「重新加载」，适合网盘风控解除后一键复活。当前共有 {{ total1 }} 个失效资源。</p>
+      <p>某网盘触发风控（百度 errno -62/-19/-65 等）后，该网盘后续资源将直接跳过，不影响其他网盘继续处理。</p>
+      <el-form label-width="140">
+        <el-form-item label="间隔(毫秒)">
+          <el-input-number v-model="reloadInterval" :min="0" :max="600000" :step="500" controls-position="right"
+            style="width: 200px;" />
+          <span class="hint">每次重载之间的等待毫秒数（0 表示无延迟），建议不小于 1000 以缓解网盘风控</span>
+        </el-form-item>
+      </el-form>
+    </template>
+    <template #footer>
+      <span class="dialog-footer">
+        <template v-if="reloadProgress.running">
+          <el-button @click="reloadAllVisible = false">后台运行</el-button>
+          <el-button type="danger" @click="cancelReloadAll">停止重载</el-button>
+        </template>
+        <template v-else>
+          <el-button @click="reloadAllVisible = false">取消</el-button>
+          <el-button type="primary" @click="startReloadAll">开始重载</el-button>
+        </template>
+      </span>
+    </template>
+  </el-dialog>
+
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
 import { ElMessage } from 'element-plus'
 import { genFileId } from 'element-plus'
@@ -409,6 +446,21 @@ interface Storage {
   driver: string
   status: string
   addition: string
+}
+
+interface ReloadProgress {
+  running: boolean
+  cancelled: boolean
+  total: number
+  processed: number
+  success: number
+  failed: number
+  throttled: number
+  throttledDrivers: string[]
+  interval: number
+  startedTime: number
+  finishedTime: number
+  error: string | null
 }
 
 const options = [
@@ -756,6 +808,84 @@ const reloadStorage = (id: number) => {
   })
 }
 
+const emptyReloadProgress = (): ReloadProgress => ({
+  running: false, cancelled: false, total: 0, processed: 0, success: 0, failed: 0,
+  throttled: 0, throttledDrivers: [], interval: 0,
+  startedTime: 0, finishedTime: 0, error: null
+})
+const reloadAllVisible = ref(false)
+const reloadInterval = ref(2000)
+const reloadProgress = ref<ReloadProgress>(emptyReloadProgress())
+const reloadAllActive = ref(false)
+let reloadPollTimer: number | undefined
+
+const reloadPercentage = computed(() => {
+  const { total, processed } = reloadProgress.value
+  return total > 0 ? Math.floor(processed / total * 100) : 0
+})
+
+const showReloadAll = () => {
+  axios.get('/api/storages/reload-all').then(({ data }) => {
+    reloadProgress.value = data
+    reloadAllVisible.value = true
+    if (data.running && !reloadAllActive.value) {
+      startReloadAllPolling()
+    }
+  }, () => {
+    reloadAllVisible.value = true
+  })
+}
+
+const startReloadAll = () => {
+  axios.post('/api/storages/reload-all?interval=' + reloadInterval.value).then(({ data }) => {
+    reloadProgress.value = data
+    startReloadAllPolling()
+  }, (err) => {
+    ElMessage.error('启动失败：' + (err.response?.data?.message || err.message))
+  })
+}
+
+const cancelReloadAll = () => {
+  axios.post('/api/storages/reload-all/cancel').then(({ data }) => {
+    reloadProgress.value = data
+  })
+}
+
+const startReloadAllPolling = () => {
+  reloadAllActive.value = true
+  if (reloadPollTimer) {
+    return
+  }
+  reloadPollTimer = window.setInterval(pollReloadAll, 2000)
+}
+
+const stopReloadAllPolling = () => {
+  reloadAllActive.value = false
+  if (reloadPollTimer) {
+    window.clearInterval(reloadPollTimer)
+    reloadPollTimer = undefined
+  }
+}
+
+const pollReloadAll = () => {
+  axios.get('/api/storages/reload-all').then(({ data }) => {
+    reloadProgress.value = data
+    if (!data.running) {
+      stopReloadAllPolling()
+      if (data.cancelled) {
+        ElMessage.warning(`重载已停止：成功 ${data.success} 个，失败 ${data.failed} 个` +
+          (data.throttled ? `，${data.throttled} 个风控跳过` : ''))
+      } else if (data.error) {
+        ElMessage.error(data.error)
+      } else {
+        ElMessage.success(`重载完成：成功 ${data.success} 个，失败 ${data.failed} 个` +
+          (data.throttled ? `，${data.throttled} 个因网盘风控跳过，风控解除后可再次执行` : ''))
+      }
+      loadStorages(1)
+    }
+  })
+}
+
 const refreshShares = () => {
   loadShares(page.value)
 }
@@ -915,6 +1045,17 @@ onMounted(() => {
   loadBaseUrl()
   loadShares(page.value)
   loadStorages(page1.value)
+  // 页面刷新后恢复批量重载的后台轮询(不弹窗,完成时 toast)
+  axios.get('/api/storages/reload-all').then(({ data }) => {
+    if (data.running) {
+      reloadProgress.value = data
+      startReloadAllPolling()
+    }
+  })
+})
+
+onUnmounted(() => {
+  stopReloadAllPolling()
 })
 </script>
 
