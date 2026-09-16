@@ -81,12 +81,27 @@ public class EmbyPlayInfo {
         return playing.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
     }
 
+    public String getPlayingAt(long positionTicks) {
+        currentTime = positionTicks;
+        return getPlaying();
+    }
+
     public String getStopped() {
         return stopped.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
     }
 
+    public String getStoppedAt(long positionTicks) {
+        currentTime = positionTicks;
+        return getStopped();
+    }
+
     public String getProgress(long value) {
         currentTime = value * 10000;
+        return progress.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
+    }
+
+    public String getProgressAt(long positionTicks) {
+        currentTime = positionTicks;
         return progress.formatted(currentTime, playbackStartTimeTicks, playSessionId, mediaSourceId, itemId);
     }
 

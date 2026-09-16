@@ -52,6 +52,8 @@ import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 @Slf4j
 @Service
 public class EmbyService {
+    private static final long TICKS_PER_SECOND = 10_000_000L;
+    private static final int FAKE_PLAY_PROGRESS_INTERVAL_SECONDS = 10;
     private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(1,
             1,
             10,
@@ -59,6 +61,11 @@ public class EmbyService {
             new LinkedBlockingDeque<>(10),
             Executors.defaultThreadFactory(),
             new ThreadPoolExecutor.CallerRunsPolicy());
+    private static final ScheduledExecutorService fakePlayExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "emby-fake-play");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final EmbyRepository embyRepository;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
@@ -803,7 +810,104 @@ public class EmbyService {
         return params;
     }
 
-    @Scheduled(cron = "0 30 0 * * ?")
+    private void startFakePlay(Emby emby, EmbyInfo info, String id) throws JsonProcessingException {
+        String[] parts = id.split("-", 2);
+        if (parts.length != 2 || !String.valueOf(emby.getId()).equals(parts[0])) {
+            throw new IllegalArgumentException("Invalid Emby item id: " + id);
+        }
+
+        String itemId = parts[1];
+        long startPositionTicks = getPlaybackPositionTicks(emby, info, itemId);
+        Headers headers = getHeaders(emby, info);
+        MultiValueMap<String, String> query = getQueryParams(emby, info);
+        MultiValueMap<String, String> playbackQuery = new LinkedMultiValueMap<>(query);
+        playbackQuery.add("IsPlayback", "true");
+        playbackQuery.add("AutoOpenLiveStream", "true");
+        playbackQuery.add("StartTimeTicks", String.valueOf(startPositionTicks));
+        playbackQuery.add("MaxStreamingBitrate", "2147483647");
+        playbackQuery.add("UserId", info.getUser().getId());
+
+        String playbackInfoUrl = UriComponentsBuilder
+                .fromUriString(emby.getUrl() + "/emby/Items/" + itemId + "/PlaybackInfo")
+                .queryParams(playbackQuery)
+                .build()
+                .encode()
+                .toUriString();
+        String json = postJson(playbackInfoUrl, "{}", headers);
+        EmbyMediaSources media = objectMapper.readValue(json, EmbyMediaSources.class);
+        if (media.getItems() == null || media.getItems().isEmpty() || StringUtils.isBlank(media.getSessionId())) {
+            throw new IllegalStateException("Emby PlaybackInfo returned no playable media source");
+        }
+
+        EmbyMediaSources.MediaSources source = media.getItems().getFirst();
+        long playSeconds = ThreadLocalRandom.current().nextLong(60, 121);
+        long finalPositionTicks = startPositionTicks + playSeconds * TICKS_PER_SECOND;
+        if (source.getRunTimeTicks() > 0) {
+            finalPositionTicks = Math.min(finalPositionTicks, source.getRunTimeTicks());
+        }
+
+        EmbyPlayInfo playInfo = new EmbyPlayInfo(emby, info, itemId, media.getSessionId(), source.getId(), source.getRunTimeTicks());
+        String playingUrl = buildPlaybackSessionUrl(emby, info, "/emby/Sessions/Playing");
+        String progressUrl = buildPlaybackSessionUrl(emby, info, "/emby/Sessions/Playing/Progress");
+        String stoppedUrl = buildPlaybackSessionUrl(emby, info, "/emby/Sessions/Playing/Stopped");
+        postJson(playingUrl, playInfo.getPlayingAt(startPositionTicks), headers);
+
+        long startedAtNanos = System.nanoTime();
+        long stoppedPositionTicks = finalPositionTicks;
+        ScheduledFuture<?> progressTask = fakePlayExecutor.scheduleAtFixedRate(() -> {
+            long elapsedSeconds = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startedAtNanos);
+            long positionTicks = Math.min(stoppedPositionTicks,
+                    startPositionTicks + elapsedSeconds * TICKS_PER_SECOND);
+            try {
+                postJson(progressUrl, playInfo.getProgressAt(positionTicks), headers);
+            } catch (Exception e) {
+                log.warn("Emby {} fakePlay 上报播放进度失败.", emby.getName(), e);
+            }
+        }, FAKE_PLAY_PROGRESS_INTERVAL_SECONDS, FAKE_PLAY_PROGRESS_INTERVAL_SECONDS, TimeUnit.SECONDS);
+
+        fakePlayExecutor.schedule(() -> {
+            progressTask.cancel(false);
+            try {
+                postJson(progressUrl, playInfo.getProgressAt(stoppedPositionTicks), headers);
+            } catch (Exception e) {
+                log.warn("Emby {} fakePlay 上报最终播放进度失败.", emby.getName(), e);
+            }
+            try {
+                postJson(stoppedUrl, playInfo.getStoppedAt(stoppedPositionTicks), headers);
+                log.info("{} itemId:{} Emby fakePlay completed after {} seconds.", emby.getName(), itemId, playSeconds);
+            } catch (Exception e) {
+                log.warn("Emby {} fakePlay 上报停止播放失败.", emby.getName(), e);
+            }
+        }, playSeconds, TimeUnit.SECONDS);
+
+        log.info("{} itemId:{} Emby fakePlay started, duration:{} seconds.", emby.getName(), itemId, playSeconds);
+    }
+
+    private long getPlaybackPositionTicks(Emby emby, EmbyInfo info, String itemId) {
+        try {
+            HttpHeaders headers = setHeaders(emby, info);
+            HttpEntity<Object> entity = new HttpEntity<>(null, headers);
+            String url = emby.getUrl() + "/emby/Users/" + info.getUser().getId() + "/Items/" + itemId;
+            String json = restTemplate.exchange(url, HttpMethod.GET, entity, String.class).getBody();
+            if (StringUtils.isBlank(json)) {
+                return 0;
+            }
+            return objectMapper.readTree(json).path("UserData").path("PlaybackPositionTicks").asLong(0);
+        } catch (Exception e) {
+            log.debug("Emby {} fakePlay 获取原播放进度失败，从头开始模拟播放.", emby.getName(), e);
+            return 0;
+        }
+    }
+
+    private String buildPlaybackSessionUrl(Emby emby, EmbyInfo info, String path) {
+        return UriComponentsBuilder.fromUriString(emby.getUrl() + path)
+                .queryParams(getQueryParams(emby, info))
+                .build()
+                .encode()
+                .toUriString();
+    }
+
+    @Scheduled(cron = "0 30 1 * * ?")
     public void fakePlay() {
         for (Emby emby : findAll()) {
             try {
@@ -876,8 +980,8 @@ public class EmbyService {
                         }
                         log.debug("fakePlay debug movie {}", movie);
                         log.debug("fakePlay debug detail {}", detail);
-                        play(vodId);
-                        log.info("{} resumeSize:{} vodId:{} Emby fakePlay success.", emby.getName(), resumeSize, vodId);
+                        startFakePlay(emby, info, vodId);
+                        log.info("{} resumeSize:{} vodId:{} Emby fakePlay session created.", emby.getName(), resumeSize, vodId);
                         break;
                     } catch (Exception e) {
                         failedVodIds.add(movie.getVod_id());
