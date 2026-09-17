@@ -18,6 +18,7 @@ import cn.har01d.alist_tvbox.entity.SubscriptionRepository;
 import cn.har01d.alist_tvbox.entity.AccountRepository;
 import cn.har01d.alist_tvbox.entity.SiteRepository;
 import cn.har01d.alist_tvbox.util.Constants;
+import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -38,6 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -204,12 +206,12 @@ class SubscriptionServiceSpiderTest {
         Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
         Map<String, Object> atvHome = findSite(config, "atv_home");
         assertEquals("csp_WebHome", atvHome.get("api"));
-        assertEquals("http://atv.example/webhome/app.html?token=-&v=22", atvHome.get("homePage"));
+        assertEquals("http://atv.example/webhome/app.html?token=-&v=23", atvHome.get("homePage"));
         // 显式 jar(与其他内置源一致):防宿主不回落全局 spider 或全局位被覆盖
         assertEquals("http://atv.example/spring.jar", atvHome.get("jar"));
         // ext = base64(JSON)(与 csp_Media 等其它源一致;url + pt 播放同步专用令牌,测试桩下 pt 为空)
         String ext = new String(java.util.Base64.getDecoder().decode((String) atvHome.get("ext")));
-        assertTrue(ext.contains("\"url\":\"http://atv.example/webhome/app.html?token=-&v=22\""));
+        assertTrue(ext.contains("\"url\":\"http://atv.example/webhome/app.html?token=-&v=23\""));
         assertTrue(ext.contains("\"pt\":\"\""));
 
         // 普通端(未标记能力):同一形态
@@ -230,6 +232,81 @@ class SubscriptionServiceSpiderTest {
         for (Map<String, Object> site : (List<Map<String, Object>>) config.get("sites")) {
             assertEquals(false, "atv_home".equals(site.get("key")));
         }
+    }
+
+    @Test
+    void forwardedProtoDrivesHttpsLinksBehindTlsProxy() {
+        // Caddy/nginx 做 TLS 终结(#1073):后端只见 http 连接,链接协议从信任来源的
+        // X-Forwarded-Proto 还原,enable_https 未开也能生成客户端实际可访问的 https 地址
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/sub/1");
+        request.setServerName("tvbox.example");
+        request.addHeader("X-Forwarded-Proto", "https");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        SubscriptionService service = newService("{}");
+        assertEquals("https://tvbox.example/spring.jar", service.readHostAddress("/spring.jar"));
+
+        Map<String, Object> config = service.subscription("", "http://up.example/config.json", "", null);
+        assertEquals("https://tvbox.example/spring.jar", config.get("spider"));
+    }
+
+    @Test
+    void forwardedProtoChainTakesFirstSegment() {
+        // 多级反代逗号链取最左(客户端到第一跳的协议)
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/sub/1");
+        request.setServerName("tvbox.example");
+        request.addHeader("X-Forwarded-Proto", "https, http");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        assertEquals("https://tvbox.example/spring.jar", newService("{}").readHostAddress("/spring.jar"));
+    }
+
+    @Test
+    void forwardedProtoIgnoredForUntrustedSource() {
+        // trusted_proxies 收口后:来源不在列表内的 X-Forwarded-Proto 不采信,回落 enable_https 语义
+        Utils.setTrustedProxies(Set.of("10.0.0.1"));
+        try {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/sub/1");
+            request.setServerName("tvbox.example");
+            request.setRemoteAddr("127.0.0.1");
+            request.addHeader("X-Forwarded-Proto", "https");
+            RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+            assertEquals("http://tvbox.example/spring.jar", newService("{}").readHostAddress("/spring.jar"));
+        } finally {
+            Utils.setTrustedProxies(Set.of());
+        }
+    }
+
+    @Test
+    void forwardedProtoUnsupportedValueFallsBack() {
+        // h2/h2c 等中间协议不是可用链接协议,按缺失回落
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/sub/1");
+        request.setServerName("tvbox.example");
+        request.addHeader("X-Forwarded-Proto", "h2");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        assertEquals("http://tvbox.example/spring.jar", newService("{}").readHostAddress("/spring.jar"));
+    }
+
+    @Test
+    void noForwardedHeaderKeepsLegacySchemeRules() {
+        // 无反代头:enable_https=false → http;开 → 非 192.168 主机 https(内网直连仍 http)
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/sub/1");
+        request.setServerName("tvbox.example");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        assertEquals("http://tvbox.example/spring.jar", newService("{}").readHostAddress("/spring.jar"));
+
+        AppProperties https = new AppProperties();
+        https.setEnableHttps(true);
+        SubscriptionService service = newService("{}", mock(WebHomeService.class), List.of(),
+                mock(PluginRepository.class), mock(HistoryRepository.class), https);
+        assertEquals("https://tvbox.example/spring.jar", service.readHostAddress("/spring.jar"));
+
+        MockHttpServletRequest lan = new MockHttpServletRequest("GET", "/sub/1");
+        lan.setServerName("192.168.1.10");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(lan));
+        assertEquals("http://192.168.1.10/spring.jar", service.readHostAddress("/spring.jar"));
     }
 
     @Test
