@@ -858,13 +858,23 @@ public class BiliBiliService {
         return hotResponse.getData();
     }
 
-    private <T> T getJson(String url, Class<T> clazz) throws IOException {
-        Request request = new Request.Builder()
+    /** 空间投稿接口(x/space/wbi/arc/search)风控校验依赖 Cookie:无 Cookie 直接 412 回 HTML 挑战页(JsonParseException '<')。
+     *  entity 头(buildHttpEntity 注入的 Cookie/UA/Referer)必须随 OkHttp 请求发出,原实现造了 entity 只用于 WBI 签名却丢头。 */
+    private <T> T getJson(String url, Class<T> clazz, HttpEntity<Void> entity) throws IOException {
+        Request.Builder builder = new Request.Builder()
                 .url(url)
-                .addHeader(HttpHeaders.ACCEPT, "*/*")
-                .addHeader(HttpHeaders.USER_AGENT, appProperties.getUserAgent())
-                .addHeader(HttpHeaders.REFERER, "https://space.bilibili.com")
-                .build();
+                .addHeader(HttpHeaders.ACCEPT, "*/*");
+        if (entity != null) {
+            entity.getHeaders().forEach((name, values) -> {
+                for (String value : values) {
+                    builder.addHeader(name, value);
+                }
+            });
+        } else {
+            builder.addHeader(HttpHeaders.USER_AGENT, appProperties.getUserAgent());
+            builder.addHeader(HttpHeaders.REFERER, "https://space.bilibili.com");
+        }
+        Request request = builder.build();
 
         Call call = client.newCall(request);
         Response response = call.execute();
@@ -1134,7 +1144,7 @@ public class BiliBiliService {
         String url = NEW_SEARCH_API + "?" + Utils.encryptWbi(map, imgKey, subKey);
         log.debug("getUpMedia: {}", url);
 
-        BiliBiliSearchInfoResponse response = getJson(url, BiliBiliSearchInfoResponse.class);
+        BiliBiliSearchInfoResponse response = getJson(url, BiliBiliSearchInfoResponse.class, entity);
         log.debug("{}", response);
         BiliBiliSearchInfo searchInfo = response.getData();
         List<MovieDetail> list = new ArrayList<>();
@@ -1252,7 +1262,7 @@ public class BiliBiliService {
         String url = NEW_SEARCH_API + "?" + Utils.encryptWbi(map, imgKey, subKey);
         log.debug("getUpPlaylist: {}", url);
 
-        BiliBiliSearchInfoResponse response = getJson(url, BiliBiliSearchInfoResponse.class);
+        BiliBiliSearchInfoResponse response = getJson(url, BiliBiliSearchInfoResponse.class, entity);
         log.debug("{}", response);
         List<BiliBiliSearchInfo.Video> list = new ArrayList<>();
         List<BiliBiliSearchInfo.Video> videos = response.getData().getList().getVlist();
@@ -1693,6 +1703,12 @@ public class BiliBiliService {
                 String name = info.getOwner().getName();
                 String owner = String.format("[a=cr:{\"id\":\"up:%d\",\"name\":\"%s\"}/]%s[/a]", id, name, name);
                 movieDetail.setVod_director(owner);
+            } else if ("gui".equals(client)) {
+                // atv-player(X-CLIENT: gui):详情「导演」行把 [a=cr:...] 渲染为内联链接,点击经 detail-field(category) 跳 t=up:<mid> 的 UP 主视频列表
+                long id = info.getOwner().getMid();
+                String name = info.getOwner().getName();
+                String owner = String.format("[a=cr:{\"target\":\"bilibili\",\"type\":\"category\",\"value\":\"up:%d\"}/]%s[/a]", id, name);
+                movieDetail.setVod_director(owner);
             }
             upPlayUrl = fetchUpPlayUrl(info.getOwner().getMid(), client);
         }
@@ -1981,7 +1997,9 @@ public class BiliBiliService {
         headers.put(HttpHeaders.USER_AGENT, appProperties.getUserAgent());
         result.put("header", headers);
 
-        result.put("subs", getSubtitles(aid, cid));
+        BiliBiliV2Info playerInfo = getPlayerInfo(aid, cid);
+        result.put("subs", getSubtitles(playerInfo));
+        result.put("chapters", getChapters(playerInfo));
 
         result.put("danmaku", "https://comment.bilibili.com/" + cid + ".xml");
 
@@ -1993,9 +2011,8 @@ public class BiliBiliService {
         return result;
     }
 
-    private List<Sub> getSubtitles(String aid, String cid) {
-        boolean allAi = true;
-        List<Sub> list = new ArrayList<>();
+    /** player/wbi/v2 一次返回字幕与分段章节(view_points),供 getPlayUrl 组装;失败返回 null,字幕/章节各自兜底为空。 */
+    private BiliBiliV2Info getPlayerInfo(String aid, String cid) {
         try {
             Map<String, Object> map = new HashMap<>();
             map.put("aid", aid);
@@ -2012,39 +2029,60 @@ public class BiliBiliService {
             String url = PLAYER2 + "?" + Utils.encryptWbi(map, imgKey, subKey);
 
             ResponseEntity<BiliBiliV2InfoResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliV2InfoResponse.class);
-            log.debug("get subtitles: {}", url);
-            for (BiliBiliV2Info.Subtitle subtitle : response.getBody().getData().getSubtitle().getSubtitles()) {
-                if (StringUtils.isBlank(subtitle.getSubtitle_url())) {
-                    continue;
-                }
-                if (subtitle.getLan_doc().contains("中文") && (subtitle.getLan_doc().contains("自动生成") || subtitle.getLan_doc().contains("自动翻译"))) {
-                    continue;
-                }
-                if (!subtitle.getLan().startsWith("ai-")) {
-                    allAi = false;
-                }
-                Sub sub = new Sub();
-                sub.setName(subtitle.getLan_doc());
-                sub.setLang(subtitle.getLan());
-                sub.setFormat("application/x-subrip");
-                sub.setUrl(fixSubtitleUrl(subtitle.getSubtitle_url()));
-                if (subtitle.getLan().startsWith("ai-")) {
-                    sub.setFlag(4);
-                }
-                list.add(sub);
-            }
+            log.debug("get player info: {}", url);
+            return response.getBody().getData();
         } catch (Exception e) {
             log.warn("", e);
+            return null;
         }
-//        if (!list.isEmpty() && allAi) {
-//            Sub sub = new Sub();
-//            sub.setName("关闭");
-//            sub.setLang("");
-//            sub.setFormat("application/x-subrip");
-//            sub.setUrl(fixSubtitleUrl(""));
-//            list.add(0, sub);
-//        }
+    }
+
+    private List<Sub> getSubtitles(BiliBiliV2Info info) {
+        boolean allAi = true;
+        List<Sub> list = new ArrayList<>();
+        if (info == null || info.getSubtitle() == null) {
+            return list;
+        }
+        for (BiliBiliV2Info.Subtitle subtitle : info.getSubtitle().getSubtitles()) {
+            if (StringUtils.isBlank(subtitle.getSubtitle_url())) {
+                continue;
+            }
+            if (subtitle.getLan_doc().contains("中文") && (subtitle.getLan_doc().contains("自动生成") || subtitle.getLan_doc().contains("自动翻译"))) {
+                continue;
+            }
+            if (!subtitle.getLan().startsWith("ai-")) {
+                allAi = false;
+            }
+            Sub sub = new Sub();
+            sub.setName(subtitle.getLan_doc());
+            sub.setLang(subtitle.getLan());
+            sub.setFormat("application/x-subrip");
+            sub.setUrl(fixSubtitleUrl(subtitle.getSubtitle_url()));
+            if (subtitle.getLan().startsWith("ai-")) {
+                sub.setFlag(4);
+            }
+            list.add(sub);
+        }
         log.debug("subtitles: {}", list);
+        return list;
+    }
+
+    /** B站分段章节(view_points)→ {from,to,title};章节随 cid 不可变,播放时直出。 */
+    List<Map<String, Object>> getChapters(BiliBiliV2Info info) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        if (info == null) {
+            return list;
+        }
+        for (BiliBiliV2Info.ViewPoint point : info.getView_points()) {
+            if (point == null || StringUtils.isBlank(point.getContent())) {
+                continue;
+            }
+            Map<String, Object> chapter = new HashMap<>();
+            chapter.put("from", point.getFrom());
+            chapter.put("to", point.getTo());
+            chapter.put("title", point.getContent().trim());
+            list.add(chapter);
+        }
         return list;
     }
 
