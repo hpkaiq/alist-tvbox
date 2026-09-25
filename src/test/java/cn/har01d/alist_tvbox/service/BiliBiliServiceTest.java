@@ -3,9 +3,11 @@ package cn.har01d.alist_tvbox.service;
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfo;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
 import cn.har01d.alist_tvbox.util.BiliBiliUtils;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2InfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliWatchLaterResponse;
 import cn.har01d.alist_tvbox.dto.bili.Data;
 import cn.har01d.alist_tvbox.dto.bili.Resp;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
@@ -553,5 +555,135 @@ class BiliBiliServiceTest {
                 .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree("{\"code\":0}")));
 
         assertEquals("收藏成功(默认收藏夹)", service.runActionText("BV195KY6YEeY", "favorite"));
+    }
+
+    @Test
+    void getWatchLaterMapsItemsWithProgress() throws Exception {
+        String json = "{\"code\":0,\"data\":{\"count\":2,\"list\":["
+                + "{\"aid\":1,\"bvid\":\"BV1aa\",\"title\":\"看了一半\",\"pic\":\"http://pic/1.jpg\",\"duration\":600,\"progress\":120,\"add_at\":1700000000,\"owner\":{\"mid\":9,\"name\":\"up主\"}},"
+                + "{\"aid\":2,\"bvid\":\"BV2bb\",\"title\":\"还没看\",\"pic\":\"http://pic/2.jpg\",\"duration\":300,\"progress\":0,\"add_at\":1700000001,\"owner\":{\"mid\":9,\"name\":\"up主\"}}"
+                + "]}}";
+        BiliBiliWatchLaterResponse response = new ObjectMapper().readValue(json, BiliBiliWatchLaterResponse.class);
+        when(restTemplate.exchange(eq("https://api.bilibili.com/x/v2/history/toview/web"), eq(HttpMethod.GET), any(), eq(BiliBiliWatchLaterResponse.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        MovieList result = service.getWatchLater(1);
+
+        assertEquals(2, result.getList().size());
+        assertEquals(2, result.getTotal());
+        assertEquals(1, result.getPagecount());
+        assertEquals("BV1aa", result.getList().get(0).getVod_id());
+        assertEquals("看了一半", result.getList().get(0).getVod_name());
+        assertEquals("已看02:00/10:00", result.getList().get(0).getVod_remarks());
+        assertEquals("up主", result.getList().get(0).getVod_director());
+        assertEquals("05:00", result.getList().get(1).getVod_remarks());
+    }
+
+    @Test
+    void getWatchLaterBeyondFirstPageIsEmpty() {
+        MovieList result = service.getWatchLater(2);
+
+        assertTrue(result.getList().isEmpty());
+        assertEquals(1, result.getPagecount());
+        Mockito.verify(restTemplate, Mockito.never())
+                .exchange(anyString(), eq(HttpMethod.GET), any(), eq(BiliBiliWatchLaterResponse.class));
+    }
+
+    @Test
+    void getWatchLaterToleratesNotLoggedIn() {
+        BiliBiliWatchLaterResponse response = new BiliBiliWatchLaterResponse();
+        response.setCode(-101);
+        when(restTemplate.exchange(eq("https://api.bilibili.com/x/v2/history/toview/web"), eq(HttpMethod.GET), any(), eq(BiliBiliWatchLaterResponse.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        MovieList result = service.getWatchLater(1);
+
+        assertTrue(result.getList().isEmpty());
+    }
+
+    @Test
+    void viewApiUgcSeasonDeserializes() throws Exception {
+        // 实测 episode 无顶层 duration,时长在 arc.duration(秒)
+        String json = "{\"aid\":1,\"bvid\":\"BV1\",\"title\":\"t\",\"ugc_season\":{\"id\":748,\"title\":\"合集名\",\"mid\":9,"
+                + "\"sections\":[{\"id\":1,\"title\":\"正片\",\"episodes\":[{\"aid\":10,\"bvid\":\"BV10\",\"cid\":100,\"title\":\"第一集\",\"arc\":{\"duration\":61}}]},"
+                + "{\"id\":2,\"title\":\"花絮\",\"episodes\":[]}]}}";
+        BiliBiliInfo info = new ObjectMapper().readValue(json, BiliBiliInfo.class);
+
+        assertEquals("合集名", info.getUgcSeason().getTitle());
+        assertEquals(2, info.getUgcSeason().getSections().size());
+        BiliBiliInfo.UgcSeason.Episode episode = info.getUgcSeason().getSections().get(0).getEpisodes().get(0);
+        assertEquals("第一集", episode.getTitle());
+        assertEquals(100L, episode.getCid());
+        assertEquals(10L, episode.getAid());
+        assertEquals(61L, episode.getDuration());
+    }
+
+    private BiliBiliInfo.UgcSeason.Arc arcOf(long seconds) {
+        BiliBiliInfo.UgcSeason.Arc arc = new BiliBiliInfo.UgcSeason.Arc();
+        arc.setDuration(seconds);
+        return arc;
+    }
+
+    @Test
+    void getDetailAppendsUgcSeasonLineBeforeRelated() throws Exception {
+        BiliBiliInfo info = videoInfo();
+        BiliBiliInfo.UgcSeason season = new BiliBiliInfo.UgcSeason();
+        season.setId(74800L);
+        season.setTitle("修仙合集");
+        BiliBiliInfo.UgcSeason.Section main = new BiliBiliInfo.UgcSeason.Section();
+        main.setId(1L);
+        main.setTitle("正片");
+        BiliBiliInfo.UgcSeason.Episode first = new BiliBiliInfo.UgcSeason.Episode();
+        first.setAid(1130000001L);
+        first.setBvid("BV1first");
+        first.setCid(1500000001L);
+        first.setTitle("1 初入宗门");
+        first.setArc(arcOf(631L));
+        BiliBiliInfo.UgcSeason.Episode second = new BiliBiliInfo.UgcSeason.Episode();
+        second.setAid(116958703918865L);
+        second.setBvid("BV195KY6YEeY");
+        second.setCid(40168587741L);
+        second.setTitle("2 突破金丹#特辑$");
+        second.setArc(arcOf(4531L));
+        main.setEpisodes(List.of(first, second));
+        BiliBiliInfo.UgcSeason.Section extra = new BiliBiliInfo.UgcSeason.Section();
+        extra.setId(2L);
+        extra.setTitle("花絮");
+        BiliBiliInfo.UgcSeason.Episode bonus = new BiliBiliInfo.UgcSeason.Episode();
+        bonus.setAid(1130000003L);
+        bonus.setBvid("BV1bonus");
+        bonus.setCid(1500000003L);
+        bonus.setTitle("幕后");
+        bonus.setArc(arcOf(90L));
+        extra.setEpisodes(List.of(bonus));
+        season.setSections(List.of(main, extra));
+        info.setUgcSeason(season);
+        stubInfoApi(info);
+
+        BiliBiliInfo related = new BiliBiliInfo();
+        related.setAid(1130000009L);
+        related.setCid(1500000009L);
+        related.setTitle("相关推荐");
+        BiliBiliRelatedResponse relatedResponse = new BiliBiliRelatedResponse();
+        relatedResponse.setData(List.of(related));
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/archive/related"), eq(HttpMethod.GET), any(), eq(BiliBiliRelatedResponse.class)))
+                .thenReturn(ResponseEntity.ok(relatedResponse));
+
+        cn.har01d.alist_tvbox.tvbox.MovieDetail movie = service.getDetail("BV195KY6YEeY", "com.github.tvbox.osc").getList().get(0);
+
+        int seasonIdx = movie.getVod_play_from().indexOf("$$$合集·修仙合集");
+        int relatedIdx = movie.getVod_play_from().indexOf("$$$相关视频");
+        assertTrue(seasonIdx > 0);
+        assertTrue(seasonIdx < relatedIdx);
+        String playUrl = movie.getVod_play_url();
+        // 当前集 ▶ 前缀;#/$ 经 fixTitle 清洗;条目载荷 aid-cid 与相关视频线路同款
+        assertTrue(playUrl.contains("【正片】1 初入宗门$1130000001-1500000001"));
+        assertTrue(playUrl.contains("▶ 【正片】2 突破金丹 特辑$116958703918865-40168587741"));
+        assertTrue(playUrl.contains("【花絮】幕后$1130000003-1500000003"));
+
+        // gui(atv-player)条目带时长后缀——时长取 arc.duration,曾因映射不存在顶层字段恒为 0
+        String guiPlayUrl = service.getDetail("BV195KY6YEeY", "gui").getList().get(0).getVod_play_url();
+        assertTrue(guiPlayUrl.contains("【正片】1 初入宗门(10:31)$1130000001-1500000001"));
+        assertTrue(guiPlayUrl.contains("▶ 【正片】2 突破金丹 特辑(01:15:31)$116958703918865-40168587741"));
     }
 }

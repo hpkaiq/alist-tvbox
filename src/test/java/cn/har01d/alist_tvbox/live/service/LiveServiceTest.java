@@ -18,6 +18,8 @@ import java.util.List;
 
 import static cn.har01d.alist_tvbox.util.Constants.FOLDER;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -39,6 +41,18 @@ class LiveServiceTest {
     @Mock
     private SoopService soopService;
     @Mock
+    private AcfunService acfunService;
+    @Mock
+    private InkeService inkeService;
+    @Mock
+    private HuajiaoService huajiaoService;
+    @Mock
+    private SixRoomService sixRoomService;
+    @Mock
+    private KugouLiveService kugouLiveService;
+    @Mock
+    private LookLiveService lookLiveService;
+    @Mock
     private LiveFollowService liveFollowService;
     @Mock
     private SubscriptionService subscriptionService;
@@ -49,7 +63,8 @@ class LiveServiceTest {
     @BeforeEach
     void setUp() {
         liveService = new LiveService(huyaService, douyuService, bilibiliService, ccService, kuaishouService,
-                douyinService, twitchService, soopService, liveFollowService, subscriptionService, appProperties);
+                douyinService, twitchService, soopService, acfunService, inkeService, huajiaoService,
+                sixRoomService, kugouLiveService, lookLiveService, liveFollowService, subscriptionService, appProperties);
     }
 
     @Test
@@ -86,8 +101,32 @@ class LiveServiceTest {
         assertEquals("huya", filter.get(0).getValue().get(1).getV());
         assertEquals("斗鱼", filter.get(0).getValue().get(2).getN());
         assertEquals("douyu", filter.get(0).getValue().get(2).getV());
-        // 全部支持的平台都在筛选项里,不只四大平台
-        assertEquals(1 + 8, filter.get(0).getValue().size());
+        // 全部支持的平台都在筛选项里(8 老平台 + 6 个 pure_live 同源新平台),不只四大平台
+        assertEquals(1 + 14, filter.get(0).getValue().size());
+    }
+
+    @Test
+    void hiddenPlatformExcludedFromCategoryFilterAndSearchButDetailSurvives() throws IOException {
+        stubPlatformTypes();
+        when(huyaService.getName()).thenReturn("虎牙");
+        appProperties.setLiveHiddenPlatforms(List.of("douyu"));
+
+        CategoryList categories = liveService.category();
+        // 平台分类与关注筛选都不再出现隐藏平台
+        assertTrue(categories.getCategories().stream().noneMatch(c -> "douyu".equals(c.getType_id())));
+        var filter = categories.getFilters().get("follow").get(0);
+        assertTrue(filter.getValue().stream().noneMatch(v -> "douyu".equals(v.getV())));
+
+        when(huyaService.search("test")).thenReturn(movieList("huya$1"));
+        MovieList searchResult = liveService.search("test");
+        assertEquals(List.of("huya$1"), searchResult.getList().stream().map(MovieDetail::getVod_id).toList());
+
+        // detail 保留:已关注/历史里的隐藏平台房间仍可直达播放
+        MovieList detailResult = movieList("douyu$1");
+        when(douyuService.detail("douyu$1", null)).thenReturn(detailResult);
+        MovieList decorated = liveService.detail("douyu$1", null);
+        assertEquals("douyu$1", decorated.getList().get(0).getVod_id());
+        verify(douyuService).detail("douyu$1", null);
     }
 
     private void stubPlatformTypes() {
@@ -99,6 +138,12 @@ class LiveServiceTest {
         when(douyinService.getType()).thenReturn("douyin");
         when(twitchService.getType()).thenReturn("twitch");
         when(soopService.getType()).thenReturn("soop");
+        when(acfunService.getType()).thenReturn("acfun");
+        when(inkeService.getType()).thenReturn("inke");
+        when(huajiaoService.getType()).thenReturn("huajiao");
+        when(sixRoomService.getType()).thenReturn("sixroom");
+        when(kugouLiveService.getType()).thenReturn("kugoulive");
+        when(lookLiveService.getType()).thenReturn("look");
     }
 
     @Test

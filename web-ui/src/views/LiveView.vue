@@ -76,6 +76,9 @@ const followsLoading = ref(false);
 const followLoading = ref(false);
 const playGroups = ref<string[]>([]);
 const hotMode = ref("folder");
+// 隐藏平台多选(live_hidden_platforms):选项用完整平台清单而非当前分类(后端已过滤,已隐藏项须仍可展示/取消)
+const hiddenPlatforms = ref<string[]>([]);
+const platformOptions = computed(() => followPlatformOrder.map(id => ({value: id, label: platformNames[id] || id})));
 const danmaku = ref<DanmakuConfig>({enabled: true, rows: 0, speed: 1, fontSize: 100, opacity: 100, color: "", showOnline: true});
 const platformNames: Record<string, string> = {
   bili: "B站",
@@ -87,7 +90,13 @@ const platformNames: Record<string, string> = {
   ks: "快手",
   kuaishou: "快手",
   soop: "SOOP",
-  twitch: "Twitch"
+  twitch: "Twitch",
+  acfun: "AcFun",
+  inke: "映客",
+  huajiao: "花椒",
+  sixroom: "六间房",
+  kugoulive: "酷狗直播",
+  look: "LOOK直播"
 };
 
 interface Category {
@@ -320,7 +329,7 @@ const loadFollows = () => {
 
 // 关注列表平台筛选:只展示有关注的平台,顺序与平台分类一致
 const followPlatform = ref("");
-const followPlatformOrder = ["bilibili", "douyu", "huya", "douyin", "cc", "kuaishou", "twitch", "soop"];
+const followPlatformOrder = ["bilibili", "douyu", "huya", "douyin", "cc", "kuaishou", "twitch", "soop", "acfun", "inke", "huajiao", "sixroom", "kugoulive", "look"];
 const followPlatforms = computed(() => {
   const present = new Set(follows.value.map(follow => follow.platform));
   return followPlatformOrder.filter(platform => present.has(platform));
@@ -434,6 +443,14 @@ const updateHotMode = () => {
     if (!type0.value.vod_id && !type.value.vod_id) {
       loadTypes();
     }
+  });
+};
+
+const updateHiddenPlatforms = () => {
+  axios.post("/api/settings", {name: "live_hidden_platforms", value: hiddenPlatforms.value.join(",")}).then(() => {
+    ElMessage.success("更新成功");
+    // 隐藏的平台立即从分类 tab 消失
+    loadCategories(category.value.type_id);
   });
 };
 
@@ -617,6 +634,11 @@ onMounted(async () => {
       hotMode.value = data.value;
     }
   });
+  axios.get("/api/settings/live_hidden_platforms").then(({data}) => {
+    if (data?.value) {
+      hiddenPlatforms.value = data.value.split(",").filter((v: string) => v);
+    }
+  });
 });
 
 onUnmounted(() => {
@@ -653,6 +675,17 @@ onUnmounted(() => {
               <el-option label="热门混排" value="mix"/>
               <el-option label="热门文件夹" value="folder"/>
               <el-option label="仅分类" value="none"/>
+            </el-select>
+            <el-select
+              v-model="hiddenPlatforms"
+              multiple
+              collapse-tags
+              clearable
+              placeholder="隐藏平台"
+              style="width: 200px"
+              @change="updateHiddenPlatforms"
+            >
+              <el-option v-for="p of platformOptions" :key="p.value" :label="p.label" :value="p.value"/>
             </el-select>
           </div>
           <el-row>
