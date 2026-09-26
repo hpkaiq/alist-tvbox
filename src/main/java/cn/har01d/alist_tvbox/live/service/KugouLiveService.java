@@ -53,18 +53,25 @@ public class KugouLiveService implements LivePlatform {
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final LiveProxyService proxyService;
     /** 搜索 jsonp 端点按 TLS/HTTP 指纹风控:JDK HttpURLConnection 返回合法空结果,okhttp 实测可过。 */
     private static final OkHttpClient OK_HTTP = new OkHttpClient();
     private volatile Map<String, String> categoryNames;
 
-    public KugouLiveService(RestTemplateBuilder builder, ObjectMapper objectMapper) {
+    public KugouLiveService(RestTemplateBuilder builder, ObjectMapper objectMapper, LiveProxyService proxyService) {
         this.restTemplate = builder.defaultHeader("User-Agent", USER_AGENT).build();
         this.objectMapper = objectMapper;
+        this.proxyService = proxyService;
     }
 
     @Override
     public String getType() {
         return "kugoulive";
+    }
+    /** 流地址经直播代理中转+断流自动重签续流。 */
+    @Override
+    public boolean isProxied() {
+        return true;
     }
 
     @Override
@@ -80,15 +87,33 @@ public class KugouLiveService implements LivePlatform {
     @Override
     public CategoryList category() throws IOException {
         Map<String, String> names = loadCategories();
+        // 分类页 HTML 与回退清单均无官方图:推荐流房间封面轮询填充(单次请求,秀场分类视觉索引)
+        List<String> covers = new ArrayList<>();
+        try {
+            for (JsonNode entry : directory(1, null).path("list")) {
+                JsonNode raw = "star".equals(entry.path("uiType").asText()) ? entry.path("data") : entry;
+                MovieDetail card = parseCard(raw);
+                if (card != null && card.getVod_pic() != null && !card.getVod_pic().isEmpty()) {
+                    covers.add(card.getVod_pic());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("酷狗分类封面获取失败: {}", e.getMessage());
+        }
         CategoryList result = new CategoryList();
         List<Category> list = new ArrayList<>();
-        names.forEach((id, name) -> {
+        int index = 0;
+        for (var entry : names.entrySet()) {
             Category category = new Category();
-            category.setType_id(getType() + "-" + id);
-            category.setType_name(name);
+            category.setType_id(getType() + "-" + entry.getKey());
+            category.setType_name(entry.getValue());
             category.setType_flag(0);
+            if (!covers.isEmpty()) {
+                category.setCover(covers.get(index % covers.size()));
+            }
+            index++;
             list.add(category);
-        });
+        }
         result.setCategories(list);
         result.setTotal(list.size());
         result.setLimit(list.size());
@@ -163,7 +188,7 @@ public class KugouLiveService implements LivePlatform {
         boolean live = liveType != -1 && !data.path("liveSessionId").asText("").isEmpty();
         detail.setVod_remarks(live ? "直播中" : "未开播");
         if (live) {
-            parsePlayUrls(detail, id);
+            parsePlayUrls(detail, id, client);
         }
         result.getList().add(detail);
         result.setTotal(1);
@@ -172,8 +197,35 @@ public class KugouLiveService implements LivePlatform {
         return result;
     }
 
+    /** 供直播代理续租:按房间重取播放地址(上游断开/签名失效时换新 URL 续流),失败返回 null。 */
+    public String renewStreamUrl(String roomId, String protocol) {
+        try {
+            String url = API_ORIGIN + "/video/pc/live/pull/mutiline/streamaddr?std_rid=" + roomId
+                    + "&std_plat=7&std_kid=0&streamType=1-2-4-5-8&ua=fx-flash&targetLiveTypes=1-5-6"
+                    + "&version=1000&supportEncryptMode=1&appid=1010&_=" + System.currentTimeMillis();
+            JsonNode data = getJson(url).path("data");
+            if (!roomId.equals(data.path("roomId").asText()) || data.path("status").asInt(0) != 1) {
+                return null;
+            }
+            String[] sources = "hls".equals(protocol) ? new String[]{"httpsHls", "hls"} : new String[]{"httpsFlv", "flv"};
+            for (JsonNode line : data.path("lines")) {
+                for (JsonNode profile : line.path("streamProfiles")) {
+                    for (JsonNode raw : profile.path(sources[0])) {
+                        String uri = validateMediaUrl(raw.asText(), roomId, sources[1]);
+                        if (uri != null) {
+                            return uri;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("酷狗流地址续租失败: {}", roomId, e);
+        }
+        return null;
+    }
+
     /** 播放地址:lines[].streamProfiles[] 按 (协议,rate) 分组,rate 降序输出画质条目。 */
-    private void parsePlayUrls(MovieDetail detail, String roomId) {
+    private void parsePlayUrls(MovieDetail detail, String roomId, String client) {
         try {
             String url = API_ORIGIN + "/video/pc/live/pull/mutiline/streamaddr?std_rid=" + roomId
                     + "&std_plat=7&std_kid=0&streamType=1-2-4-5-8&ua=fx-flash&targetLiveTypes=1-5-6"
@@ -199,13 +251,31 @@ public class KugouLiveService implements LivePlatform {
                     }
                 }
             }
-            List<String> playUrl = new ArrayList<>();
+            List<String> directEntries = new ArrayList<>();
+            List<String> proxyEntries = new ArrayList<>();
             grouped.entrySet().stream()
                     .sorted((a, b) -> Integer.compare(rates.get(b.getKey()), rates.get(a.getKey())))
-                    .forEach(entry -> playUrl.add(entry.getKey().replace(":", "·") + "$" + String.join("#", entry.getValue())));
-            if (!playUrl.isEmpty()) {
-                detail.setVod_play_from("线路1");
-                detail.setVod_play_url(String.join("#", playUrl));
+                    // 一档只出一条地址:# 在 TVBox 语法里是分集分隔符,join 多地址会被当连续剧集;
+                    // 实测 lines 会返回相同 URL 的重复项,只取首条。
+                    // 直连条目=原始地址(签名 txTime 约 12h);代理条目=包代理,上游断连/签名失效时
+                    // 代理端自动重签续流(buildProxyUrl 降级或探针无代理实例时不产代理条目);
+                    // dual=直连优先+代理双线路(线路1同档直连/代理交错分集,线路2纯代理,网页端恒走代理),直连断流由播放器自动切代理线路
+                    .forEach(entry -> {
+                        String label = entry.getKey().replace(":", "·");
+                        String stream = entry.getValue().get(0);
+                        directEntries.add(label + "$" + stream);
+                        if (proxyService != null) {
+                            String proxyUrl = proxyService.buildProxyUrl(stream);
+                            if (!proxyUrl.equals(stream)) {
+                                proxyEntries.add(label + "$" + proxyUrl);
+                            }
+                        }
+                    });
+            if (!directEntries.isEmpty()) {
+                String mode = proxyService != null && proxyService.isDualProxyMode() && !"web".equals(client) ? "dual" : "proxy";
+                String[] lines = buildPlayLines(directEntries, proxyEntries, mode);
+                detail.setVod_play_from(lines[0]);
+                detail.setVod_play_url(lines[1]);
             }
         } catch (Exception e) {
             log.warn("酷狗播放地址获取失败: {}", roomId, e);

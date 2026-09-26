@@ -72,15 +72,60 @@ public class LookLiveService implements LivePlatform {
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final LiveProxyService proxyService;
 
-    public LookLiveService(RestTemplateBuilder builder, ObjectMapper objectMapper) {
+    public LookLiveService(RestTemplateBuilder builder, ObjectMapper objectMapper, LiveProxyService proxyService) {
         this.restTemplate = builder.defaultHeader("User-Agent", USER_AGENT).build();
         this.objectMapper = objectMapper;
+        this.proxyService = proxyService;
+    }
+
+    /**
+     * 供直播代理续租:重取房间当前流地址(LOOK 地址含场次 hash,换场次/重推后旧地址 404,
+     * detail 15 分钟缓存会持续给死地址)。hls=true 返回清单地址,否则 FLV;下播/异常返回 null。
+     */
+    public String renewStreamUrl(String roomId, boolean hls) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("liveRoomNo", roomId);
+            JsonNode data = post("/weapi/livestream/room/get/v3", payload);
+            if (!roomId.equals(data.path("anchor").path("liveRoomNo").asText().trim())
+                    || data.path("liveStatus").asInt(-99) != 1) {
+                return null;
+            }
+            String raw = data.path("roomInfo").path("liveUrl")
+                    .path(hls ? "hlsPullUrl" : "httpPullUrl").asText("").trim();
+            if (raw.isEmpty()) {
+                return null;
+            }
+            // 与 addVariant 同款白名单(host/路径指纹),不合法地址不续
+            try {
+                java.net.URI uri = java.net.URI.create(raw);
+                String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+                String path = uri.getPath() == null ? "" : uri.getPath();
+                if (!MEDIA_HOST.matcher(host).matches()
+                        || !(hls ? HLS_PATH : FLV_PATH).matcher(path).matches()) {
+                    return null;
+                }
+            } catch (Exception e) {
+                return null;
+            }
+            return raw.startsWith("https://") ? raw : "https://" + raw.replaceFirst("^\\w+://", "");
+        } catch (Exception e) {
+            log.warn("LOOK流地址续租失败: {}", roomId, e);
+            return null;
+        }
     }
 
     @Override
     public String getType() {
         return "look";
+    }
+
+    /** 流地址经直播代理中转+场次失效自动重取。 */
+    @Override
+    public boolean isProxied() {
+        return true;
     }
 
     @Override
@@ -97,11 +142,15 @@ public class LookLiveService implements LivePlatform {
     public CategoryList category() throws IOException {
         CategoryList result = new CategoryList();
         List<Category> list = new ArrayList<>();
+        // 分类无官方图:video/audio 分类各用自己推荐流的首房间封面(all 复用视频流首图)
+        String videoCover = recommendCover(false);
+        String audioCover = recommendCover(true);
         CATEGORIES.forEach((id, name) -> {
             Category category = new Category();
             category.setType_id(getType() + "-" + id);
             category.setType_name(name);
             category.setType_flag(0);
+            category.setCover("audio".equals(id) ? audioCover : videoCover);
             list.add(category);
         });
         result.setCategories(list);
@@ -109,6 +158,18 @@ public class LookLiveService implements LivePlatform {
         result.setLimit(list.size());
         log.debug("category result: {}", result);
         return result;
+    }
+
+    /** 推荐流首房间封面(失败返回 null,不炸分类)。 */
+    private String recommendCover(boolean audio) {
+        try {
+            for (MovieDetail card : parseFeed(recommend(audio, 1), audio, new LinkedHashSet<>())) {
+                return card.getVod_pic();
+            }
+        } catch (Exception e) {
+            log.warn("LOOK分类封面获取失败(audio={}): {}", audio, e.getMessage());
+        }
+        return null;
     }
 
     @Override
@@ -136,7 +197,7 @@ public class LookLiveService implements LivePlatform {
             String directRoomId = parseRoomId(keyword);
             if (directRoomId != null) {
                 try {
-                    list.add(roomDetail(directRoomId));
+                    list.add(roomDetail(directRoomId, null));
                 } catch (BadRequestException e) {
                     log.debug("LOOK房间号直达失败: {}", keyword);
                 }
@@ -171,7 +232,7 @@ public class LookLiveService implements LivePlatform {
             throw new BadRequestException("无效的直播间ID: " + tid);
         }
         MovieList result = new MovieList();
-        result.getList().add(roomDetail(roomId));
+        result.getList().add(roomDetail(roomId, client));
         result.setTotal(1);
         result.setLimit(1);
         log.debug("detail: {}", result);
@@ -242,7 +303,7 @@ public class LookLiveService implements LivePlatform {
     }
 
     /** 详情:anchor.liveRoomNo 必须回显一致(pure_live identity 校验);liveStatus 1/0/-1/-10。 */
-    private MovieDetail roomDetail(String roomId) throws IOException {
+    private MovieDetail roomDetail(String roomId, String client) throws IOException {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("liveRoomNo", roomId);
         JsonNode data = post("/weapi/livestream/room/get/v3", payload);
@@ -262,26 +323,35 @@ public class LookLiveService implements LivePlatform {
         detail.setVod_pic(picture(firstText0(info.path("liveCoverUrl").asText(), anchor.path("avatarUrl").asText())));
         detail.setVod_actor(nick);
         detail.setVod_area(info.path("liveType").asInt(1) == 2 ? "语音直播" : "视频直播");
-        List<String> entries = new ArrayList<>();
+        List<String> directEntries = new ArrayList<>();
+        List<String> proxyEntries = new ArrayList<>();
         if (liveStatus == 1) {
-            addVariant(entries, "HLS", info.path("liveUrl").path("hlsPullUrl").asText().trim(), true);
-            addVariant(entries, "FLV", info.path("liveUrl").path("httpPullUrl").asText().trim(), false);
+            addVariant(directEntries, proxyEntries, "HLS", info.path("liveUrl").path("hlsPullUrl").asText().trim(), true, roomId);
+            addVariant(directEntries, proxyEntries, "FLV", info.path("liveUrl").path("httpPullUrl").asText().trim(), false, roomId);
         }
         // liveStreamType==50 且无流地址=仅 App 端可看(pure_live isAppOnly)
-        boolean appOnly = liveStatus == 1 && info.path("liveStreamType").asInt(0) == 50 && entries.isEmpty();
+        boolean appOnly = liveStatus == 1 && info.path("liveStreamType").asInt(0) == 50 && directEntries.isEmpty();
         detail.setVod_remarks(appOnly ? "仅App观看"
                 : liveStatus == 1 ? "直播中"
                 : liveStatus == 0 || liveStatus == -1 ? "未开播"
                 : liveStatus == -10 ? "受限房" : "未知状态");
-        if (!entries.isEmpty()) {
-            detail.setVod_play_from("线路1");
-            detail.setVod_play_url(String.join("#", entries));
+        if (!directEntries.isEmpty()) {
+            // 代理条目续租:LOOK 地址含场次 hash,换场次后旧地址 404,代理端每次请求重取当前地址;
+            // dual=直连优先+代理双线路(线路1同档直连/代理交错分集,线路2纯代理,网页端恒走代理);探针无代理实例时降级直链
+            String mode = proxyService != null && proxyService.isDualProxyMode() && !"web".equals(client) ? "dual" : "proxy";
+            String[] lines = buildPlayLines(directEntries, proxyEntries, mode);
+            detail.setVod_play_from(lines[0]);
+            detail.setVod_play_url(lines[1]);
         }
         return detail;
     }
 
-    /** 流地址白名单校验(pure_live 精简):仅 *.live.126.net、无端口/fragment、路径指纹匹配、强制 https。 */
-    private void addVariant(List<String> entries, String label, String raw, boolean hls) {
+    /**
+     * 流地址白名单校验(pure_live 精简):仅 *.live.126.net、无端口/fragment、路径指纹匹配、强制 https。
+     * 直连条目=校验后的地址;代理条目=包代理+look 续租参数(buildProxyUrl 降级时不产代理条目)。
+     */
+    private void addVariant(List<String> directEntries, List<String> proxyEntries,
+                            String label, String raw, boolean hls, String roomId) {
         if (raw.isEmpty()) {
             return;
         }
@@ -300,7 +370,14 @@ public class LookLiveService implements LivePlatform {
             if (!(hls ? HLS_PATH : FLV_PATH).matcher(path).matches()) {
                 return;
             }
-            entries.add(label + "$" + ("https".equals(scheme) ? raw : "https://" + raw.substring(scheme.length() + 3)));
+            String url = "https".equals(scheme) ? raw : "https://" + raw.substring(scheme.length() + 3);
+            directEntries.add(label + "$" + url);
+            if (proxyService != null) {
+                String proxyUrl = proxyService.buildProxyUrl(url);
+                if (!proxyUrl.equals(url)) {
+                    proxyEntries.add(label + "$" + proxyUrl + "&look=" + roomId);
+                }
+            }
         } catch (Exception e) {
             log.debug("LOOK播放地址校验失败: {}", raw);
         }

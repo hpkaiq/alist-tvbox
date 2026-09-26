@@ -5,6 +5,7 @@
       <div class="page-actions">
         <el-button @click="loadAll">刷新</el-button>
         <el-button @click="openNotify">设置</el-button>
+        <el-button v-if="store.admin" @click="openWanouDomains">域名状态</el-button>
         <el-button @click="exportSubs">导出</el-button>
         <el-button @click="importVisible = true">导入</el-button>
         <el-button @click="openNavigation">片单追更</el-button>
@@ -668,6 +669,61 @@
       </div>
     </el-drawer>
 
+    <el-drawer v-model="wanouDomainVisible" title="玩偶站点域名状态" size="46%">
+      <div v-loading="wanouStatusLoading" style="min-height: 120px">
+        <div style="margin-bottom: 12px">
+          <el-button type="primary" size="small" :loading="wanouProbing" @click="probeWanouDomains">立即探测</el-button>
+          <span class="sub-text" style="margin-left:8px">每小时自动探测;域名列表按采用优先级排序,首条即当前采用(延迟最低的可达域名)</span>
+        </div>
+        <el-table v-if="wanouSites.length" :data="wanouSites" row-key="siteId" default-expand-all>
+          <el-table-column type="expand">
+            <template #default="scope">
+              <el-table :data="scope.row.domains" size="small" style="margin: 0 0 8px 24px">
+                <el-table-column label="域名" min-width="240" show-overflow-tooltip>
+                  <template #default="d">{{ d.row.url }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="90">
+                  <template #default="d">
+                    <el-tag v-if="d.row.ok" size="small" type="success">可达</el-tag>
+                    <el-tag v-else size="small" type="danger">不可达</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="延迟" width="110">
+                  <template #default="d">
+                    <span v-if="d.row.ok">{{ d.row.latencyMs }} ms</span>
+                    <span v-else class="sub-text">—</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="原因" min-width="130" show-overflow-tooltip>
+                  <template #default="d">
+                    <span class="sub-text">{{ d.row.error || '—' }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+          </el-table-column>
+          <el-table-column label="站点" width="90">
+            <template #default="scope">{{ scope.row.siteName }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="scope">
+              <el-tag v-if="scope.row.ok" size="small" type="success">可用</el-tag>
+              <el-tag v-else size="small" type="danger">失效</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前采用域名" min-width="240" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.bestUrl || '—(全域名不可达,等待下轮探测)' }}</template>
+          </el-table-column>
+          <el-table-column label="可达/总数" width="95">
+            <template #default="scope">
+              {{ scope.row.domains.filter((d: WanouDomainStatusDto) => d.ok).length }}/{{ scope.row.domains.length }}
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="尚未探测,点击「立即探测」开始"/>
+      </div>
+    </el-drawer>
+
     <el-dialog v-model="importVisible" title="导入订阅" width="600">
       <el-input v-model="importText" type="textarea" :rows="12" placeholder='粘贴导出的 JSON 数组'/>
       <template #footer>
@@ -750,7 +806,7 @@
               </el-select>
               <span class="sub-text">对应网盘的候选资源打分 +15(已配置账号本身 +8),如夸克 SVIP/百度 SVIP/115 会员</span>
             </el-form-item>
-            <span v-if="store.admin" class="sub-text">玩偶聚合搜索源默认开启无需配置(wanou-enabled 可关);盘聚是项目内命名,实际站点为 SeedHub 系聚合站,免登录无需配置;盘链/观影/蜗牛在各自标签页配置,无凭证的源自动关闭</span>
+            <span v-if="store.admin" class="sub-text">玩偶聚合搜索源默认开启无需配置(wanou-enabled 可关;域名状态入口在主页「域名状态」按钮,每小时自动探测并采用延迟最低的可达域名);盘聚是项目内命名,实际站点为 SeedHub 系聚合站,免登录无需配置;盘链/观影/蜗牛在各自标签页配置,无凭证的源自动关闭</span>
           </el-tab-pane>
           <el-tab-pane label="资源筛选" name="poolFilter">
             <el-form-item label="清晰度门槛">
@@ -818,6 +874,7 @@
               <template v-else>
                 <el-input v-model="account.username" placeholder="账号(邮箱或用户名)" style="flex:1"/>
                 <el-input v-model="account.password" type="password" show-password placeholder="密码" style="flex:1"/>
+                <el-button link type="primary" @click="openPanlianCaptchaLogin(account.username, account.password)">验证码登录</el-button>
               </template>
               <el-button link type="danger" @click="panlianAccountRows.splice(index, 1)">删除</el-button>
             </div>
@@ -839,7 +896,11 @@
                     placeholder="可代替账号密码:浏览器登录后复制 Cookie;作为池内一个成员参与轮换"/>
         </el-form-item>
         <el-form-item label="账号状态">
-          <el-button size="small" :loading="panlianStatusLoading" @click="loadPanlianAccounts">刷新账号状态</el-button>
+          <div style="width:100%">
+            <div>
+              <el-button size="small" :loading="panlianStatusLoading" @click="loadPanlianAccounts">刷新账号状态</el-button>
+              <el-button size="small" @click="openPanlianCaptchaLogin()">验证码登录</el-button>
+            </div>
           <el-table v-if="panlianAccounts.length" :data="panlianAccounts" size="small" border style="margin-top:8px">
             <el-table-column prop="identity" label="账号" min-width="150"/>
             <el-table-column prop="username" label="昵称" min-width="90"/>
@@ -867,7 +928,8 @@
               </template>
             </el-table-column>
           </el-table>
-          <span class="sub-text">实时查询站点(逐号登录拉任务与资料,只读不触发签到);签到由搜索时自动完成,配额每日重置</span>
+          <span class="sub-text">实时查询站点(逐号登录拉任务与资料,只读不触发签到);签到由搜索时自动完成,配额每日重置;账号密码形态登录失败提示「需图形验证码」时,点「验证码登录」人工输码完成登录(会话 30 天免重登)</span>
+          </div>
         </el-form-item>
           </el-tab-pane>
           <el-tab-pane v-if="store.admin" label="观影" name="guanying">
@@ -1062,6 +1124,32 @@
       <template #footer>
         <el-button @click="notifyVisible = false">取消</el-button>
         <el-button type="primary" :loading="notifySaving" :disabled="!notifyLoaded" @click="saveNotify">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="panlianLoginVisible" title="盘链验证码登录" width="430">
+      <el-form label-width="70px" @submit.prevent>
+        <el-form-item label="账号">
+          <el-input v-model="panlianLoginForm.username" placeholder="邮箱或用户名" :disabled="panlianLoginSubmitting"/>
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="panlianLoginForm.password" type="password" show-password :disabled="panlianLoginSubmitting"/>
+        </el-form-item>
+        <el-form-item label="验证码">
+          <div style="display:flex;gap:8px;align-items:center;width:100%">
+            <el-input v-model="panlianLoginForm.captchaCode" placeholder="输入图中字符" style="width:150px"
+                      :disabled="panlianLoginSubmitting" @keyup.enter="submitPanlianCaptchaLogin"/>
+            <img v-if="panlianCaptchaImage" :src="panlianCaptchaImage" alt="验证码" title="点击刷新"
+                 style="height:42px;cursor:pointer;border-radius:4px" @click="refreshPanlianCaptcha"/>
+            <el-button v-else link type="primary" :loading="panlianCaptchaLoading" @click="refreshPanlianCaptcha">加载验证码</el-button>
+            <el-button v-if="panlianCaptchaImage" link @click="refreshPanlianCaptcha">看不清</el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+      <span class="sub-text">站点登录已启用图形验证码,账号密码无法自动重登;人工输码登录一次后会话 30 天内免重登(重启不丢)。新账号先「保存账号池」再登录</span>
+      <template #footer>
+        <el-button @click="panlianLoginVisible = false">取消</el-button>
+        <el-button type="primary" :loading="panlianLoginSubmitting" @click="submitPanlianCaptchaLogin">登录</el-button>
       </template>
     </el-dialog>
 
@@ -1530,6 +1618,95 @@ const loadPanlianAccounts = () => {
     panlianAccounts.value = []
   }).finally(() => {
     panlianStatusLoading.value = false
+  })
+}
+// 盘链验证码登录:站点 2026-09-26 起登录强制图形验证码,账号密码形态靠人工输码建立会话
+const panlianLoginVisible = ref(false)
+const panlianCaptchaLoading = ref(false)
+const panlianLoginSubmitting = ref(false)
+const panlianCaptchaImage = ref('')
+const panlianLoginForm = ref({username: '', password: '', captchaId: '', captchaCode: ''})
+const refreshPanlianCaptcha = () => {
+  panlianCaptchaLoading.value = true
+  panlianCaptchaImage.value = ''
+  axios.get('/api/media-subscriptions/panlian/captcha').then(response => {
+    panlianCaptchaImage.value = response.data?.image || ''
+    panlianLoginForm.value.captchaId = response.data?.captchaId || ''
+    panlianLoginForm.value.captchaCode = ''
+  }).catch(() => {
+    ElMessage.error('验证码获取失败')
+  }).finally(() => {
+    panlianCaptchaLoading.value = false
+  })
+}
+const openPanlianCaptchaLogin = (username = '', password = '') => {
+  panlianLoginForm.value.username = username || notifyForm.value.panlianUsername || ''
+  panlianLoginForm.value.password = password || notifyForm.value.panlianPassword || ''
+  panlianLoginForm.value.captchaCode = ''
+  panlianLoginVisible.value = true
+  refreshPanlianCaptcha()
+}
+const submitPanlianCaptchaLogin = () => {
+  const form = panlianLoginForm.value
+  if (!form.username || !form.password || !form.captchaCode) {
+    ElMessage.warning('请填写账号、密码与验证码')
+    return
+  }
+  panlianLoginSubmitting.value = true
+  axios.post('/api/media-subscriptions/panlian/captcha-login', form).then(response => {
+    const data = response.data
+    if (data?.success) {
+      ElMessage.success('盘链登录成功,会话已保存(30 天内免重登)')
+      panlianLoginVisible.value = false
+      loadPanlianAccounts()
+    } else {
+      ElMessage.error(data?.message || '登录失败')
+      refreshPanlianCaptcha()
+    }
+  }).catch(() => ElMessage.error('登录请求失败')).finally(() => {
+    panlianLoginSubmitting.value = false
+  })
+}
+// 玩偶聚合域名状态:后端每小时定时探测(可达性+延迟,自动采用延迟最低的可达域名),此面板看快照/手动立即探测
+interface WanouDomainStatusDto {
+  url: string
+  ok: boolean
+  latencyMs: number
+  error?: string | null
+}
+interface WanouSiteStatusDto {
+  siteId: string
+  siteName: string
+  ok: boolean
+  bestUrl?: string | null
+  domains: WanouDomainStatusDto[]
+}
+const wanouDomainVisible = ref(false)
+const wanouSites = ref<WanouSiteStatusDto[]>([])
+const wanouStatusLoading = ref(false)
+const wanouProbing = ref(false)
+const loadWanouDomains = () => {
+  wanouStatusLoading.value = true
+  axios.get('/api/media-subscriptions/wanou/domains').then(response => {
+    wanouSites.value = response.data || []
+  }).catch(() => {
+    wanouSites.value = []
+  }).finally(() => {
+    wanouStatusLoading.value = false
+  })
+}
+const openWanouDomains = () => {
+  wanouDomainVisible.value = true
+  loadWanouDomains()
+}
+const probeWanouDomains = () => {
+  wanouProbing.value = true
+  axios.post('/api/media-subscriptions/wanou/domains/probe').then(response => {
+    wanouSites.value = response.data || []
+    const alive = (response.data || []).filter((s: WanouSiteStatusDto) => s.ok).length
+    ElMessage.success(`探测完成:${alive}/${(response.data || []).length} 个站点可用,已自动采用延迟最低的域名`)
+  }).catch(() => ElMessage.error('探测请求失败')).finally(() => {
+    wanouProbing.value = false
   })
 }
 /** 外部站点凭证有效性检查:校验表单当前值(未保存也可先验),结果就地展示;

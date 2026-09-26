@@ -53,6 +53,8 @@ class LiveServiceTest {
     @Mock
     private LookLiveService lookLiveService;
     @Mock
+    private YyService yyService;
+    @Mock
     private LiveFollowService liveFollowService;
     @Mock
     private SubscriptionService subscriptionService;
@@ -64,7 +66,7 @@ class LiveServiceTest {
     void setUp() {
         liveService = new LiveService(huyaService, douyuService, bilibiliService, ccService, kuaishouService,
                 douyinService, twitchService, soopService, acfunService, inkeService, huajiaoService,
-                sixRoomService, kugouLiveService, lookLiveService, liveFollowService, subscriptionService, appProperties);
+                sixRoomService, kugouLiveService, lookLiveService, yyService, liveFollowService, subscriptionService, appProperties);
     }
 
     @Test
@@ -85,6 +87,8 @@ class LiveServiceTest {
 
     @Test
     void categoryAddsPlatformFilterToFollowTab() throws IOException {
+        // 本用例锁定"全部注册平台都进筛选"的语义,清掉默认隐藏(花椒默认隐藏因平台匿名接口限流)
+        appProperties.setLiveHiddenPlatforms(List.of());
         stubPlatformTypes();
         when(huyaService.getName()).thenReturn("虎牙");
         when(douyuService.getName()).thenReturn("斗鱼");
@@ -102,7 +106,7 @@ class LiveServiceTest {
         assertEquals("斗鱼", filter.get(0).getValue().get(2).getN());
         assertEquals("douyu", filter.get(0).getValue().get(2).getV());
         // 全部支持的平台都在筛选项里(8 老平台 + 6 个 pure_live 同源新平台),不只四大平台
-        assertEquals(1 + 14, filter.get(0).getValue().size());
+        assertEquals(1 + 15, filter.get(0).getValue().size());
     }
 
     @Test
@@ -129,6 +133,28 @@ class LiveServiceTest {
         verify(douyuService).detail("douyu$1", null);
     }
 
+    @Test
+    void platformOrderRearrangesCategoriesAndSearchButUnknownPlatformsAppend() throws IOException {
+        stubPlatformTypes();
+        appProperties.setLivePlatformOrder(List.of("douyu", "huya"));
+
+        // 在册平台按配置序在前,未列入的平台按注册序追加尾部
+        CategoryList categories = liveService.category();
+        List<String> ids = categories.getCategories().stream().map(Category::getType_id).toList();
+        assertEquals("follow", ids.get(0));
+        assertEquals("douyu", ids.get(1));
+        assertEquals("huya", ids.get(2));
+        assertTrue(ids.indexOf("bilibili") > 2);
+
+        // 聚合搜索结果同样按配置顺序聚拢
+        when(huyaService.getName()).thenReturn("虎牙");
+        when(douyuService.getName()).thenReturn("斗鱼");
+        when(huyaService.search("test")).thenReturn(movieList("huya$1"));
+        when(douyuService.search("test")).thenReturn(movieList("douyu$1"));
+        MovieList searchResult = liveService.search("test");
+        assertEquals(List.of("douyu$1", "huya$1"), searchResult.getList().stream().map(MovieDetail::getVod_id).toList());
+    }
+
     private void stubPlatformTypes() {
         when(huyaService.getType()).thenReturn("huya");
         when(douyuService.getType()).thenReturn("douyu");
@@ -144,6 +170,7 @@ class LiveServiceTest {
         when(sixRoomService.getType()).thenReturn("sixroom");
         when(kugouLiveService.getType()).thenReturn("kugoulive");
         when(lookLiveService.getType()).thenReturn("look");
+        when(yyService.getType()).thenReturn("yy");
     }
 
     @Test

@@ -34,8 +34,16 @@ public class AppProperties {
     private boolean enabledToken;
     // 直播平台首页热门展示方式:mix=热门直播间混排在分类文件夹前;folder=入口为"热门直播间"文件夹;none=仅分类文件夹
     private String liveHotMode = "folder";
-    // 隐藏的直播平台 type 列表:不进平台分类/聚合搜索/关注筛选,detail 保留(已关注房间仍可直达播放)
-    private List<String> liveHiddenPlatforms = List.of();
+    // 隐藏的直播平台 type 列表:不进平台分类/聚合搜索/关注筛选,detail 保留(已关注房间仍可直达播放)。
+    // 默认含花椒:其 web 匿名 feed 接口已被平台限流至 0-2 条/页(实测各参数组合全 0,纯凭 pure_live
+    // 同款匿名链路无解,App 接口需签名),入口空列表无意义;detail/取流仍可用,可在平台管理 tab 手动开启。
+    private List<String> liveHiddenPlatforms = List.of("huajiao");
+    // 平台展示顺序(live_platform_order):配置的平台按序在前,未列入的新平台按注册序追加
+    private List<String> livePlatformOrder = List.of();
+    // 直播流代理模式:proxy=流地址全部经本服务代理中转(断流自动续租无感,消耗服务器带宽);
+    // dual=「直连优先+代理」双线路,客户端默认直连平台 CDN(零服务器带宽),直连失败由内核自动
+    // 落到代理(OK影视切下一集/FongMi切线路均兼容;网页端不受影响恒走代理)。默认直连优先省带宽
+    private String liveProxyMode = "dual";
     private boolean playbackSyncEnabled = false;
     // 同步分区粒度:uid(不分桶)/ token(按 vod token)/ subscription(按 vod token/id)
     private String playbackSyncScope = "token";
@@ -173,10 +181,13 @@ public class AppProperties {
         private int probeTransientStreak = 3;
         /** 失效黑名单窗口(天):窗口外的判死记录不再拦截入池,该链可重新试错一次(再判死刷新时间) */
         private int deadLinkTtlDays = 90;
-        /** 玩偶聚合搜索源(玩偶/多多/木偶等 11 站聚合,搜索+详情页提取分享链接):追剧候选池补充来源 */
+        /** 玩偶聚合搜索源(玩偶/多多/木偶等 10 站聚合,搜索+详情页提取分享链接):追剧候选池补充来源 */
         private boolean wanouEnabled = true;
-        /** 玩偶聚合:站点最新域名监控接口(空=只用内置静态域名) */
-        private String wanouMonitorUrl = "https://pan-site-monitor.douer.me/api/data";
+        /** 玩偶聚合:站点最新域名监控接口(可选;默认空=不拉,种子+内置探测已覆盖。pan-site-monitor
+         *  2026-09 起停更,下发域名无增量还注入死 IP,恢复更新后可显式配置启用) */
+        private String wanouMonitorUrl = "";
+        /** 玩偶聚合:内置定时域名探测(可达性+延迟,自动采用延迟最低的可达域名);监控接口仅作新域名来源 */
+        private boolean wanouProbeEnabled = true;
         /** 玩偶聚合:单站每次搜索最多抓取的详情页数 */
         private int wanouMaxDetailPages = 3;
         /** 玩偶聚合:整源搜索总超时(秒) */

@@ -13,7 +13,7 @@ import org.springframework.boot.restclient.RestTemplateBuilder;
  */
 @EnabledIfSystemProperty(named = "live.probe", matches = "1")
 class NewLivePlatformProbeTest {
-    private static final String[] DEFAULT_PLATFORMS = {"acfun", "inke", "huajiao", "sixroom", "kugoulive", "look"};
+    private static final String[] DEFAULT_PLATFORMS = {"acfun", "inke", "huajiao", "sixroom", "kugoulive", "look", "yy"};
     private static final String[] PLATFORMS = System.getProperty("live.probe.platforms", String.join(",", DEFAULT_PLATFORMS)).split(",");
 
     private final RestTemplateBuilder builder = new RestTemplateBuilder();
@@ -24,11 +24,12 @@ class NewLivePlatformProbeTest {
         for (String platform : PLATFORMS) {
             LivePlatform service = switch (platform.trim()) {
                 case "acfun" -> new AcfunService(builder, objectMapper);
-                case "inke" -> new InkeService(builder, objectMapper);
+                case "inke" -> new InkeService(builder, objectMapper, null);
                 case "huajiao" -> new HuajiaoService(builder, objectMapper);
                 case "sixroom" -> new SixRoomService(builder, objectMapper);
-                case "kugoulive" -> new KugouLiveService(builder, objectMapper);
-                case "look" -> new LookLiveService(builder, objectMapper);
+                case "kugoulive" -> new KugouLiveService(builder, objectMapper, null);
+                case "look" -> new LookLiveService(builder, objectMapper, null);
+                case "yy" -> new YyService(builder, objectMapper, null);
                 default -> throw new IllegalArgumentException("unknown platform: " + platform);
             };
             probePlatform(service);
@@ -42,16 +43,32 @@ class NewLivePlatformProbeTest {
             System.out.printf("[%s] home: %d rooms%n", name, home.getList().size());
             var categories = service.category();
             System.out.printf("[%s] category: %d%n", name, categories.getCategories().size());
+            int withCover = (int) categories.getCategories().stream().filter(c -> c.getCover() != null && !c.getCover().isEmpty()).count();
+            System.out.printf("[%s] category covers: %d/%d (first=%s)%n", name, withCover, categories.getCategories().size(),
+                    abbreviate(categories.getCategories().stream().map(c -> c.getCover()).filter(c -> c != null && !c.isEmpty()).findFirst().orElse("-"), 60));
             if (!categories.getCategories().isEmpty()) {
                 var list = service.list(categories.getCategories().get(0).getType_id(), null, null, 1);
                 System.out.printf("[%s] list(%s): %d rooms, pagecount=%d%n",
                         name, categories.getCategories().get(0).getType_name(), list.getList().size(), list.getPagecount());
+                // 两级目录平台(如 YY 频道→分区):首层是文件夹时下钻一层再探房间列表
+                var folder = list.getList().stream().filter(d -> d.getVod_tag() != null && d.getVod_tag().contains("folder")).findFirst();
+                if (folder.isPresent()) {
+                    var sub = service.list(folder.get().getVod_id(), null, null, 1);
+                    System.out.printf("[%s] list(%s): %d rooms, pagecount=%d%n",
+                            name, folder.get().getVod_name(), sub.getList().size(), sub.getPagecount());
+                }
             }
             if (!home.getList().isEmpty()) {
                 var detail = service.detail(home.getList().get(0).getVod_id(), null);
                 var first = detail.getList().get(0);
-                System.out.printf("[%s] detail: %s | playFrom=%s | urls=%s%n", name, first.getVod_name(),
-                        first.getVod_play_from(), abbreviate(first.getVod_play_url(), 120));
+                System.out.printf("[%s] detail: %s | remarks=%s | playFrom=%s | %d entries%n", name, first.getVod_name(),
+                        first.getVod_remarks(), first.getVod_play_from(),
+                        first.getVod_play_url() == null ? 0 : first.getVod_play_url().split("#").length);
+                if (first.getVod_play_url() != null) {
+                    for (String entry : first.getVod_play_url().split("#")) {
+                        System.out.printf("[%s]   %s%n", name, abbreviate(entry, 150));
+                    }
+                }
             }
             var search = service.search("游戏");
             System.out.printf("[%s] search: %d results%n", name, search.getList().size());

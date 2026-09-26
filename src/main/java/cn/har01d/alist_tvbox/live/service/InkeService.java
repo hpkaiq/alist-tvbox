@@ -44,15 +44,47 @@ public class InkeService implements LivePlatform {
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final LiveProxyService proxyService;
 
-    public InkeService(RestTemplateBuilder builder, ObjectMapper objectMapper) {
+    public InkeService(RestTemplateBuilder builder, ObjectMapper objectMapper, LiveProxyService proxyService) {
         this.restTemplate = builder.defaultHeader("User-Agent", USER_AGENT).build();
         this.objectMapper = objectMapper;
+        this.proxyService = proxyService;
+    }
+
+    /**
+     * 供直播代理续租:重查该主播当前场次的流地址(上游断连时换新签名 URL 续流)。
+     * 重新走 live_share_pc(场次 liveid 每场变化,不能复用旧 bid)→ 目录三源反查 stream_addr。
+     */
+    public String renewStreamUrl(String uid) {
+        try {
+            JsonNode root = objectMapper.readTree(getBody(API_ORIGIN + "/live_share_pc?uid=" + uid));
+            int code = errorCode(root);
+            if (code != 0) {
+                // 下播(1099999920)或其他错误码:无流可续
+                return null;
+            }
+            JsonNode info = root.path("data");
+            boolean live = "1".equals(info.path("status").asText()) || info.path("status").asBoolean(false);
+            if (!live) {
+                return null;
+            }
+            List<String> urls = showcaseMedia(uid, idText(info.path("liveid")));
+            return urls.isEmpty() ? null : urls.get(0);
+        } catch (Exception e) {
+            log.warn("映客流地址续租失败: {}", uid, e);
+            return null;
+        }
     }
 
     @Override
     public String getType() {
         return "inke";
+    }
+    /** 流地址经直播代理中转+断流自动续租。 */
+    @Override
+    public boolean isProxied() {
+        return true;
     }
 
     @Override
@@ -82,6 +114,7 @@ public class InkeService implements LivePlatform {
         top.setType_flag(0);
         list.add(top);
         try {
+            top.setCover(firstCover(getApi("Live_top_pc").path("list")));
             for (JsonNode group : getApi("Live_channel_pc").path("list")) {
                 String key = group.path("tab_key").asText("");
                 String name = group.path("channel_name").asText("");
@@ -92,6 +125,8 @@ public class InkeService implements LivePlatform {
                 category.setType_id(getType() + "-" + key);
                 category.setType_name(name);
                 category.setType_flag(0);
+                // 分组无自带分类图,用组内首个在播主播头像当封面(秀场分类视觉索引)
+                category.setCover(firstCover(group.path("list")));
                 list.add(category);
             }
         } catch (Exception e) {
@@ -103,6 +138,19 @@ public class InkeService implements LivePlatform {
         result.setLimit(list.size());
         log.debug("category result: {}", result);
         return result;
+    }
+
+    /** 行数组首个房间的 portrait 头像(image() 归一),无可用行返回 null。 */
+    private String firstCover(JsonNode rooms) {
+        if (rooms.isArray()) {
+            for (JsonNode room : rooms) {
+                String portrait = image(room.path("portrait").asText(""));
+                if (!portrait.isEmpty()) {
+                    return portrait;
+                }
+            }
+        }
+        return null;
     }
 
     @Override
@@ -214,8 +262,21 @@ public class InkeService implements LivePlatform {
         try {
             List<String> urls = showcaseMedia(uid, broadcastId);
             if (!urls.isEmpty()) {
-                detail.setVod_play_from("线路1");
-                detail.setVod_play_url("FLV$" + String.join("#", urls));
+                // 只取首条(# 在 TVBox 语法是分集分隔符);代理条目包代理+ink=uid:
+                // 上游断连/换场次时代理端经 uid 重查 stream_addr 续流(映客流 URL 本身无主播身份);
+                // dual=直连优先+代理双线路(线路1同档直连/代理交错分集,线路2纯代理,网页端恒走代理)
+                String stream = urls.get(0);
+                List<String> proxyEntries = new ArrayList<>();
+                if (proxyService != null) {
+                    String proxyUrl = proxyService.buildProxyUrl(stream);
+                    if (!proxyUrl.equals(stream)) {
+                        proxyEntries.add("FLV$" + proxyUrl + "&ink=" + uid);
+                    }
+                }
+                String mode = proxyService != null && proxyService.isDualProxyMode() && !"web".equals(client) ? "dual" : "proxy";
+                String[] lines = buildPlayLines(List.of("FLV$" + stream), proxyEntries, mode);
+                detail.setVod_play_from(lines[0]);
+                detail.setVod_play_url(lines[1]);
             } else {
                 log.warn("映客目录反查无可用流地址: uid={} bid={}", uid, broadcastId);
             }
@@ -386,6 +447,9 @@ public class InkeService implements LivePlatform {
         }
         if (value.startsWith("//")) {
             value = "https:" + value;
+        } else if (value.startsWith("http://")) {
+            // ikstatic 双协议均可用,https 防网页端混合内容拦截
+            value = "https://" + value.substring(7);
         }
         try {
             URI uri = URI.create(value);

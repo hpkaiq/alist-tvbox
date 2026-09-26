@@ -40,7 +40,7 @@ public class LiveService {
     private final SubscriptionService subscriptionService;
     private final AppProperties appProperties;
 
-    public LiveService(HuyaService huyaService, DouyuService douyuService, BilibiliService bilibiliService, CcService ccService, KuaishouService kuaishouService, DouyinService douyinService, TwitchService twitchService, SoopService soopService, AcfunService acfunService, InkeService inkeService, HuajiaoService huajiaoService, SixRoomService sixRoomService, KugouLiveService kugouLiveService, LookLiveService lookLiveService, LiveFollowService liveFollowService, SubscriptionService subscriptionService, AppProperties appProperties) {
+    public LiveService(HuyaService huyaService, DouyuService douyuService, BilibiliService bilibiliService, CcService ccService, KuaishouService kuaishouService, DouyinService douyinService, TwitchService twitchService, SoopService soopService, AcfunService acfunService, InkeService inkeService, HuajiaoService huajiaoService, SixRoomService sixRoomService, KugouLiveService kugouLiveService, LookLiveService lookLiveService, YyService yyService, LiveFollowService liveFollowService, SubscriptionService subscriptionService, AppProperties appProperties) {
         this.huyaService = huyaService;
         platforms.add(huyaService);
         platforms.add(douyuService);
@@ -48,15 +48,15 @@ public class LiveService {
         platforms.add(ccService);
         platforms.add(kuaishouService);
         platforms.add(douyinService);
-        platforms.add(twitchService);
-        platforms.add(soopService);
-        // pure_live 同源新平台(2026-09-25 接入):全部匿名可用,单平台故障由聚合层兜底
+        platforms.add(kugouLiveService);
         platforms.add(acfunService);
         platforms.add(inkeService);
-        platforms.add(huajiaoService);
         platforms.add(sixRoomService);
-        platforms.add(kugouLiveService);
+        platforms.add(yyService);
+        platforms.add(twitchService);
+        platforms.add(soopService);
         platforms.add(lookLiveService);
+        platforms.add(huajiaoService);
         this.liveFollowService = liveFollowService;
         this.subscriptionService = subscriptionService;
         this.appProperties = appProperties;
@@ -80,7 +80,7 @@ public class LiveService {
         followCategory.setType_name("关注");
         followCategory.setType_flag(0);
         list.add(followCategory);
-        for (LivePlatform platform : platforms) {
+        for (LivePlatform platform : orderedPlatforms()) {
             if (isHidden(platform)) {
                 continue;
             }
@@ -96,7 +96,7 @@ public class LiveService {
         // "关注"分类追加平台筛选:值复用平台 type,list 端点按 platform 参数过滤
         List<FilterValue> values = new ArrayList<>();
         values.add(new FilterValue("全部", ""));
-        for (LivePlatform platform : platforms) {
+        for (LivePlatform platform : orderedPlatforms()) {
             if (isHidden(platform)) {
                 continue;
             }
@@ -114,6 +114,24 @@ public class LiveService {
         String type = platform.getType();
         // 不可变 List.of 对 null 查询会抛 NPE,mock 场景 getType() 可能为 null
         return hidden != null && type != null && hidden.contains(type);
+    }
+
+    /** 展示顺序(live_platform_order):在册平台按配置序在前,未列入的新平台按注册序追加。 */
+    public List<LivePlatform> orderedPlatforms() {
+        List<String> order = appProperties.getLivePlatformOrder();
+        if (order == null || order.isEmpty()) {
+            return platforms;
+        }
+        List<LivePlatform> result = new ArrayList<>();
+        for (String type : order) {
+            platforms.stream().filter(p -> type.equals(p.getType())).findFirst().ifPresent(result::add);
+        }
+        for (LivePlatform platform : platforms) {
+            if (result.stream().noneMatch(p -> p.getType().equals(platform.getType()))) {
+                result.add(platform);
+            }
+        }
+        return result;
     }
 
     public MovieList list(String id, String ac, String sort, Integer pg) throws IOException {
@@ -209,7 +227,7 @@ public class LiveService {
     public MovieList search(String wd) throws IOException {
         MovieList result = new MovieList();
         List<MovieDetail> list = new ArrayList<>();
-        for (LivePlatform platform : platforms) {
+        for (LivePlatform platform : orderedPlatforms()) {
             if (isHidden(platform)) {
                 continue;
             }
