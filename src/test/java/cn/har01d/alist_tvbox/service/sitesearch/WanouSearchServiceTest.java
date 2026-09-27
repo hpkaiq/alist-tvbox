@@ -213,6 +213,20 @@ class WanouSearchServiceTest {
     }
 
     @Test
+    void parkedAndCmsPageDetection() {
+        // 停放/过期页标记(muou.site 实测形态:200 + DNSPod「域名已过期」停放页)
+        assertTrue(WanouSearchService.isParked("<html><body>This domain is expired</body></html>"));
+        assertTrue(WanouSearchService.isParked("<title>域名已过期 - DNSPod</title><body>该域名已过期，暂无法访问</body>"));
+        assertTrue(WanouSearchService.isParked("<html><body>Domain is for sale - Buy this domain</body></html>"));
+        assertFalse(WanouSearchService.isParked("<html><body class=\"module-\">正常站点</body></html>"));
+        assertFalse(WanouSearchService.isParked(""));
+        // MacCMS 站点特征
+        assertTrue(WanouSearchService.hasCmsFeature("<html><div class=\"module-search-item\">card</div></html>"));
+        assertTrue(WanouSearchService.hasCmsFeature("<html>/static/js/player/a.js</html>"));
+        assertFalse(WanouSearchService.hasCmsFeature("<html><body>hello world 12345</body></html>"));
+    }
+
+    @Test
     void searchAggregatesSitesAndDedupesByLink() {
         AppProperties props = props();
         props.getSubscription().setWanouMaxDetailPages(2);
@@ -319,8 +333,8 @@ class WanouSearchServiceTest {
         List<String> fetchCalls = new ArrayList<>();
         WanouSearchService service = probeStubService(fetchCalls);
         List<WanouSearchService.SiteProbe> probes = service.probeAllDomains();
-        // 10 站全部出结果;muou 可达、最优域名 = 延迟最低的 muou.asia
-        assertEquals(10, probes.size());
+        // 11 站全部出结果;muou 可达、最优域名 = 延迟最低的 muou.asia
+        assertEquals(11, probes.size());
         WanouSearchService.SiteProbe muou = probes.stream()
                 .filter(p -> p.siteId().equals("muou")).findFirst().orElseThrow();
         assertTrue(muou.bestUrl() != null && muou.bestUrl().endsWith("muou.asia"));

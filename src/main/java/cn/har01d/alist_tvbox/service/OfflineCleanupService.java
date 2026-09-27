@@ -1,6 +1,7 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.domain.DriverType;
 import cn.har01d.alist_tvbox.entity.DriverAccount;
 import cn.har01d.alist_tvbox.entity.DriverAccountRepository;
 import cn.har01d.alist_tvbox.entity.MediaSubscription;
@@ -21,7 +22,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -162,33 +166,78 @@ public class OfflineCleanupService {
             log.debug("skip offline cleanup: config disabled (autoDelete/selfShare both off or offline not configured)");
             return;
         }
-        OfflineDownloadHandler handler = offlineDownloadService.getHandler(config.driverType());
-        boolean managed = handler.supportsTaskManagement(); // 115/迅雷删任务;光鸭无契约只删文件
-        if (config.selfShare() && !"PAN115".equals(config.driverType())) {
-            // 固化(永久分享)仅 cookie 115;其它盘固化开关忽略(UI 也只在 115 显示)
-            config = new OfflineDownloadService.CleanupConfig(config.accountId(), config.driverType(),
-                    config.autoDelete(), config.ttlHours(), false);
-        }
-        DriverAccount account = driverAccountRepository.findById(config.accountId()).orElse(null);
-        if (account == null) {
-            log.warn("skip offline cleanup: account {} not found", config.accountId());
+        // 候选按行自身账号全量查:离线配置切换账号后(多 115 账号常见),旧账号提交的行不能
+        // 沦为清理孤儿——按配置账号过滤会让旧账号目录的文件永不清理,且候选恒空零日志
+        List<OfflineDownloadTask> tasks = taskRepository.findCleanupCandidates();
+        if (tasks.isEmpty()) {
             return;
         }
-        List<OfflineDownloadTask> tasks = taskRepository.findCleanupCandidates(account.getId());
-        int cleaned = 0;
+        Map<Integer, List<OfflineDownloadTask>> byAccount = new LinkedHashMap<>();
         for (OfflineDownloadTask task : tasks) {
-            try {
-                if (process(task, account, handler, managed, config)) {
-                    cleaned++;
+            byAccount.computeIfAbsent(task.getAccountId() == null ? -1 : task.getAccountId(),
+                    key -> new ArrayList<>()).add(task);
+        }
+        int cleaned = 0;
+        for (Map.Entry<Integer, List<OfflineDownloadTask>> entry : byAccount.entrySet()) {
+            DriverAccount account = driverAccountRepository.findById(entry.getKey()).orElse(null);
+            if (account == null) {
+                // 账号行已删:常见形态是换 cookie 删号重建(同一网盘,新行 id 变)——按当前配置
+                // 账号的离线根尝试补删产物文件(路径不在则 AList 报错,无害),行标 DONE 免占候选
+                String fallbackRoot = currentOfflineRootPathOrNull();
+                for (OfflineDownloadTask task : entry.getValue()) {
+                    log.warn("offline task {} belongs to deleted account {}, fallback file delete via alist: {}",
+                            task.getId(), entry.getKey(), task.getTaskName());
+                    if (fallbackRoot != null && StringUtils.isNotBlank(task.getTaskName())) {
+                        try {
+                            aListService.remove(siteService.getById(1), fallbackRoot + "/" + task.getTaskName());
+                        } catch (Exception e) {
+                            log.debug("fallback file delete for task {} failed (path gone?): {}", task.getId(), e.getMessage());
+                        }
+                    }
+                    task.setCleanupState(OfflineDownloadService.CLEANUP_DONE);
+                    task.setCleanupAttempts(0);
+                    task.setCleanupTime(Instant.now());
+                    task.setUpdatedTime(Instant.now());
+                    taskRepository.save(task);
                 }
+                cleaned += entry.getValue().size();
+                continue;
+            }
+            OfflineDownloadHandler handler;
+            try {
+                handler = offlineDownloadService.getHandler(account.getType().name());
             } catch (Exception e) {
-                log.warn("cleanup offline task {} failed: {}", task.getId(), e.getMessage());
-                markFailed(task);
+                log.warn("skip offline cleanup for account {} ({}): {}", account.getId(), account.getType(), e.getMessage());
+                continue;
+            }
+            boolean managed = handler.supportsTaskManagement(); // 115/迅雷删任务;光鸭无契约只删文件
+            // 固化(永久分享)仅 cookie 115,按行账号类型判;其它盘固化开关忽略(UI 也只在 115 显示)
+            OfflineDownloadService.CleanupConfig effective = config;
+            if (config.selfShare() && account.getType() != DriverType.PAN115) {
+                effective = new OfflineDownloadService.CleanupConfig(config.accountId(), config.driverType(),
+                        config.autoDelete(), config.ttlHours(), false);
+            }
+            for (OfflineDownloadTask task : entry.getValue()) {
+                try {
+                    if (process(task, account, handler, managed, effective)) {
+                        cleaned++;
+                    }
+                } catch (Exception e) {
+                    log.warn("cleanup offline task {} failed: {}", task.getId(), e.getMessage());
+                    markFailed(task);
+                }
             }
         }
-        if (!tasks.isEmpty()) {
-            log.info("offline cleanup finished: {} candidate(s), {} cleaned (autoDelete={}, selfShare={})",
-                    tasks.size(), cleaned, config.autoDelete(), config.selfShare());
+        log.info("offline cleanup finished: {} candidate(s), {} cleaned (autoDelete={}, selfShare={})",
+                tasks.size(), cleaned, config.autoDelete(), config.selfShare());
+    }
+
+    /** 账号已删行的兜底文件删除用:当前配置账号的离线根;离线未配置/配置账号异常返回 null。 */
+    private String currentOfflineRootPathOrNull() {
+        try {
+            return offlineDownloadService.offlineRootPath();
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -347,7 +396,7 @@ public class OfflineCleanupService {
         }
         if (deleteFiles && !handler.deletesFilesWithTask() && StringUtils.isNotBlank(task.getTaskName())) {
             aListService.remove(siteService.getById(1),
-                    offlineDownloadService.offlineRootPath() + "/" + task.getTaskName());
+                    offlineDownloadService.offlineRootPath(account) + "/" + task.getTaskName());
         }
         task.setCleanupState(OfflineDownloadService.CLEANUP_DONE);
         task.setCleanupAttempts(0);

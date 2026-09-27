@@ -673,14 +673,16 @@
       <div v-loading="wanouStatusLoading" style="min-height: 120px">
         <div style="margin-bottom: 12px">
           <el-button type="primary" size="small" :loading="wanouProbing" @click="probeWanouDomains">立即探测</el-button>
-          <span class="sub-text" style="margin-left:8px">每小时自动探测;域名列表按采用优先级排序,首条即当前采用(延迟最低的可达域名)</span>
+          <span class="sub-text" style="margin-left:8px">每小时自动探测;站点按最低延迟排序,域名列表按采用优先级排序,首条即当前采用(延迟最低的可达域名)</span>
         </div>
-        <el-table v-if="wanouSites.length" :data="wanouSites" row-key="siteId" default-expand-all>
+        <el-table v-if="wanouSites.length" :data="sortedWanouSites" row-key="siteId">
           <el-table-column type="expand">
             <template #default="scope">
               <el-table :data="scope.row.domains" size="small" style="margin: 0 0 8px 24px">
                 <el-table-column label="域名" min-width="240" show-overflow-tooltip>
-                  <template #default="d">{{ d.row.url }}</template>
+                  <template #default="d">
+                    <el-link type="primary" :href="d.row.url" target="_blank" rel="noopener">{{ d.row.url }}</el-link>
+                  </template>
                 </el-table-column>
                 <el-table-column label="状态" width="90">
                   <template #default="d">
@@ -711,8 +713,17 @@
               <el-tag v-else size="small" type="danger">失效</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="最低延迟" width="90">
+            <template #default="scope">
+              <span v-if="wanouMinLatency(scope.row) !== null">{{ wanouMinLatency(scope.row) }} ms</span>
+              <span v-else class="sub-text">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="当前采用域名" min-width="240" show-overflow-tooltip>
-            <template #default="scope">{{ scope.row.bestUrl || '—(全域名不可达,等待下轮探测)' }}</template>
+            <template #default="scope">
+              <el-link v-if="scope.row.bestUrl" type="primary" :href="scope.row.bestUrl" target="_blank" rel="noopener">{{ scope.row.bestUrl }}</el-link>
+              <span v-else class="sub-text">—(全域名不可达,等待下轮探测)</span>
+            </template>
           </el-table-column>
           <el-table-column label="可达/总数" width="95">
             <template #default="scope">
@@ -1685,6 +1696,19 @@ const wanouDomainVisible = ref(false)
 const wanouSites = ref<WanouSiteStatusDto[]>([])
 const wanouStatusLoading = ref(false)
 const wanouProbing = ref(false)
+// 站点最低延迟=可达域名中最小延迟(即当前采用域名的延迟);全域名不可达为 null
+const wanouMinLatency = (site: WanouSiteStatusDto): number | null => {
+  const lats = site.domains.filter((d: WanouDomainStatusDto) => d.ok).map((d: WanouDomainStatusDto) => d.latencyMs)
+  return lats.length ? Math.min(...lats) : null
+}
+const sortedWanouSites = computed(() => [...wanouSites.value].sort((a, b) => {
+  const la = wanouMinLatency(a)
+  const lb = wanouMinLatency(b)
+  if (la === null && lb === null) return 0
+  if (la === null) return 1
+  if (lb === null) return -1
+  return la - lb
+}))
 const loadWanouDomains = () => {
   wanouStatusLoading.value = true
   axios.get('/api/media-subscriptions/wanou/domains').then(response => {
