@@ -39,7 +39,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 每日离线清理触发矩阵(docs/pan115-offline-auto-delete-design.md §5):
+ * 定时离线清理(每小时 cron)触发矩阵(docs/pan115-offline-auto-delete-design.md §5):
  * FAILED 即清 / PENDING 活体检查 / 通用入口 TTL / 固化先行 / 追平门禁 / 幂等与重试。
  */
 @ExtendWith(MockitoExtension.class)
@@ -133,10 +133,10 @@ class OfflineCleanupServiceTest {
     @Test
     void skipsWhenConfigMissingOrAllOff() {
         when(offlineDownloadService.cleanupConfig()).thenReturn(null);
-        service.dailyCleanup();
+        service.hourlyCleanup();
         when(offlineDownloadService.cleanupConfig())
                 .thenReturn(new OfflineDownloadService.CleanupConfig(12, "PAN115", false, 24, false));
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(taskRepository, never()).findCleanupCandidates();
     }
 
@@ -157,7 +157,7 @@ class OfflineCleanupServiceTest {
         when(siteService.getById(1)).thenReturn(site);
         when(offlineDownloadService.offlineRootPath(account)).thenReturn("/挂载/alist-tvbox-offline");
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
         verify(aListService).remove(site, "/挂载/alist-tvbox-offline/即看即走");
@@ -177,14 +177,14 @@ class OfflineCleanupServiceTest {
         OfflineDownloadTask task = task("PENDING", 9, "产物");
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).taskStatus(any(), any(), any());
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
 
         task.setCreatedTime(Instant.now().minusSeconds(8 * 24 * 3600));
         when(offlineDownloadService.offlineRootPath(account)).thenReturn("/挂载/alist-tvbox-offline");
         when(siteService.getById(1)).thenReturn(new cn.har01d.alist_tvbox.entity.Site());
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean()); // 光鸭仍不删任务记录
         verify(aListService).remove(any(), eq("/挂载/alist-tvbox-offline/产物"));
     }
@@ -212,7 +212,7 @@ class OfflineCleanupServiceTest {
         when(offlineDownloadService.offlineRootPath(account)).thenReturn("/挂载/alist-tvbox-offline");
         when(siteService.getById(1)).thenReturn(new cn.har01d.alist_tvbox.entity.Site());
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(checkService, never()).selfifyOfflineProduct(anyInt(), any(), anyString());
         verify(aListService).remove(any(), eq("/挂载/alist-tvbox-offline/产物"));
@@ -226,7 +226,7 @@ class OfflineCleanupServiceTest {
         OfflineDownloadTask task = task("FAILED", 9, "失败产物");
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "失败产物", true);
         assertEquals("DONE", task.getCleanupState());
@@ -239,7 +239,7 @@ class OfflineCleanupServiceTest {
         OfflineDownloadTask task = task("FAILED", 9, "失败产物");
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
         assertEquals(null, task.getCleanupState());
@@ -255,7 +255,7 @@ class OfflineCleanupServiceTest {
         when(subscriptionRepository.existsById(9)).thenReturn(true);
         when(handler.taskStatus(account, HASH, "产物")).thenReturn(OfflineDownloadHandler.TaskStatus.SUCCEEDED);
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
     }
@@ -268,7 +268,7 @@ class OfflineCleanupServiceTest {
         when(subscriptionRepository.existsById(9)).thenReturn(false);
         when(handler.taskStatus(account, HASH, "产物")).thenReturn(OfflineDownloadHandler.TaskStatus.SUCCEEDED);
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "产物", true);
         assertEquals("DONE", task.getCleanupState());
@@ -282,13 +282,13 @@ class OfflineCleanupServiceTest {
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
         when(handler.taskStatus(account, HASH, "产物")).thenReturn(OfflineDownloadHandler.TaskStatus.RUNNING);
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
 
         task.setCreatedTime(Instant.now().minusSeconds(8 * 24 * 3600)); // 超阈值:按滞留清
         task.setCleanupState(null);
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler).deleteTask(account, HASH, "产物", true);
     }
 
@@ -299,7 +299,7 @@ class OfflineCleanupServiceTest {
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
         when(handler.taskStatus(account, HASH, "产物")).thenReturn(OfflineDownloadHandler.TaskStatus.FAILED);
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "产物", true);
     }
@@ -312,11 +312,11 @@ class OfflineCleanupServiceTest {
         task.setCreatedTime(Instant.now().minusSeconds(2 * 24 * 3600));
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
 
         task.setCreatedTime(Instant.now().minusSeconds(8 * 24 * 3600));
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler).deleteTask(account, null, "ed2k 产物", true);
     }
 
@@ -329,14 +329,14 @@ class OfflineCleanupServiceTest {
         task.setCompletedTime(Instant.now().minusSeconds(30 * 3600)); // 完成 30h > TTL 24h
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler).deleteTask(account, HASH, "即看即走", true);
 
         // TTL 内不删:提交 48h 前但完成仅 2h(起算点=完成时间,不是提交时间)
         OfflineDownloadTask fresh = task("COMPLETED", null, "即看即走");
         fresh.setCompletedTime(Instant.now().minusSeconds(2 * 3600));
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(fresh));
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, times(1)).deleteTask(any(), any(), any(), anyBoolean()); // 仍只有第一次的删除
     }
 
@@ -347,7 +347,7 @@ class OfflineCleanupServiceTest {
         task.setCompletedTime(Instant.now().minusSeconds(30 * 3600));
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
     }
 
@@ -360,7 +360,7 @@ class OfflineCleanupServiceTest {
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
         when(resourceRepository.findByLink("offline:产物")).thenReturn(List.of()); // 行已退役/订阅已删
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "产物", true);
     }
@@ -379,11 +379,11 @@ class OfflineCleanupServiceTest {
                 .thenReturn(List.of(1, 2, 3, 4));
 
         when(checkService.watchedEpisode(sub)).thenReturn(2); // 40 集只看到 2:不删
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
 
         when(checkService.watchedEpisode(sub)).thenReturn(4); // 追平:删
-        service.dailyCleanup();
+        service.hourlyCleanup();
         verify(handler).deleteTask(account, HASH, "产物", true);
     }
 
@@ -396,7 +396,7 @@ class OfflineCleanupServiceTest {
         when(checkService.selfifyOfflineProduct(9, account, "产物"))
                 .thenReturn("https://115.com/s/abc123?password=x1y2");
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(checkService).selfifyOfflineProduct(9, account, "产物"); // 删除前固化
         assertEquals("https://115.com/s/abc123?password=x1y2", task.getShareUrl());
@@ -413,7 +413,7 @@ class OfflineCleanupServiceTest {
         when(checkService.selfifyOfflineProduct(9, account, "产物"))
                 .thenThrow(new IllegalStateException("建分享失败"));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
         assertEquals(null, task.getCleanupState()); // 次日重试
@@ -429,7 +429,7 @@ class OfflineCleanupServiceTest {
         when(checkService.selfifyOfflineProduct(9, account, "产物"))
                 .thenReturn("https://115.com/s/abc123?password=x1y2");
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         assertEquals("https://115.com/s/abc123?password=x1y2", task.getShareUrl());
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
@@ -444,7 +444,7 @@ class OfflineCleanupServiceTest {
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
         when(resourceRepository.findByLink("offline:产物")).thenReturn(List.of(mountedRow(9, "产物")));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(checkService, never()).selfifyOfflineProduct(anyInt(), any(), anyString());
         verify(handler).deleteTask(account, HASH, "产物", true);
@@ -460,7 +460,7 @@ class OfflineCleanupServiceTest {
         when(checkService.selfifyOfflineProduct(9, account, "产物"))
                 .thenReturn("https://115.com/s/abc123?password=x1y2");
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
     }
@@ -479,7 +479,7 @@ class OfflineCleanupServiceTest {
         when(siteService.getById(1)).thenReturn(site);
         when(offlineDownloadService.offlineRootPath(account)).thenReturn("/挂载/alist-tvbox-offline");
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "即看即走", true); // 任务记录删(幂等键=123任务id)
         verify(aListService).remove(site, "/挂载/alist-tvbox-offline/即看即走"); // 文件由 AList 删
@@ -494,7 +494,7 @@ class OfflineCleanupServiceTest {
         org.mockito.Mockito.doThrow(new RuntimeException("network down"))
                 .when(handler).deleteTask(any(), any(), any(), anyBoolean());
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         assertEquals("FAILED", task.getCleanupState());
         assertEquals(1, task.getCleanupAttempts());
@@ -508,7 +508,7 @@ class OfflineCleanupServiceTest {
         task.setCleanupAttempts(5); // 连续失败超限(47h 前):7 天冷却期内不再尝试
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
     }
@@ -523,7 +523,7 @@ class OfflineCleanupServiceTest {
         task.setUpdatedTime(Instant.now().minusSeconds(8 * 24 * 3600)); // 最后失败在 8 天前
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "失败产物", true);
         assertEquals("DONE", task.getCleanupState());
@@ -541,63 +541,35 @@ class OfflineCleanupServiceTest {
         org.mockito.Mockito.doThrow(new RuntimeException("still broken"))
                 .when(handler).deleteTask(any(), any(), any(), anyBoolean());
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         assertEquals("FAILED", task.getCleanupState());
         assertEquals(1, task.getCleanupAttempts());
     }
 
-    // ---------- 调度节流与错过补偿 ----------
+    // ---------- 调度:cron 每小时直跑,无代码内节流 ----------
 
     @Test
-    void cleanupSkippedWithinMinInterval() {
-        // 23h 内跑过:主调度与补偿调度都被节流(常开设备每天恰好一次)
-        lenient().when(settingRepository.findById(OfflineCleanupService.LAST_RUN_SETTING))
-                .thenReturn(Optional.of(new Setting(OfflineCleanupService.LAST_RUN_SETTING,
-                        Instant.now().minusSeconds(10 * 3600).toString())));
+    void cleanupRunsEveryTriggerAndRecordsLastRunMarker() {
+        // 无代码内节流/闸门:cron 触发即执行(清理幂等,行 DONE 不再进候选);
+        // 执行后写 last-run marker 供诊断报告「上次清理距今」
+        when(offlineDownloadService.cleanupConfig())
+                .thenReturn(new OfflineDownloadService.CleanupConfig(12, "PAN115", true, 24, false));
+        when(taskRepository.findCleanupCandidates()).thenReturn(List.of());
 
-        service.dailyCleanup();
-        service.catchUpCleanup();
+        service.hourlyCleanup();
 
-        verify(taskRepository, never()).findCleanupCandidates();
-    }
-
-    @Test
-    void catchUpRunsWhenOverdueOrNeverRun() {
-        // 上次清理在 30h 前(昨天 05:40 后设备关机错过今天主调度):补偿调度接管
-        when(settingRepository.findById(OfflineCleanupService.LAST_RUN_SETTING))
-                .thenReturn(Optional.of(new Setting(OfflineCleanupService.LAST_RUN_SETTING,
-                        Instant.now().minusSeconds(30 * 3600).toString())));
-        enable(true, 24, false);
-        OfflineDownloadTask task = task("FAILED", 9, "失败产物");
-        when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
-
-        service.catchUpCleanup();
-
-        verify(handler).deleteTask(account, HASH, "失败产物", true);
+        verify(taskRepository).findCleanupCandidates();
         verify(settingRepository).save(org.mockito.ArgumentMatchers.argThat((Setting s) ->
                 OfflineCleanupService.LAST_RUN_SETTING.equals(s.getName()) && s.getValue() != null));
     }
 
     @Test
-    void catchUpRunsOnFirstSightWithoutMarker() {
-        // 升级上来从未跑过(无 marker):首次补偿检查立即执行存量清理
-        when(settingRepository.findById(OfflineCleanupService.LAST_RUN_SETTING)).thenReturn(Optional.empty());
-        enable(true, 24, false);
-        OfflineDownloadTask task = task("FAILED", 9, "失败产物");
-        when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
-
-        service.catchUpCleanup();
-
-        verify(handler).deleteTask(account, HASH, "失败产物", true);
-    }
-
-    @Test
-    void catchUpRecordsMarkerEvenWhenConfigDisabled() {
-        // 配置未启用空跑也记 marker:防每小时补偿调度反复穿透到配置检查
+    void cleanupRecordsMarkerEvenWhenConfigDisabled() {
+        // 配置未启用空跑也记 marker(诊断展示依据)
         when(offlineDownloadService.cleanupConfig()).thenReturn(null);
 
-        service.catchUpCleanup();
+        service.hourlyCleanup();
 
         verify(settingRepository).save(org.mockito.ArgumentMatchers.argThat((Setting s) ->
                 OfflineCleanupService.LAST_RUN_SETTING.equals(s.getName())));
@@ -616,7 +588,7 @@ class OfflineCleanupServiceTest {
         task.setCompletedTime(Instant.now().minusSeconds(5 * 24 * 3600)); // 5 天前完成,TTL 1h 早已过期
         when(taskRepository.findCleanupCandidates()).thenReturn(List.of(task));
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "即看即走", true);
         assertEquals("DONE", task.getCleanupState());
@@ -634,7 +606,7 @@ class OfflineCleanupServiceTest {
         cn.har01d.alist_tvbox.entity.Site site = new cn.har01d.alist_tvbox.entity.Site();
         when(siteService.getById(1)).thenReturn(site);
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler, never()).deleteTask(any(), any(), any(), anyBoolean());
         verify(aListService).remove(site, "/新挂载/alist-tvbox-offline/即看即走");
@@ -663,7 +635,7 @@ class OfflineCleanupServiceTest {
         when(offlineDownloadService.offlineRootPath(pan123)).thenReturn("/123挂载/alist-tvbox-offline");
         when(siteService.getById(1)).thenReturn(new cn.har01d.alist_tvbox.entity.Site());
 
-        service.dailyCleanup();
+        service.hourlyCleanup();
 
         verify(handler).deleteTask(account, HASH, "旧账号产物", true);
         verify(handler123).deleteTask(pan123, HASH, "123产物", true);

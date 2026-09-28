@@ -21,7 +21,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,7 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 每日离线清理(docs/pan115-offline-auto-delete-design.md):删除 115 离线任务+文件,
+ * 定时离线清理(docs/pan115-offline-auto-delete-design.md):删除 115 离线任务+文件,
  * 面向离线配额大的重度用户(任务槽位被完成态任务占满、离线目录无限膨胀)。
  * <p>
  * 删除时机三分法(v2.2 定案):
@@ -47,9 +46,10 @@ import java.util.Objects;
  * 115 客户端自建的任务。本地行永不物理删(配额计数、urlHash 查重、FAILED 记忆都依赖行),
  * 清理完成只置 {@code cleanup_state=DONE} —— 提交短路随之放行同磁力重提(这正是删任务的目的)。
  * <p>
- * 调度:每日 05:40 主调度 + 每小时补偿检查(23h 节流共用闸门)——电视盒子晚上用完关机是
- * 主力画像,单时刻 cron 常年错过会让 TTL 过期任务永不清理;连续失败超限进入 7 天冷却,
- * 冷却期满重试一轮(cookie 换新后自愈),不永久放弃。
+ * 调度:每小时 :10 cron 直跑(2026-09-28 用户定规,原每日一次;无代码内节流/闸门,
+ * 清理幂等无副作用)——TTL 到期 1 小时内即回收;电视盒子晚上用完关机是主力画像,错过整点
+ * 下次在线的 :10 自动补上;连续失败超限进入 7 天冷却,冷却期满重试一轮(cookie 换新后自愈),
+ * 不永久放弃。
  * <p>
  * 多盘差异(按 {@link OfflineDownloadHandler#supportsTaskManagement()} 分叉):115/迅雷有任务
  * 删除契约,删任务+文件一体,固化分享仅 cookie 115;光鸭无契约(重复提交直接建新任务、无
@@ -64,8 +64,6 @@ public class OfflineCleanupService {
     private static final int MAX_CLEANUP_ATTEMPTS = 5;
     /** 连续失败超限后的冷却时长:冷却期满重置计数重试一轮(cookie 换新等环境修复后自愈)。 */
     private static final long RETRY_COOLDOWN_HOURS = 7 * 24L;
-    /** 清理最小间隔(23h<24h):常开设备稳定在每日 05:40 主调度执行,错过主调度的设备在下次在线的整点后补偿。 */
-    private static final Duration MIN_INTERVAL = Duration.ofHours(23);
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_PENDING = "PENDING";
     private static final String STATUS_FAILED = "FAILED";
@@ -110,45 +108,16 @@ public class OfflineCleanupService {
     }
 
     /**
-     * 每日 05:40 主调度(用户定规避开 6 点高峰:06:00 例行清理/06:05 起签到族全挤在该小时);
-     * autoDelete 与固化开关全关时零动作。
-     */
-    @Scheduled(cron = "0 40 5 * * *")
-    public void dailyCleanup() {
-        runIfDue();
-    }
-
-    /**
-     * 每小时 :10 补偿检查:主调度的单时刻 cron 在非 24 小时在线的设备(电视盒子晚上用完关机是
-     * 本产品主力画像)上会常年错过——TTL 早已过期的任务永不清理。距上次清理超 23h 即补跑,
-     * 与主调度共用节流,常开设备仍稳定每天一次;从未跑过(升级上来无 marker)立即执行。
+     * 每小时 :10 清理(2026-09-28 用户定规:cron 直跑,不做代码内节流/闸门——TTL 到期 1 小时内
+     * 即回收;清理幂等:行 DONE 不再进候选,重复触发最多多一次任务列表查询,无副作用)。
+     * 电视盒子晚上用完关机错过的整点在下次在线的 :10 自动补上;autoDelete 与固化开关全关时零动作。
      */
     @Scheduled(cron = "0 10 * * * *")
-    public void catchUpCleanup() {
-        runIfDue();
-    }
-
-    /** 23h 节流闸门:两个调度入口共用;跑完(含配置未启用的空跑)持久化执行时间,重启不重复。 */
-    private void runIfDue() {
-        Instant last = lastRunTime();
-        if (last != null && last.plus(MIN_INTERVAL).isAfter(Instant.now())) {
-            log.debug("offline cleanup ran {} ago, skip", Duration.between(last, Instant.now()));
-            return;
-        }
+    public void hourlyCleanup() {
         try {
             doCleanup();
         } finally {
-            writeLastRun(Instant.now());
-        }
-    }
-
-    private Instant lastRunTime() {
-        try {
-            return settingRepository.findById(LAST_RUN_SETTING).map(Setting::getValue)
-                    .map(Instant::parse).orElse(null);
-        } catch (Exception e) {
-            log.debug("read offline cleanup last-run failed: {}", e.getMessage());
-            return null;
+            writeLastRun(Instant.now()); // 仅诊断展示用(DiagnosticsService「上次清理距今」),不参与调度判定
         }
     }
 
