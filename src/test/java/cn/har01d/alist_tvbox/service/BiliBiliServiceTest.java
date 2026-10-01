@@ -1,8 +1,13 @@
 package cn.har01d.alist_tvbox.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
+import cn.har01d.alist_tvbox.dto.FilterDto;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHot;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliHotResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfo;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfoResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliList;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliListResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
 import cn.har01d.alist_tvbox.util.BiliBiliUtils;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
@@ -38,6 +43,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -51,12 +57,14 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BiliBiliServiceTest {
     private final RestTemplate restTemplate = Mockito.mock(RestTemplate.class);
     private final SettingRepository settingRepository = Mockito.mock(SettingRepository.class);
+    private final NavigationService navigationService = Mockito.mock(NavigationService.class);
     private final AppProperties appProperties = Mockito.mock(AppProperties.class);
     private final BiliCookieRefreshService biliCookieRefreshService = Mockito.mock(BiliCookieRefreshService.class);
     private BiliBiliService service;
@@ -77,7 +85,7 @@ class BiliBiliServiceTest {
         when(appProperties.getQns()).thenReturn(List.of());
         when(appProperties.getUserAgent()).thenReturn("Mozilla/5.0 Test");
 
-        service = new BiliBiliService(settingRepository, mock(NavigationService.class), appProperties,
+        service = new BiliBiliService(settingRepository, navigationService, appProperties,
                 biliCookieRefreshService, builder, new ObjectMapper());
         // 预置 WBI key,跳过 NAV_API 往返
         ReflectionTestUtils.setField(service, "imgKey", "7cd084941338484aae1ad9425b84077c");
@@ -618,9 +626,10 @@ class BiliBiliServiceTest {
 
     @Test
     void viewApiUgcSeasonDeserializes() throws Exception {
-        // 实测 episode 无顶层 duration,时长在 arc.duration(秒)
+        // 实测 episode 无顶层 duration,时长在 arc.duration(秒);多P成员的分P全集在 pages[](各P独立 cid)
         String json = "{\"aid\":1,\"bvid\":\"BV1\",\"title\":\"t\",\"ugc_season\":{\"id\":748,\"title\":\"合集名\",\"mid\":9,"
-                + "\"sections\":[{\"id\":1,\"title\":\"正片\",\"episodes\":[{\"aid\":10,\"bvid\":\"BV10\",\"cid\":100,\"title\":\"第一集\",\"arc\":{\"duration\":61}}]},"
+                + "\"sections\":[{\"id\":1,\"title\":\"正片\",\"episodes\":[{\"aid\":10,\"bvid\":\"BV10\",\"cid\":100,\"title\":\"第一集\","
+                + "\"arc\":{\"duration\":346},\"pages\":[{\"page\":1,\"part\":\"上\",\"cid\":100,\"duration\":45},{\"page\":2,\"part\":\"下\",\"cid\":101,\"duration\":301}]}]},"
                 + "{\"id\":2,\"title\":\"花絮\",\"episodes\":[]}]}}";
         BiliBiliInfo info = new ObjectMapper().readValue(json, BiliBiliInfo.class);
 
@@ -630,7 +639,10 @@ class BiliBiliServiceTest {
         assertEquals("第一集", episode.getTitle());
         assertEquals(100L, episode.getCid());
         assertEquals(10L, episode.getAid());
-        assertEquals(61L, episode.getDuration());
+        assertEquals(346L, episode.getDuration());
+        assertEquals(2, episode.getPages().size());
+        assertEquals(101L, episode.getPages().get(1).getCid());
+        assertEquals("下", episode.getPages().get(1).getPart());
     }
 
     private BiliBiliInfo.UgcSeason.Arc arcOf(long seconds) {
@@ -701,4 +713,464 @@ class BiliBiliServiceTest {
         assertTrue(guiPlayUrl.contains("【正片】1 初入宗门(10:31)$1130000001-1500000001"));
         assertTrue(guiPlayUrl.contains("▶ 【正片】2 突破金丹 特辑(01:15:31)$116958703918865-40168587741"));
     }
+
+    private BiliBiliInfo.PageInfo pageOf(int page, String part, long cid, long duration) {
+        BiliBiliInfo.PageInfo pageInfo = new BiliBiliInfo.PageInfo();
+        pageInfo.setPage(page);
+        pageInfo.setPart(part);
+        pageInfo.setCid(cid);
+        pageInfo.setDuration(duration);
+        return pageInfo;
+    }
+
+    @Test
+    void getDetailExpandsMultiPageSeasonEpisodes() throws Exception {
+        // 实测形态(创造101 BV1ES7D6XEZy):合集成员自身带分P,episode.cid 只锚 P1,
+        // 不展开则合集线连播只播每成员首个分P(该视频 P1 恰为 45 秒短片即跳下一成员)
+        BiliBiliInfo info = videoInfo();
+        BiliBiliInfo.UgcSeason season = new BiliBiliInfo.UgcSeason();
+        season.setId(8319251L);
+        season.setTitle("创造101");
+        BiliBiliInfo.UgcSeason.Section main = new BiliBiliInfo.UgcSeason.Section();
+        main.setId(1L);
+        main.setTitle("正片");
+        BiliBiliInfo.UgcSeason.Episode multi = new BiliBiliInfo.UgcSeason.Episode();
+        multi.setAid(116702348056416L);
+        multi.setBvid("BV195KY6YEeY"); // 当前视频=多P成员
+        multi.setCid(38905774565L);
+        multi.setTitle("EP1上");
+        multi.setArc(arcOf(5305L));
+        multi.setPages(List.of(
+                pageOf(1, "xbb", 38905774565L, 45),
+                pageOf(2, "真1", 38906171035L, 301)));
+        BiliBiliInfo.UgcSeason.Episode single = new BiliBiliInfo.UgcSeason.Episode();
+        single.setAid(116736204478395L);
+        single.setBvid("BV1BDE166Esn");
+        single.setCid(39363544915L);
+        single.setTitle("EP1下");
+        single.setArc(arcOf(301L));
+        main.setEpisodes(List.of(multi, single));
+        season.setSections(List.of(main));
+        info.setUgcSeason(season);
+        stubInfoApi(info);
+
+        cn.har01d.alist_tvbox.tvbox.MovieDetail movie = service.getDetail("BV195KY6YEeY", "com.github.tvbox.osc").getList().get(0);
+
+        String playUrl = movie.getVod_play_url();
+        // 多P成员按分P展开、载荷 aid-各P cid;▶ 只标当前视频首个分P
+        assertTrue(playUrl.contains("▶ EP1上 P1 xbb$116702348056416-38905774565"));
+        assertTrue(playUrl.contains("EP1上 P2 真1$116702348056416-38906171035"));
+        // 单P成员不展开、条目无 P 标(与既有形态一致)
+        assertTrue(playUrl.contains("EP1下$116736204478395-39363544915"));
+
+        // gui 时长后缀=各分P自身时长(P1=45 秒非整视频 01:28:25)
+        String guiPlayUrl = service.getDetail("BV195KY6YEeY", "gui").getList().get(0).getVod_play_url();
+        assertTrue(guiPlayUrl.contains("▶ EP1上 P1 xbb(0:45)$116702348056416-38905774565"));
+        assertTrue(guiPlayUrl.contains("EP1上 P2 真1(05:01)$116702348056416-38906171035"));
+    }
+
+    // ==== B 站分区改版(2026-10):dynamic/region 与 newlist_rank 下线、view 接口 tname 清空 的替代链路 ====
+
+    /** 列表页封面 getListPic 依赖 fromCurrentRequest,单测线程须伪造请求上下文 */
+    private MovieList withRequestContext(java.util.concurrent.Callable<MovieList> call) throws Exception {
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest()));
+        try {
+            return call.call();
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    private BiliBiliListResponse newlistResponse(BiliBiliInfo... archives) {
+        BiliBiliList list = new BiliBiliList();
+        list.setArchives(new ArrayList<>(List.of(archives)));
+        list.setPage(new BiliBiliList.Page()); // newlist 恒回 count=0
+        BiliBiliListResponse response = new BiliBiliListResponse();
+        response.setData(list);
+        return response;
+    }
+
+    private BiliBiliInfo archive(int tid, String bvid) {
+        BiliBiliInfo info = new BiliBiliInfo();
+        info.setTid(tid);
+        info.setBvid(bvid);
+        info.setTitle("视频" + bvid);
+        info.setDuration(60);
+        return info;
+    }
+
+    @Test
+    void getRegionFallsBackToFixedDepthWhenNewlistOmitsTotal() throws Exception {
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class)))
+                .thenReturn(ResponseEntity.ok(newlistResponse(archive(130, "BV1sub1"), archive(28, "BV1sub2"))));
+
+        MovieList result = withRequestContext(() -> service.getRegion("3", 1));
+
+        assertEquals(3, result.getList().size()); // 合集 + 2 条
+        assertEquals("region$3$0$1", result.getList().get(0).getVod_id());
+        assertTrue(result.getTotal() > 0); // page.count 恒 0,须兜底固定翻页深度
+    }
+
+    private BiliBiliHotResponse rankResponse(int count, int tid) {
+        List<BiliBiliInfo> items = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            items.add(archive(tid, "BV1rank" + i));
+        }
+        BiliBiliHot hot = new BiliBiliHot();
+        hot.setList(items);
+        BiliBiliHotResponse response = new BiliBiliHotResponse();
+        response.setData(hot);
+        return response;
+    }
+
+    @Test
+    void getRegionSlicesInCategoryRankingForRemovedRegions() throws Exception {
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(rankResponse(35, 218))); // 动物圈 217 已撤:newlist 无流,热榜兜底
+
+        MovieList page1 = withRequestContext(() -> service.getRegion("217", 1));
+        assertEquals(31, page1.getList().size()); // 合集 + 30 条切片
+        assertEquals(2, page1.getPagecount()); // 35 条 → 2 页
+
+        MovieList page2 = withRequestContext(() -> service.getRegion("217", 2));
+        assertEquals(6, page2.getList().size()); // 合集 + 剩余 5 条
+
+        MovieList page3 = withRequestContext(() -> service.getRegion("217", 3));
+        assertEquals(0, page3.getList().size()); // 越界空页,客户端停止翻页
+        verify(restTemplate, never()).exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class));
+    }
+
+    @Test
+    void subRegionOfRemovedRegionAlsoUsesParentRanking() throws Exception {
+        when(navigationService.getParentValue("218")).thenReturn("217"); // 喵星人 → 动物圈(已撤)
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(rankResponse(20, 218)));
+
+        FilterDto filter = new FilterDto();
+        filter.setCategory("218");
+
+        MovieList result = withRequestContext(() -> service.getMovieList("217", filter, 1, ""));
+        assertEquals(21, result.getList().size()); // 合集 + 20 条全命中
+
+        MovieList page2 = withRequestContext(() -> service.getMovieList("217", filter, 2, ""));
+        assertEquals(0, page2.getList().size()); // 子分区仅第 1 页,第 2 页起空页
+        verify(restTemplate, never()).exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class));
+    }
+
+    @Test
+    void getHotRankToleratesNullDataFromRiskControl() throws Exception {
+        // ranking/v2 裸请求恒 -352(data=null),改版后必须带浏览器头且不得 NPE
+        BiliBiliHotResponse rejected = new BiliBiliHotResponse();
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(rejected));
+
+        assertTrue(service.getHotRank("all", 223, 1).isEmpty());
+
+        MovieList result = withRequestContext(() -> service.getRegion("223", 1));
+        assertEquals(0, result.getList().size()); // 空页,不再 500
+    }
+
+    @Test
+    void originAndRookieBoardsGoThroughHeadedRankingRequest() throws Exception {
+        // 原创(origin$0)/新人(rookie$0)与撤区分类同走 getHotRank,改版后必须带头请求
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(rankResponse(25, 21)));
+
+        assertEquals(25, withRequestContext(() -> service.getMovieList("origin$0", new FilterDto(), 1, "")).getList().size());
+        assertEquals(25, withRequestContext(() -> service.getMovieList("rookie$0", new FilterDto(), 1, "")).getList().size());
+        verify(restTemplate, never()).getForObject(startsWith("https://api.bilibili.com/x/web-interface/ranking"), eq(BiliBiliHotResponse.class));
+    }
+
+    @Test
+    void newlistRiskControlReturnsEmptyAndTripsCircuitBreaker() throws Exception {
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class)))
+                .thenThrow(new org.springframework.web.client.HttpClientErrorException(org.springframework.http.HttpStatus.PRECONDITION_FAILED));
+
+        MovieList first = withRequestContext(() -> service.getRegion("11", 1));
+        assertEquals(0, first.getList().size()); // 412 HTML 挑战页降级为空页,不再 500 也不出空合集
+
+        MovieList second = withRequestContext(() -> service.getRegion("11", 2));
+        assertEquals(0, second.getList().size()); // 熔断冷却期内直接返空,不再撞接口
+        verify(restTemplate, org.mockito.Mockito.times(1)).exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class));
+    }
+
+    @Test
+    void newlistPagesAreCachedToReduceRequestFanout() throws Exception {
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class)))
+                .thenReturn(ResponseEntity.ok(newlistResponse(archive(130, "BV1cached"))));
+
+        MovieList first = withRequestContext(() -> service.getRegion("3", 1));
+        MovieList again = withRequestContext(() -> service.getRegion("3", 1));
+
+        assertEquals(2, first.getList().size());
+        assertEquals(first.getList().size(), again.getList().size());
+        // 同 (rid,page) 短缓存命中,只发一次请求
+        verify(restTemplate, org.mockito.Mockito.times(1)).exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class));
+    }
+
+    @Test
+    void subRegionLatestUsesParentRankingFilteredAndSortedByPubdate() throws Exception {
+        when(navigationService.getParentValue("130")).thenReturn("3");
+        BiliBiliInfo older = archive(130, "BV1older"); // 榜位靠前但发布早
+        older.setPubdate(100);
+        BiliBiliInfo newer = archive(130, "BV1newer"); // 榜位靠后但发布晚
+        newer.setPubdate(200);
+        BiliBiliHotResponse hotResponse = new BiliBiliHotResponse();
+        BiliBiliHot hot = new BiliBiliHot();
+        hot.setList(new ArrayList<>(List.of(older, archive(28, "BV1other1"), newer)));
+        hotResponse.setData(hot);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(hotResponse));
+
+        FilterDto filter = new FilterDto();
+        filter.setCategory("130"); // 子分区:音乐综合,「最新」档
+
+        MovieList result = withRequestContext(() -> service.getMovieList("3", filter, 1, ""));
+
+        assertEquals(3, result.getList().size()); // 合集 + 2 条命中(非 130 被滤掉)
+        assertEquals("type$130$$1", result.getList().get(0).getVod_id());
+        assertEquals("视频BV1newer", result.getList().get(1).getVod_name()); // 「最新」按发布时间倒序
+        assertEquals("视频BV1older", result.getList().get(2).getVod_name());
+        assertEquals(1, result.getPagecount());
+
+        MovieList page2 = withRequestContext(() -> service.getMovieList("3", filter, 2, ""));
+        assertEquals(0, page2.getList().size()); // 单请求无扇出,仅第 1 页
+        verify(restTemplate, never()).exchange(startsWith("https://api.bilibili.com/x/web-interface/newlist"), eq(HttpMethod.GET), any(), eq(BiliBiliListResponse.class));
+    }
+
+    @Test
+    void getMovieListSubRegionHotFiltersParentRanking() throws Exception {
+        when(navigationService.getParentValue("130")).thenReturn("3");
+        BiliBiliHotResponse hotResponse = new BiliBiliHotResponse();
+        BiliBiliHot hot = new BiliBiliHot();
+        hot.setList(new ArrayList<>(List.of(archive(130, "BV1hot1"), archive(28, "BV1hot2"))));
+        hotResponse.setData(hot);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(hotResponse));
+
+        FilterDto filter = new FilterDto();
+        filter.setCategory("130");
+        filter.setType("hot");
+
+        MovieList result = withRequestContext(() -> service.getMovieList("3", filter, 1, ""));
+
+        assertEquals(2, result.getList().size()); // 合集 + 1 条命中
+        assertEquals("type$130$hot$1", result.getList().get(0).getVod_id());
+        assertEquals(1, result.getPagecount());
+    }
+
+    @Test
+    void getTypePlaylistMirrorsSubRegionListing() throws Exception {
+        when(navigationService.getParentValue("130")).thenReturn("3");
+        BiliBiliHotResponse hotResponse = new BiliBiliHotResponse();
+        BiliBiliHot hot = new BiliBiliHot();
+        hot.setList(new ArrayList<>(List.of(archive(130, "BV1hot1"))));
+        hotResponse.setData(hot);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/web-interface/ranking/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliHotResponse.class)))
+                .thenReturn(ResponseEntity.ok(hotResponse));
+
+        MovieList result = withRequestContext(() -> service.getTypePlaylist("type$130$hot$1"));
+
+        assertEquals("type$130$0$1", result.getList().get(0).getVod_id());
+        assertTrue(result.getList().get(0).getVod_play_url().contains("视频BV1hot1$"));
+    }
+
+    @Test
+    void typeNameFallsBackToNavigationLookup() throws Exception {
+        BiliBiliInfo info = videoInfo();
+        info.setTname(""); // view 接口 tname 已被 B 站清空
+        info.setTname_v2("");
+        info.setTid(21);
+        when(navigationService.getNameByValue("21")).thenReturn("日常");
+        stubInfoApi(info);
+
+        assertEquals("日常", service.getDetail("BV195KY6YEeY", "").getList().get(0).getType_name());
+    }
+
+    @Test
+    void typeNameKeepsUpstreamValueWhenPresent() throws Exception {
+        stubInfoApi(videoInfo()); // tname=动画 tname_v2=短片
+
+        assertEquals("动画 / 短片", service.getDetail("BV195KY6YEeY", "").getList().get(0).getType_name());
+    }
+
+    @Test
+    void getCommentsReturnsMainListWithTopMergeAndCursor() throws Exception {
+        String body = """
+                {"code":0,"data":{
+                  "cursor":{"all_count":962,"is_end":false,
+                    "pagination_reply":{"next_offset":"{\\"type\\":3,\\"direction\\":1,\\"Data\\":{\\"cursor\\":71859}}"}},
+                  "upper":{"mid":2},
+                  "top":{"upper":{
+                    "rpid_str":"1001","member":{"mid":"2","uname":"UP主","avatar":"https://i0.hdslb.com/face/up.jpg",
+                      "level_info":{"current_level":6}},
+                    "content":{"message":"置顶说明"},"like":99,"rcount":3,"ctime":1700000000,"action":1,
+                    "reply_control":{"time_desc":"3天前发布","location":"IP属地：上海"},"replies":[]}},
+                  "replies":[{
+                    "rpid_str":"1002","member":{"mid":"42","uname":"小明","avatar":"https://i0.hdslb.com/face/a.jpg",
+                      "level_info":{"current_level":4}},
+                    "content":{"message":"这个视频太好了"},"like":12000,"rcount":2,"ctime":1700000100,
+                    "reply_control":{"time_desc":"2天前发布","location":"IP属地：河北"},
+                    "replies":[{
+                      "rpid_str":"1003","parent_str":"1002","member":{"mid":"43","uname":"小刚",
+                        "avatar":"https://i0.hdslb.com/face/b.jpg","level_info":{"current_level":3}},
+                      "content":{"message":"确实"},"like":5,"rcount":0,"ctime":1700000200,
+                      "reply_control":{"time_desc":"2天前发布"},"replies":[]},
+                      {"rpid_str":"1004","parent_str":"1003","member":{"mid":"2","uname":"UP主",
+                        "avatar":"https://i0.hdslb.com/face/up.jpg","level_info":{"current_level":6}},
+                      "content":{"message":"回复小刚"},"like":8,"rcount":0,"ctime":1700000300,
+                      "reply_control":{"time_desc":"1天前发布"},"replies":[]}]}]}}
+                """;
+        org.mockito.ArgumentCaptor<HttpEntity<Void>> captor = org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        when(restTemplate.exchange(any(java.net.URI.class), eq(HttpMethod.GET),
+                captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.getComments("BV195KY6YEeY", 3, "", "", 1);
+
+        assertEquals(962, result.get("count"));
+        assertEquals(false, result.get("is_end"));
+        assertEquals("{\"type\":3,\"direction\":1,\"Data\":{\"cursor\":71859}}", result.get("next_offset"));
+        List<Map<String, Object>> comments = (List<Map<String, Object>>) result.get("comments");
+        assertEquals(2, comments.size());
+        // 置顶合并到首位,top 标记;UP 主回复带 is_up
+        assertEquals("1001", comments.get(0).get("rpid"));
+        assertEquals(true, comments.get(0).get("top"));
+        assertEquals(true, comments.get(0).get("is_up"));
+        assertEquals(true, comments.get(0).get("liked"));
+        assertEquals(false, comments.get(1).get("liked"));
+        assertEquals(false, comments.get(1).get("is_up"));
+        // 子回复预览:直答不带 parent_uname,层内互答带;UP 主身份透传
+        List<Map<String, Object>> preview = (List<Map<String, Object>>) comments.get(1).get("preview");
+        assertEquals("", preview.get(0).get("parent_uname"));
+        assertEquals("小刚", preview.get(1).get("parent_uname"));
+        assertEquals(true, preview.get(1).get("is_up"));
+        // wbi 主列表必须带 cookie/UA 头
+        org.junit.jupiter.api.Assertions.assertNotNull(captor.getValue().getHeaders().getFirst("Cookie"));
+    }
+
+    @Test
+    void getCommentsMainListPassesCursorOffset() throws Exception {
+        String body = """
+                {"code":0,"data":{"cursor":{"all_count":10,"is_end":true,"pagination_reply":{"next_offset":""}},
+                  "upper":{"mid":2},"top":{"upper":null},"replies":[]}}
+                """;
+        when(restTemplate.exchange(any(java.net.URI.class), eq(HttpMethod.GET),
+                any(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.getComments("BV195KY6YEeY", 2,
+                "{\"type\":3,\"direction\":1,\"Data\":{\"cursor\":71859}}", "", 1);
+
+        assertEquals(10, result.get("count"));
+        assertEquals(true, result.get("is_end"));
+        assertTrue(((List<?>) result.get("comments")).isEmpty());
+    }
+
+    @Test
+    void getCommentsPaginationStrStaysCompactForWbiSignature() throws Exception {
+        // 根因回归:注入 ObjectMapper 开 INDENT_OUTPUT 时 pagination_str 会变成多行 JSON,
+        // 空格经 form 编码为 '+' 与官方验签(空格 %20)不一致 → 上游 -403;必须紧凑序列化
+        StringBuilder urlHolder = new StringBuilder();
+        when(restTemplate.exchange(any(java.net.URI.class), eq(HttpMethod.GET),
+                any(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenAnswer(invocation -> {
+                    urlHolder.append(invocation.getArgument(0, java.net.URI.class).toString());
+                    return ResponseEntity.ok(new ObjectMapper().readTree(
+                            "{\"code\":0,\"data\":{\"cursor\":{\"all_count\":10,\"is_end\":true,"
+                                    + "\"pagination_reply\":{\"next_offset\":\"\"}},\"upper\":{\"mid\":2},"
+                                    + "\"top\":{\"upper\":null},\"replies\":[]}}"));
+                });
+
+        service.getComments("BV195KY6YEeY", 3, "CAEaCAoG4Yez4ZMJIgIIAg==", "", 1);
+
+        String url = urlHolder.toString();
+        assertTrue(url.contains("pagination_str="), url);
+        String encoded = url.substring(url.indexOf("pagination_str=") + "pagination_str=".length())
+                .split("&")[0];
+        assertFalse(encoded.contains("%0A"), "分页载荷不得含换行(美化输出): " + encoded);
+        assertFalse(encoded.contains("+"), "分页载荷不得含 form 编码空格 '+': " + encoded);
+        // 紧凑形态 {"offset":"..."}: %22offset%22%3A%22
+        assertTrue(encoded.contains("%22offset%22%3A%22"), encoded);
+    }
+
+    @Test
+    void getCommentsReturnsFloorRepliesWithParentNames() throws Exception {
+        String body = """
+                {"code":0,"data":{
+                  "page":{"count":32,"num":1,"size":20},
+                  "root":{"rpid_str":"1002"},
+                  "upper":{"mid":2},
+                  "replies":[{
+                    "rpid_str":"2001","parent_str":"1002","member":{"mid":"43","uname":"小刚",
+                      "avatar":"https://i0.hdslb.com/face/b.jpg","level_info":{"current_level":3}},
+                    "content":{"message":"直答根评论"},"like":5,"rcount":0,"ctime":1700000200,
+                    "reply_control":{"time_desc":"2天前发布"},"replies":[]},
+                    {"rpid_str":"2002","parent_str":"2001","member":{"mid":"44","uname":"小强",
+                      "avatar":"https://i0.hdslb.com/face/c.jpg","level_info":{"current_level":5}},
+                    "content":{"message":"层内互答"},"like":6,"rcount":0,"ctime":1700000250,
+                    "reply_control":{"time_desc":"2天前发布"},"replies":[]},
+                    {"rpid_str":"2003","parent_str":"2001","member":{"mid":"2","uname":"UP主",
+                      "avatar":"https://i0.hdslb.com/face/up.jpg","level_info":{"current_level":6}},
+                    "content":{"message":"作者回复"},"like":7,"rcount":0,"ctime":1700000300,
+                    "reply_control":{"time_desc":"1天前发布"},"replies":[]}],
+                  "config":{},"control":{},"show_bvid":false,"show_text":"","show_type":0}}
+                """;
+        when(restTemplate.exchange(org.mockito.ArgumentMatchers.argThat((java.net.URI u) ->
+                        u.toString().startsWith("https://api.bilibili.com/x/v2/reply/reply?type=1&oid=116958703918865&root=1002&pn=2")),
+                eq(HttpMethod.GET), any(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.getComments("BV195KY6YEeY", 3, "", "1002", 2);
+
+        assertEquals(32, result.get("count"));
+        assertEquals(1, result.get("page"));
+        List<Map<String, Object>> replies = (List<Map<String, Object>>) result.get("replies");
+        assertEquals(3, replies.size());
+        assertEquals("", replies.get(0).get("parent_uname"));
+        assertEquals("小刚", replies.get(1).get("parent_uname"));
+        assertEquals(true, replies.get(2).get("is_up"));
+        // 主列表字段在楼中楼同结构透出
+        assertEquals("作者回复", replies.get(2).get("message"));
+    }
+
+    @Test
+    void getCommentsSurfacesUpstreamClosedError() throws Exception {
+        when(restTemplate.exchange(any(java.net.URI.class), eq(HttpMethod.GET),
+                any(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(
+                        "{\"code\":12002,\"message\":\"评论区已关闭\"}")));
+
+        cn.har01d.alist_tvbox.exception.BadRequestException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                        () -> service.getComments("BV195KY6YEeY", 3, "", "", 1));
+        assertTrue(ex.getMessage().contains("评论区已关闭"));
+    }
+    @Test
+    void runCommentActionPostsReplyActionFormWithCsrf() throws Exception {
+        org.mockito.ArgumentCaptor<HttpEntity<org.springframework.util.MultiValueMap<String, String>>> captor =
+                org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        when(restTemplate.exchange(eq("https://api.bilibili.com/x/v2/reply/action"), eq(HttpMethod.POST),
+                captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree("{\"code\":0}")));
+
+        Map<String, Object> result = service.runCommentAction("BV195KY6YEeY", "314458109537", 1);
+
+        assertEquals(true, result.get("liked"));
+        org.springframework.util.MultiValueMap<String, String> form = captor.getValue().getBody();
+        assertEquals("1", form.getFirst("type"));
+        assertEquals("116958703918865", form.getFirst("oid"));
+        assertEquals("314458109537", form.getFirst("rpid"));
+        assertEquals("1", form.getFirst("action"));
+        org.junit.jupiter.api.Assertions.assertNotNull(captor.getValue().getHeaders().getFirst("Cookie"));
+    }
+
+    @Test
+    void runCommentActionRejectsInvalidRpid() {
+        cn.har01d.alist_tvbox.exception.BadRequestException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                        () -> service.runCommentAction("BV195KY6YEeY", "abc", 1));
+        assertTrue(ex.getMessage().contains("无效的评论 ID"));
+    }
+
 }

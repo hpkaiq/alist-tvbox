@@ -47,8 +47,6 @@ import cn.har01d.alist_tvbox.dto.bili.BiliBiliSeriesMetaResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliTokenResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2InfoResponse;
-import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfo;
-import cn.har01d.alist_tvbox.dto.bili.BiliBiliVideoInfoResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliWatchLaterResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliWatchLaterResult;
 import cn.har01d.alist_tvbox.dto.bili.ChannelArchive;
@@ -78,6 +76,7 @@ import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.util.Utils;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -101,18 +100,23 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
+import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.time.Duration;
 
@@ -137,7 +141,6 @@ public class BiliBiliService {
     private static final int FN_VAL = VIDEO_DASH + VIDEO_HDR + VIDEO_4K + DOLBY_AUDIO + DOLBY_VIDEO + VIDEO_8K + VIDEO_AV1;
     private static final String INFO_API = "https://api.bilibili.com/x/web-interface/view?bvid=";
     private static final String HOT_API = "https://api.bilibili.com/x/web-interface/ranking/v2?type=%s&rid=%d";
-    private static final String LIST_API = "https://api.bilibili.com/x/web-interface/newlist_rank?main_ver=v3&search_type=video&view_type=hot_rank&copy_right=-1&new_web_tag=1&order=click&cate_id=%s&page=%d&pagesize=30&time_from=%s&time_to=%s";
     private static final String SEASON_RANK_API = "https://api.bilibili.com/pgc/season/rank/web/list?day=3&season_type=%d";
     private static final String SEASON_API = "https://api.bilibili.com/pgc/season/index/result?st=1&style_id=%s&season_version=-1&spoken_language_type=-1&area=-1&is_finish=%s&copyright=-1&season_status=-1&season_month=-1&year=%s&order=0&sort=0&page=%d&season_type=%s&pagesize=30&type=1";
     private static final String HISTORY_API = "https://api.bilibili.com/x/web-interface/history/cursor?ps=30&type=archive&business=archive&max=%s&view_at=%s";
@@ -169,7 +172,10 @@ public class BiliBiliService {
     public static final String BILI_COIN_PLAY_PREFIX = "bilicoin-";
     public static final String BILI_FAV_PLAY_PREFIX = "bilifav-";
     public static final String RELATED_API = "https://api.bilibili.com/x/web-interface/archive/related?bvid=%s";
-    public static final String REGION_API = "https://api.bilibili.com/x/web-interface/dynamic/region?ps=%d&rid=%s&pn=%d";
+    // dynamic/region 已被 B 站下线(-404),改走 newlist:结构同为 data.archives,仅认主分区 rid,且 page.count 恒 0
+    public static final String REGION_API = "https://api.bilibili.com/x/web-interface/newlist?ps=%d&rid=%s&pn=%d&type=0";
+    // B 站 2026 分区改版撤销的主分区(动物圈/运动/汽车,均 2022 年从生活拆出):newlist 无流,分区内热榜 ranking/v2 仍在
+    private static final Set<Integer> RANK_ONLY_REGION_RIDS = Set.of(217, 234, 223);
     public static final String CHANNEL_API = "https://api.bilibili.com/x/web-interface/web/channel/multiple/list?channel_id=%s&sort_type=%s&offset=%s&page_size=30";
     public static final String FAV_API = "https://api.bilibili.com/x/v3/fav/resource/list?media_id=%s&keyword=&order=%s&type=0&tid=0&platform=web&pn=%d&ps=20";
     public static final String FOLLOW_API = "https://api.bilibili.com/x/relation/followings";
@@ -182,6 +188,9 @@ public class BiliBiliService {
     public static final String SEASON_ARCHIVES_DETAIL_API = "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list";
     public static final String SERIES_ARCHIVES_API = "https://api.bilibili.com/x/series/archives";
     public static final String SERIES_META_API = "https://api.bilibili.com/x/series/series";
+    public static final String REPLY_MAIN_API = "https://api.bilibili.com/x/v2/reply/wbi/main";
+    public static final String REPLY_REPLY_API = "https://api.bilibili.com/x/v2/reply/reply";
+    public static final String REPLY_ACTION_API = "https://api.bilibili.com/x/v2/reply/action";
 
     private final List<FilterValue> filters1 = Arrays.asList(
             new FilterValue("综合排序", ""),
@@ -317,6 +326,8 @@ public class BiliBiliService {
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final ObjectMapper objectMapper;
+    /** 无美化输出 mapper:WBI 签名载荷(pagination_str 等)必须是紧凑 JSON,见 getComments 注释。 */
+    private static final ObjectMapper COMPACT_JSON = new ObjectMapper();
     private final OkHttpClient client = new OkHttpClient();
     private final LoadingCache<String, BiliBiliInfo> cache = Caffeine.newBuilder()
             .maximumSize(10)
@@ -326,6 +337,18 @@ public class BiliBiliService {
             .expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES)
             .maximumSize(500)
             .build();
+    /** newlist 分区页短缓存:子分区扫描单请求连打 10 页、翻页跨请求重叠,同页 2 分钟内免重复请求(412 是 IP 频率风控)。 */
+    private final Cache<String, List<BiliBiliInfo>> regionPageCache = Caffeine.newBuilder()
+            .expireAfterWrite(2, java.util.concurrent.TimeUnit.MINUTES)
+            .maximumSize(200)
+            .build();
+    /** 分区热榜短缓存:子分区列表/撤区兜底/主分区热门全走此榜,2 分钟免重复请求。 */
+    private final Cache<String, List<BiliBiliInfo>> regionRankCache = Caffeine.newBuilder()
+            .expireAfterWrite(2, java.util.concurrent.TimeUnit.MINUTES)
+            .maximumSize(50)
+            .build();
+    /** newlist 412 风控熔断到期时间戳(毫秒):触发后冷却期内直接返空,避免连环撞加重拦截。 */
+    private volatile long newlistBlockedUntil;
     /** 单设备翻页会话:游标/搜索词/收藏夹选择原先存单例字段,共享 token 部署(亲友同链)多设备并发互串页 ——
      *  按客户端标识(配置下发时烤进 BILIBILI_URL 的 ?client=,一次性随机)分桶隔离,30 分钟无访问过期回收。 */
     static final class BiliSession {
@@ -661,17 +684,6 @@ public class BiliBiliService {
         return movieDetail;
     }
 
-    private MovieDetail getMovieDetail(BiliBiliVideoInfo.Video info) {
-        String id = info.getBvid();
-        MovieDetail movieDetail = new MovieDetail();
-        movieDetail.setVod_id(id);
-        movieDetail.setVod_name(info.getTitle());
-        movieDetail.setVod_tag(FILE);
-        movieDetail.setVod_pic(fixCover(info.getPic()));
-        movieDetail.setVod_remarks(playCount(info.getPlay()) + seconds2String(info.getDuration()));
-        return movieDetail;
-    }
-
     private MovieDetail getMovieDetail(FavItem info) {
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id(info.getBvid());
@@ -748,7 +760,7 @@ public class BiliBiliService {
         movieDetail.setVod_id(id);
         movieDetail.setVod_name(info.getTitle());
         movieDetail.setVod_tag(FILE);
-        movieDetail.setType_name(info.getTname() + " / " + info.getTname_v2());
+        movieDetail.setType_name(getTypeName(info));
         movieDetail.setVod_remarks(seconds2String(info.getDuration()));
         movieDetail.setVod_pic(fixCover(info.getPic()));
         if (full) {
@@ -792,6 +804,17 @@ public class BiliBiliService {
         }
 
         return movieDetail;
+    }
+
+    /** view 接口 tname/tname_v2 已被 B 站清空(分区改版):空值时按 tid 反查本地分类表 */
+    private String getTypeName(BiliBiliInfo info) {
+        String name = StringUtils.defaultIfBlank(info.getTname(),
+                navigationService.getNameByValue(String.valueOf(info.getTid())));
+        String name2 = StringUtils.trimToNull(info.getTname_v2());
+        if (name == null) {
+            return name2 == null ? "" : name2;
+        }
+        return name2 == null ? name : name + " / " + name2;
     }
 
     private String buildTitle(BiliBiliInfo.PageInfo info, String client) {
@@ -907,16 +930,6 @@ public class BiliBiliService {
         result.getList().add(movieDetail);
 
         return result;
-    }
-
-    public BiliBiliVideoInfo getRankList(String type, int page) {
-        LocalDate now = LocalDate.now();
-        String from = now.minusDays(7).toString().replace("-", "");
-        String to = now.toString().replace("-", "");
-        String url = String.format(LIST_API, type, page, from, to);
-        BiliBiliVideoInfoResponse hotResponse = restTemplate.getForObject(url, BiliBiliVideoInfoResponse.class);
-        log.debug("{} {}", url, hotResponse);
-        return hotResponse.getData();
     }
 
     /** 空间投稿接口(x/space/wbi/arc/search)风控校验依赖 Cookie:无 Cookie 直接 412 回 HTML 挑战页(JsonParseException '<')。
@@ -1551,8 +1564,23 @@ public class BiliBiliService {
         if (page > 1) {
             return new ArrayList<>();
         }
-        BiliBiliHotResponse hotResponse = restTemplate.getForObject(String.format(HOT_API, type, rid), BiliBiliHotResponse.class);
-        return hotResponse.getData().getList();
+        String cacheKey = type + ":" + rid;
+        List<BiliBiliInfo> cached = regionRankCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        // ranking/v2 分区改版后要求浏览器头+buvid3:裸 getForObject 恒 -352(data=null)
+        String url = String.format(HOT_API, type, rid);
+        HttpEntity<Void> entity = buildHttpEntity(null);
+        ResponseEntity<BiliBiliHotResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliHotResponse.class);
+        BiliBiliHotResponse body = response.getBody();
+        if (body == null || body.getData() == null || body.getData().getList() == null) {
+            log.warn("getHotRank empty response: {}", url);
+            return new ArrayList<>();
+        }
+        List<BiliBiliInfo> list = body.getData().getList();
+        regionRankCache.put(cacheKey, list);
+        return list;
     }
 
     public MovieList getSeasonResult(String type, FilterDto filter, int page) {
@@ -1596,17 +1624,34 @@ public class BiliBiliService {
     public MovieList getRegion(String tid, int page) {
         MovieList result = new MovieList();
         int size = 30;
-        String url = String.format(REGION_API, size, tid, page);
-        HttpEntity<Void> entity = buildHttpEntity(null);
-        ResponseEntity<BiliBiliListResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliListResponse.class);
-        BiliBiliListResponse hotResponse = response.getBody();
+        List<BiliBiliInfo> archives;
+        int total;
+        if (isRankOnlyRegion(tid)) {
+            // 已撤分区(动物圈/运动/汽车):newlist 无流,分区内热榜切片兜底,翻页深度按实际条数
+            List<BiliBiliInfo> all = getHotRank("all", Integer.parseInt(tid), 1);
+            total = all.size();
+            int from = (page - 1) * size;
+            archives = from >= total ? new ArrayList<>() : new ArrayList<>(all.subList(from, Math.min(from + size, total)));
+        } else {
+            archives = getRegionArchives(tid, page);
+            total = size * 100; // newlist 不返回总数(page.count 恒 0),给固定翻页深度(深翻页实测 200+ 页仍可用)
+        }
+        if (archives.isEmpty()) {
+            // 412 风控降级/熔断冷却/翻页越界:返回空页而非「共0个视频」合集占位——客户端见空页即停止翻页,避免连环刷屏
+            result.setLimit(0);
+            result.setTotal(0);
+            result.setPagecount(1);
+            result.setPage(page);
+            log.debug("getRegion empty: {} {}", tid, result);
+            return result;
+        }
         List<MovieDetail> list = new ArrayList<>();
-        for (BiliBiliInfo info : hotResponse.getData().getArchives()) {
+        for (BiliBiliInfo info : archives) {
             MovieDetail movieDetail = getMovieDetail(info);
             list.add(movieDetail);
         }
 
-        long seconds = hotResponse.getData().getArchives().stream().mapToLong(BiliBiliInfo::getDuration).sum();
+        long seconds = archives.stream().mapToLong(BiliBiliInfo::getDuration).sum();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id("region$" + tid + "$" + 0 + "$" + page);
         movieDetail.setVod_name("合集" + page);
@@ -1621,25 +1666,39 @@ public class BiliBiliService {
 
         result.getList().addAll(list);
 
-        int total = hotResponse.getData().getPage().getCount();
         result.setLimit(result.getList().size());
         result.setTotal(total + total / size);
         result.setPagecount((result.getTotal() + size - 1 + total / size) / size);
-        log.debug("getRegion: {} {}", url, result);
+        log.debug("getRegion: {} {}", tid, result);
         return result;
+    }
+
+    /** 分区最新列表取数:已撤分区(newlist 无流)回退分区内热榜切片 */
+    private List<BiliBiliInfo> getRegionVideos(String tid, int page) {
+        if (isRankOnlyRegion(tid)) {
+            List<BiliBiliInfo> all = getHotRank("all", Integer.parseInt(tid), 1);
+            int from = (page - 1) * 30;
+            if (from >= all.size()) {
+                return new ArrayList<>();
+            }
+            return new ArrayList<>(all.subList(from, Math.min(from + 30, all.size())));
+        }
+        return getRegionArchives(tid, page);
+    }
+
+    private boolean isRankOnlyRegion(String tid) {
+        try {
+            return RANK_ONLY_REGION_RIDS.contains(Integer.parseInt(tid));
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     public MovieList getRegionPlaylist(String tid) {
         String[] parts = tid.split("\\$");
         String id = parts[1];
         int page = Integer.parseInt(parts[3]);
-        int size = 30;
-        String url = String.format(REGION_API, size, id, page);
-        log.debug("getRegionPlaylist: {}", url);
-        HttpEntity<Void> entity = buildHttpEntity(null);
-        ResponseEntity<BiliBiliListResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliListResponse.class);
-        log.debug("{}", response.getBody());
-        List<BiliBiliInfo> list = response.getBody().getData().getArchives();
+        List<BiliBiliInfo> list = getRegionVideos(id, page);
 
         long seconds = list.stream().mapToLong(BiliBiliInfo::getDuration).sum();
         MovieDetail movieDetail = new MovieDetail();
@@ -1856,7 +1915,9 @@ public class BiliBiliService {
     }
 
     /** 详情页「合集」线路条目:aid-cid 载荷与相关视频线路同款;当前视频 ▶ 前缀定位;
-     * 多 section(正片/花絮)时条目名带【分区名】;无合集返回 null 不出线路。 */
+     * 多 section(正片/花絮)时条目名带【分区名】;无合集返回 null 不出线路。
+     * 多P成员按分P展开成多条(B 站原生连播顺序:先走完该视频全部分P再到下一成员),
+     * ▶ 只标当前视频首个分P;pages 缺失的老载荷回落单条(P1=episode.cid)。 */
     private String buildUgcSeasonPlayUrl(BiliBiliInfo info, String client) {
         BiliBiliInfo.UgcSeason season = info.getUgcSeason();
         if (season == null || season.getSections() == null || season.getSections().isEmpty()) {
@@ -1870,23 +1931,59 @@ public class BiliBiliService {
                 continue;
             }
             for (BiliBiliInfo.UgcSeason.Episode episode : section.getEpisodes()) {
-                if (!playUrl.isEmpty()) {
-                    playUrl.append('#');
+                List<BiliBiliInfo.PageInfo> pages = playablePages(episode);
+                if (pages.isEmpty()) {
+                    continue;
                 }
-                String title = fixTitle(episode.getTitle());
-                if (multipleSections) {
-                    title = "【" + fixTitle(section.getTitle()) + "】" + title;
+                boolean isCurrent = episode.getBvid() != null && episode.getBvid().equals(current);
+                for (int i = 0; i < pages.size(); i++) {
+                    BiliBiliInfo.PageInfo page = pages.get(i);
+                    String title = fixTitle(episode.getTitle());
+                    if (pages.size() > 1) {
+                        String part = StringUtils.trimToNull(page.getPart());
+                        int no = page.getPage() > 0 ? page.getPage() : i + 1;
+                        title += " P" + no + (part == null ? "" : " " + fixTitle(part));
+                    }
+                    appendSeasonEntry(playUrl, title, section, multipleSections,
+                            isCurrent && i == 0, episode.getAid(), page.getCid(),
+                            pages.size() > 1 ? page.getDuration() : episode.getDuration(), client);
                 }
-                if ("gui".equals(client)) {
-                    title += "(" + seconds2String(episode.getDuration()) + ")";
-                }
-                if (episode.getBvid() != null && episode.getBvid().equals(current)) {
-                    title = "▶ " + title;
-                }
-                playUrl.append(title).append('$').append(episode.getAid()).append('-').append(episode.getCid());
             }
         }
         return playUrl.isEmpty() ? null : playUrl.toString();
+    }
+
+    /** 成员视频的可播分P集合:优先 ugc_season 载荷自带的 pages[](各P独立 cid);
+     * 缺失或全无 cid 时回落单条(P1=episode.cid 本身)。 */
+    private List<BiliBiliInfo.PageInfo> playablePages(BiliBiliInfo.UgcSeason.Episode episode) {
+        if (episode.getPages() != null) {
+            List<BiliBiliInfo.PageInfo> pages = episode.getPages().stream()
+                    .filter(e -> e != null && e.getCid() > 0).toList();
+            if (!pages.isEmpty()) {
+                return pages;
+            }
+        }
+        BiliBiliInfo.PageInfo first = new BiliBiliInfo.PageInfo();
+        first.setPage(1);
+        first.setCid(episode.getCid());
+        return first.getCid() > 0 ? List.of(first) : List.of();
+    }
+
+    private void appendSeasonEntry(StringBuilder playUrl, String title, BiliBiliInfo.UgcSeason.Section section,
+            boolean multipleSections, boolean current, long aid, long cid, long duration, String client) {
+        if (!playUrl.isEmpty()) {
+            playUrl.append('#');
+        }
+        if (multipleSections) {
+            title = "【" + fixTitle(section.getTitle()) + "】" + title;
+        }
+        if ("gui".equals(client)) {
+            title += "(" + seconds2String(duration) + ")";
+        }
+        if (current) {
+            title = "▶ " + title;
+        }
+        playUrl.append(title).append('$').append(aid).append('-').append(cid);
     }
 
     private List<BiliBiliInfo> fetchRelatedList(String bvid) {
@@ -2361,6 +2458,164 @@ public class BiliBiliService {
         return "点赞: " + (state.liked ? "已点赞" : "未点赞")
                 + "  投币: " + (state.coins > 0 ? "已投 " + state.coins + "/2 枚" : "未投币")
                 + "  收藏: " + (state.favoured ? "已收藏" : "未收藏");
+    }
+
+    /**
+     * atv-player 评论列表:root 空=主列表(x/v2/reply/wbi/main,mode 3=热门/2=最新,cursor 游标翻页,
+     * 每条自带前几条子回复预览),root 非空=楼中楼(x/v2/reply/reply,pn/ps 翻页,免 WBI)。
+     * 上游响应精简为扁平 Map 透出,不透传 member/vip 等大对象;12002 等错误码转异常文案。
+     */
+    public Map<String, Object> getComments(String vodId, int mode, String next, String root, int pn) {
+        String aid = resolveAid(vodId);
+        if (StringUtils.isNotBlank(root)) {
+            if (!StringUtils.isNumeric(root.trim())) {
+                throw new BadRequestException("无效的评论 ID: " + root);
+            }
+            // aid/root/pn 均为纯数字,无需编码;该接口不校验 WBI
+            String url = String.format("%s?type=1&oid=%s&root=%s&pn=%d&ps=20",
+                    REPLY_REPLY_API, aid, root.trim(), Math.max(1, pn));
+            JsonNode body = fetchReplyJson(url, "楼中楼");
+            JsonNode data = body.path("data");
+            long upperMid = data.path("upper").path("mid").asLong(0);
+            String rootRpid = data.path("root").path("rpid_str").asText(data.path("root").path("rpid").asText(""));
+            List<Map<String, Object>> replies = new ArrayList<>();
+            Map<String, String> names = new HashMap<>();
+            for (JsonNode reply : data.path("replies")) {
+                names.put(reply.path("rpid_str").asText(""), reply.path("member").path("uname").asText(""));
+            }
+            for (JsonNode reply : data.path("replies")) {
+                Map<String, Object> map = buildComment(reply, upperMid, false);
+                // 楼中楼直答(root)不带前缀,层内互答显示「回复 @xxx」;父条不在本页则留空
+                String parent = reply.path("parent_str").asText("");
+                map.put("parent_uname", !parent.isEmpty() && !parent.equals(rootRpid) ? names.getOrDefault(parent, "") : "");
+                replies.add(map);
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("count", data.path("page").path("count").asInt(0));
+            result.put("page", data.path("page").path("num").asInt(Math.max(1, pn)));
+            result.put("replies", replies);
+            return result;
+        }
+
+        HttpEntity<Void> entity = buildHttpEntity(null);
+        getKeys(entity);
+        Map<String, Object> params = new HashMap<>();
+        params.put("type", 1);
+        params.put("oid", aid);
+        params.put("mode", mode == 2 ? 2 : 3);
+        if (StringUtils.isNotBlank(next)) {
+            // next_offset 是「套着字符串皮的游标」,须作为紧凑 JSON 字符串值嵌进 pagination_str;
+            // Spring 注入的 objectMapper 开了 INDENT_OUTPUT(多行+空格),空格经 URLEncoder 变 '+'
+            // 与官方验签重编码(%20)不一致 → -403 访问权限不足,必须用无美化 mapper
+            try {
+                params.put("pagination_str", COMPACT_JSON.writeValueAsString(Map.of("offset", next.trim())));
+            } catch (JsonProcessingException e) {
+                throw new BadRequestException("无效的评论分页参数");
+            }
+        }
+        String url = REPLY_MAIN_API + "?" + Utils.encryptWbiRfc3986(params, imgKey, subKey);
+        JsonNode body = fetchReplyJson(url, "评论");
+        JsonNode data = body.path("data");
+        JsonNode cursor = data.path("cursor");
+        long upperMid = data.path("upper").path("mid").asLong(0);
+        List<Map<String, Object>> comments = new ArrayList<>();
+        // UP 置顶评论置首(top.upper),后台置顶(top.admin)不并:与 B站 web 展示一致
+        JsonNode top = data.path("top").path("upper");
+        if (top.isObject() && !top.isNull()) {
+            comments.add(buildComment(top, upperMid, true));
+        }
+        for (JsonNode reply : data.path("replies")) {
+            comments.add(buildComment(reply, upperMid, false));
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("count", cursor.path("all_count").asInt(0));
+        result.put("is_end", cursor.path("is_end").asBoolean(false));
+        result.put("next_offset", cursor.path("pagination_reply").path("next_offset").asText(""));
+        result.put("comments", comments);
+        return result;
+    }
+
+    /**
+     * atv-player 评论点赞(x/v2/reply/action,action 1=赞/0=取消,点赞同时消点踩)。
+     * 返回动作后状态;未登录(无 csrf)与上游错误码转文案抛出。
+     */
+    public Map<String, Object> runCommentAction(String vodId, String rpid, int action) {
+        String aid = resolveAid(vodId);
+        String normalizedRpid = StringUtils.defaultString(rpid).trim();
+        if (!StringUtils.isNumeric(normalizedRpid)) {
+            throw new BadRequestException("无效的评论 ID: " + rpid);
+        }
+        String cookie = resolveCookie();
+        String csrf = BiliCookieRefreshUtils.getCookieValue(cookie, "bili_jct");
+        if (StringUtils.isBlank(csrf)) {
+            throw new BadRequestException("未登录 B站,请先在设置中配置 Cookie");
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("type", "1");
+        form.add("oid", aid);
+        form.add("rpid", normalizedRpid);
+        form.add("action", action == 1 ? "1" : "0");
+        form.add("csrf", csrf);
+        // 12011 不合法的赞或踩:重复请求同方向时上游偶发,幂等视作成功
+        postForm(REPLY_ACTION_API, form, "https://www.bilibili.com/", 12011);
+        Map<String, Object> result = new HashMap<>();
+        result.put("liked", action == 1);
+        return result;
+    }
+
+    private JsonNode fetchReplyJson(String url, String source) {
+        HttpEntity<Void> entity = buildHttpEntity(null, Map.of(HttpHeaders.REFERER, "https://www.bilibili.com"));
+        JsonNode body;
+        try {
+            // 必须传 URI 重载:exchange(String,...) 的模板处理器会把已编码 %XX 二次编码(%7B→%257B),
+            // 上游解码后 pagination_str 不再是合法 JSON,验签失败回 -403 访问权限不足
+            body = restTemplate.exchange(URI.create(url), HttpMethod.GET, entity, JsonNode.class).getBody();
+        } catch (Exception e) {
+            log.warn("bilibili comments failed: {} {}", url, e.getMessage());
+            throw new BadRequestException("B站" + source + "获取失败,请稍后重试");
+        }
+        int code = body == null ? -1 : body.path("code").asInt(-1);
+        if (code != 0) {
+            String message = body == null ? "空响应" : body.path("message").asText("");
+            log.warn("bilibili comments error: {} {} url: {}", code, message, url);
+            throw new BadRequestException("B站" + source + "获取失败: " + message);
+        }
+        return body;
+    }
+
+    private Map<String, Object> buildComment(JsonNode reply, long upperMid, boolean top) {
+        JsonNode member = reply.path("member");
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("rpid", reply.path("rpid_str").asText(reply.path("rpid").asText("0")));
+        map.put("uname", member.path("uname").asText(""));
+        map.put("avatar", member.path("avatar").asText(""));
+        map.put("level", member.path("level_info").path("current_level").asInt(0));
+        map.put("message", reply.path("content").path("message").asText(""));
+        map.put("like", reply.path("like").asInt(0));
+        map.put("rcount", reply.path("rcount").asInt(0));
+        map.put("ctime", reply.path("ctime").asLong(0));
+        // 上游已给相对时间文案与 IP 属地,直接透传免本地化
+        map.put("time_desc", reply.path("reply_control").path("time_desc").asText(""));
+        map.put("location", reply.path("reply_control").path("location").asText(""));
+        map.put("top", top);
+        long mid = member.path("mid").asLong(0);
+        map.put("is_up", upperMid > 0 && mid == upperMid);
+        // 登录时上游 action=1 表示当前用户已赞,驱动客户端点赞按钮初始态
+        map.put("liked", reply.path("action").asInt(0) == 1);
+        List<Map<String, Object>> preview = new ArrayList<>();
+        Map<String, String> names = new HashMap<>();
+        for (JsonNode child : reply.path("replies")) {
+            names.put(child.path("rpid_str").asText(""), child.path("member").path("uname").asText(""));
+        }
+        String rootRpid = reply.path("rpid_str").asText(reply.path("rpid").asText(""));
+        for (JsonNode child : reply.path("replies")) {
+            Map<String, Object> childMap = buildComment(child, upperMid, false);
+            String parent = child.path("parent_str").asText("");
+            childMap.put("parent_uname", !parent.isEmpty() && !parent.equals(rootRpid) ? names.getOrDefault(parent, "") : "");
+            preview.add(childMap);
+        }
+        map.put("preview", preview);
+        return map;
     }
 
     /** 播放条目 id(aid-cid[-epId] / BVxxx / aid)→ 纯数字 aid。 */
@@ -2870,20 +3125,76 @@ public class BiliBiliService {
         return node;
     }
 
+    /** B 站分区改版下线子分区全部列表接口(dynamic/region -404 / newlist_rank -400),且 newlist 是 IP 频率风控重灾区:
+     *  子分区统一改走父分区热榜 + 本地 tid 过滤,单请求无扇出;「热门」按榜位序,「最新」按发布时间倒序,仅第 1 页。 */
+    private List<BiliBiliInfo> getSubRegionVideos(String tid, String type, int page) {
+        List<BiliBiliInfo> result = new ArrayList<>();
+        if (page > 1) {
+            return result;
+        }
+        int subTid = Integer.parseInt(tid);
+        String parentTid = navigationService.getParentValue(tid);
+        if (parentTid == null) {
+            log.warn("no parent category for tid {}", tid);
+            return result;
+        }
+        List<BiliBiliInfo> rank = getHotRank("all", Integer.parseInt(parentTid), 1);
+        for (BiliBiliInfo info : rank) {
+            if (info.getTid() == subTid) {
+                result.add(info);
+            }
+        }
+        if (!"hot".equals(type)) {
+            result.sort(Comparator.comparing(BiliBiliInfo::getPubdate, Comparator.reverseOrder()));
+        }
+        return result;
+    }
+
+    private List<BiliBiliInfo> getRegionArchives(String tid, int page) {
+        if (System.currentTimeMillis() < newlistBlockedUntil) {
+            return new ArrayList<>();
+        }
+        String cacheKey = tid + ":" + page;
+        List<BiliBiliInfo> cached = regionPageCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        String url = String.format(REGION_API, 30, tid, page);
+        HttpEntity<Void> entity = buildHttpEntity(null, Map.of(HttpHeaders.REFERER, "https://www.bilibili.com/"));
+        try {
+            ResponseEntity<BiliBiliListResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliListResponse.class);
+            BiliBiliListResponse body = response.getBody();
+            if (body == null || body.getData() == null || body.getData().getArchives() == null) {
+                return new ArrayList<>();
+            }
+            List<BiliBiliInfo> archives = body.getData().getArchives();
+            regionPageCache.put(cacheKey, archives);
+            return archives;
+        } catch (HttpClientErrorException e) {
+            // newlist 为 IP 频率风控(412 回 HTML 挑战页):熔断 5 分钟并降级空列表,客户端仅见合集占位
+            log.warn("newlist rejected {} , cooling down 5 minutes: {}", e.getStatusCode(), url);
+            newlistBlockedUntil = System.currentTimeMillis() + 300_000;
+            return new ArrayList<>();
+        }
+    }
+
     private MovieList getMovieListByType(String tid, String type, int page) {
-        if ("".equals(type)) {
-            return getRegion(tid, page);
+        List<BiliBiliInfo> videos = getSubRegionVideos(tid, type, page);
+        if (videos.isEmpty()) {
+            // 412 风控降级/无命中/翻页越界:空页,不出「共0个视频」合集占位,客户端停止翻页
+            MovieList empty = new MovieList();
+            empty.setLimit(0);
+            empty.setTotal(0);
+            empty.setPagecount(1);
+            empty.setPage(page);
+            return empty;
         }
-        MovieList result = new MovieList();
-        BiliBiliVideoInfo rank = getRankList(tid, page);
         List<MovieDetail> list = new ArrayList<>();
-
-        for (BiliBiliVideoInfo.Video video : rank.getResult()) {
-            MovieDetail movieDetail = getMovieDetail(video);
-            list.add(movieDetail);
+        for (BiliBiliInfo info : videos) {
+            list.add(getMovieDetail(info));
         }
 
-        int seconds = rank.getResult().stream().mapToInt(e -> Math.toIntExact(e.getDuration())).sum();
+        long seconds = videos.stream().mapToLong(BiliBiliInfo::getDuration).sum();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id("type$" + tid + "$" + type + "$" + page);
         movieDetail.setVod_name("合集" + page);
@@ -2894,14 +3205,15 @@ public class BiliBiliService {
         movieDetail.setVod_play_url(playUrl);
         movieDetail.setVod_content("共" + list.size() + "个视频");
         movieDetail.setVod_remarks(Utils.secondsToDuration(seconds));
+        MovieList result = new MovieList();
         result.getList().add(movieDetail);
 
         result.getList().addAll(list);
 
-        int total = rank.getNumResults();
-        result.setTotal(total + total / 30);
+        // 子分区以父分区热榜过滤兜底,仅第 1 页
+        result.setTotal(list.size());
         result.setPage(page);
-        result.setPagecount(rank.getNumPages() + total / 30);
+        result.setPagecount(1);
         result.setLimit(result.getList().size());
         return result;
     }
@@ -2909,18 +3221,18 @@ public class BiliBiliService {
     public MovieList getTypePlaylist(String tid) {
         String[] parts = tid.split("\\$");
         String id = parts[1];
+        String type = parts.length > 2 ? parts[2] : "";
         int page = Integer.parseInt(parts[3]);
-        BiliBiliVideoInfo rank = getRankList(id, page);
-        List<BiliBiliVideoInfo.Video> list = rank.getResult();
+        List<BiliBiliInfo> list = getSubRegionVideos(id, type, page);
 
-        int seconds = list.stream().mapToInt(e -> Math.toIntExact(e.getDuration())).sum();
+        long seconds = list.stream().mapToLong(BiliBiliInfo::getDuration).sum();
         MovieDetail movieDetail = new MovieDetail();
         movieDetail.setVod_id("type$" + id + "$0$" + page);
         movieDetail.setVod_name("合集" + page);
         movieDetail.setVod_tag(FILE);
         movieDetail.setVod_pic(getListPic());
         movieDetail.setVod_play_from(BILI_BILI);
-        String playUrl = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + buildPlayUrl(e.getBvid())).collect(Collectors.joining("#"));
+        String playUrl = list.stream().map(e -> fixTitle(e.getTitle()) + "$" + buildPlayUrl(e)).collect(Collectors.joining("#"));
         movieDetail.setVod_play_url(playUrl);
         movieDetail.setVod_content("共" + list.size() + "个视频");
         movieDetail.setVod_remarks(Utils.secondsToDuration(seconds));

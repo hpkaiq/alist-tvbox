@@ -2,6 +2,7 @@ package cn.har01d.alist_tvbox.web;
 
 import cn.har01d.alist_tvbox.dto.FilterDto;
 import cn.har01d.alist_tvbox.dto.bili.BiliActionRequest;
+import cn.har01d.alist_tvbox.dto.bili.BiliCommentActionRequest;
 import cn.har01d.alist_tvbox.dto.bili.CookieData;
 import cn.har01d.alist_tvbox.dto.bili.QrCode;
 import cn.har01d.alist_tvbox.service.BiliBiliService;
@@ -84,6 +85,28 @@ public class BiliBiliController {
         subscriptionService.checkToken(token);
         log.info("bilibili action: {} {}", request.id(), request.action());
         return biliBiliService.runAction(request.id(), request.action());
+    }
+
+    /** atv-player 评论列表:root 空=主列表(mode 3=热门/2=最新,next=游标),root 非空=楼中楼(pn 翻页)。 */
+    @GetMapping("/bilibili/{token}/comments")
+    public Object comments(@PathVariable String token,
+                           String ids,
+                           @RequestParam(required = false, defaultValue = "3") Integer mode,
+                           String next,
+                           String root,
+                           @RequestParam(required = false, defaultValue = "1") Integer pn) {
+        subscriptionService.checkToken(token);
+        log.info("bilibili comments: {} mode: {} root: {} pn: {}", ids, mode, root, pn);
+        return biliBiliService.getComments(ids, mode, next, root, pn);
+    }
+
+    /** atv-player 评论点赞:action 1=赞/0=取消。 */
+    @PostMapping("/bilibili/{token}/comment-action")
+    public Object commentAction(@PathVariable String token,
+                                @RequestBody BiliCommentActionRequest request) {
+        subscriptionService.checkToken(token);
+        log.info("bilibili comment action: {} {} {}", request.id(), request.rpid(), request.action());
+        return biliBiliService.runCommentAction(request.id(), request.rpid(), request.action());
     }
 
     @GetMapping("/api/bilibili/status")
