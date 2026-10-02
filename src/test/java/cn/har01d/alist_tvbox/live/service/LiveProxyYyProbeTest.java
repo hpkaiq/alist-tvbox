@@ -46,14 +46,14 @@ class LiveProxyYyProbeTest {
         var home = yyService.home();
         assertTrue(!home.getList().isEmpty(), "YY首页无房间,无法测试");
         String roomId = home.getList().get(0).getVod_id().split("\\$")[1];
-        String manifest = yyService.renewHlsUrl(roomId, "4000");
+        String manifest = yyService.renewHlsUrl(roomId, roomId, "4000");
         assertTrue(manifest != null && manifest.contains(".m3u8"), "HLS清单重取失败: " + manifest);
         System.out.printf("[yy-proxy] room=%s manifest=%s%n", roomId, abbreviate(manifest, 100));
 
         SubscriptionService subscriptionService = mock(SubscriptionService.class);
         when(subscriptionService.getCurrentToken()).thenReturn("probe-token");
         LiveProxyService proxyService = new LiveProxyService(subscriptionService, new AppProperties(),
-                null, null, null, fixedProvider(yyService));
+                null, null, null, fixedProvider(yyService), null);
 
         // 模拟代理请求:清单目标地址 + yy/yyr 续租参数(条目生成端同款拼法)
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/live-proxy/probe-token");
@@ -84,7 +84,7 @@ class LiveProxyYyProbeTest {
         assertTrue(!home.getList().isEmpty(), "YY首页无房间,无法测试");
         String roomId = home.getList().get(0).getVod_id().split("\\$")[1];
         // FLV 续租入口(代理端 proxyWithRenew 的 renewer 同款调用):产出地址应可直接拉流
-        String flv = yyService.renewStreamUrl(roomId, "1");
+        String flv = yyService.renewStreamUrl(roomId, roomId, "1");
         assertTrue(flv != null && flv.contains(".flv"), "FLV续租失败: " + flv);
         System.out.printf("[yy-proxy] flv renewed=%s%n", abbreviate(flv, 120));
 
@@ -104,7 +104,7 @@ class LiveProxyYyProbeTest {
         when(subscriptionService.getCurrentToken()).thenReturn("probe-token");
         AppProperties properties = new AppProperties();
         properties.setLiveProxyMode("dual");
-        LiveProxyService proxyService = new LiveProxyService(subscriptionService, properties, null, null, null, null);
+        LiveProxyService proxyService = new LiveProxyService(subscriptionService, properties, null, null, null, null, null);
         assertTrue(proxyService.isDualProxyMode(), "dual 模式未生效");
         YyService yyService = new YyService(builder, objectMapper, proxyService);
 

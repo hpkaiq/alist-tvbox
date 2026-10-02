@@ -50,6 +50,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -1009,7 +1010,10 @@ class BiliBiliServiceTest {
                   "replies":[{
                     "rpid_str":"1002","member":{"mid":"42","uname":"小明","avatar":"https://i0.hdslb.com/face/a.jpg",
                       "level_info":{"current_level":4}},
-                    "content":{"message":"这个视频太好了"},"like":12000,"rcount":2,"ctime":1700000100,
+                    "content":{"message":"这个视频太好了[doge]","emote":{"[doge]":{
+                        "url":"https://i0.hdslb.com/bfs/emote/3087d273.png","meta":{"size":1}}},
+                      "pictures":[{"img_src":"https://i0.hdslb.com/bfs/new_dyn/1.jpg","img_width":800,"img_height":600}]},
+                    "like":12000,"rcount":2,"ctime":1700000100,
                     "reply_control":{"time_desc":"2天前发布","location":"IP属地：河北"},
                     "replies":[{
                       "rpid_str":"1003","parent_str":"1002","member":{"mid":"43","uname":"小刚",
@@ -1040,6 +1044,16 @@ class BiliBiliServiceTest {
         assertEquals(true, comments.get(0).get("liked"));
         assertEquals(false, comments.get(1).get("liked"));
         assertEquals(false, comments.get(1).get("is_up"));
+        // 表情与图片评论透传
+        List<Map<String, Object>> emotes = (List<Map<String, Object>>) comments.get(1).get("emotes");
+        assertEquals(1, emotes.size());
+        assertEquals("[doge]", emotes.get(0).get("text"));
+        assertEquals("https://i0.hdslb.com/bfs/emote/3087d273.png", emotes.get(0).get("url"));
+        assertEquals(1, emotes.get(0).get("size"));
+        List<Map<String, Object>> pictures = (List<Map<String, Object>>) comments.get(1).get("pictures");
+        assertEquals(1, pictures.size());
+        assertEquals("https://i0.hdslb.com/bfs/new_dyn/1.jpg", pictures.get(0).get("url"));
+        assertEquals(800, pictures.get(0).get("width"));
         // 子回复预览:直答不带 parent_uname,层内互答带;UP 主身份透传
         List<Map<String, Object>> preview = (List<Map<String, Object>>) comments.get(1).get("preview");
         assertEquals("", preview.get(0).get("parent_uname"));
@@ -1065,6 +1079,74 @@ class BiliBiliServiceTest {
         assertEquals(10, result.get("count"));
         assertEquals(true, result.get("is_end"));
         assertTrue(((List<?>) result.get("comments")).isEmpty());
+    }
+
+    @Test
+    void postDanmakuSignsQueryAndPostsForm() throws Exception {
+        when(settingRepository.findById(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE))
+                .thenReturn(Optional.of(new Setting(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE,
+                        "SESSDATA=test; bili_jct=jct-token; DedeUserID=42; buvid3=buv")));
+        String body = "{\"code\":0,\"data\":{\"dmid\":32161968826613767,\"dmid_str\":\"32161968826613767\"}}";
+        org.mockito.ArgumentCaptor<String> urlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<HttpEntity<org.springframework.util.MultiValueMap<String, String>>> formCaptor =
+                org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        when(restTemplate.exchange(urlCaptor.capture(), eq(HttpMethod.POST), formCaptor.capture(),
+                eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.postDanmaku("170001-62131", "前来考古", 5000L, 1, null, null);
+
+        assertEquals("32161968826613767", result.get("dmid"));
+        // query 带 WBI 签名(web_location+wts+w_rid,值为安全字符)
+        String url = urlCaptor.getValue();
+        assertTrue(url.startsWith("https://api.bilibili.com/x/v2/dm/post?"));
+        assertTrue(url.contains("web_location=1315873"));
+        assertTrue(url.contains("wts="));
+        assertTrue(url.contains("w_rid="));
+        org.springframework.util.MultiValueMap<String, String> form = formCaptor.getValue().getBody();
+        assertEquals("1", form.getFirst("type"));
+        assertEquals("62131", form.getFirst("oid"));
+        assertEquals("170001", form.getFirst("aid"));
+        assertEquals("前来考古", form.getFirst("msg"));
+        assertEquals("5000", form.getFirst("progress"));
+        assertEquals("1", form.getFirst("mode"));
+        assertEquals("0", form.getFirst("pool"));
+        // color/fontsize 缺省回落白字 25 号;rnd 必带(不带则上游冷却 90s)
+        assertEquals("16777215", form.getFirst("color"));
+        assertEquals("25", form.getFirst("fontsize"));
+        org.junit.jupiter.api.Assertions.assertNotNull(form.getFirst("rnd"));
+        assertEquals("jct-token", form.getFirst("csrf"));
+    }
+
+    @Test
+    void postDanmakuSurfacesUpstreamError() throws Exception {
+        when(settingRepository.findById(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE))
+                .thenReturn(Optional.of(new Setting(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE,
+                        "SESSDATA=test; bili_jct=jct-token; DedeUserID=42; buvid3=buv")));
+        String body = "{\"code\":36703,\"message\":\"弹幕发送频率过快\"}";
+        when(restTemplate.exchange(org.mockito.ArgumentMatchers.anyString(), eq(HttpMethod.POST),
+                any(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        cn.har01d.alist_tvbox.exception.BadRequestException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                        () -> service.postDanmaku("170001-62131", "太快", 0L, 1, null, null));
+        assertTrue(ex.getMessage().contains("36703"));
+        assertTrue(ex.getMessage().contains("频率过快"));
+    }
+
+    @Test
+    void postDanmakuRejectsBlankOrOverlongMessage() {
+        when(settingRepository.findById(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE))
+                .thenReturn(Optional.of(new Setting(cn.har01d.alist_tvbox.util.Constants.BILIBILI_COOKIE,
+                        "SESSDATA=test; bili_jct=jct-token; DedeUserID=42; buvid3=buv")));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                () -> service.postDanmaku("170001-62131", "  ", 0L, 1, null, null));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                () -> service.postDanmaku("170001-62131", "字".repeat(101), 0L, 1, null, null));
     }
 
     @Test
@@ -1171,6 +1253,79 @@ class BiliBiliServiceTest {
                 org.junit.jupiter.api.Assertions.assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
                         () -> service.runCommentAction("BV195KY6YEeY", "abc", 1));
         assertTrue(ex.getMessage().contains("无效的评论 ID"));
+    }
+
+    @Test
+    void runCommentReplyPostsAddFormAndReturnsNewComment() throws Exception {
+        String selfMid = cn.har01d.alist_tvbox.util.BiliCookieRefreshUtils.getCookieValue(BiliBiliUtils.getCookie(), "DedeUserID");
+        String body = """
+                {"code":0,"data":{"reply":{
+                  "rpid_str":"9999","member":{"mid":"%s","uname":"我","avatar":"https://i0.hdslb.com/face/me.jpg",
+                    "level_info":{"current_level":6}},
+                  "content":{"message":"回复内容"},"like":0,"rcount":0,"ctime":1790837000,"action":0,
+                  "reply_control":{"time_desc":"刚刚"},"replies":[]}}}
+                """.formatted(selfMid);
+        org.mockito.ArgumentCaptor<HttpEntity<org.springframework.util.MultiValueMap<String, String>>> captor =
+                org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        when(restTemplate.exchange(eq("https://api.bilibili.com/x/v2/reply/add"), eq(HttpMethod.POST),
+                captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.runCommentReply("BV195KY6YEeY", "1002", "1003", "  回复内容  ");
+
+        org.springframework.util.MultiValueMap<String, String> form = captor.getValue().getBody();
+        assertEquals("1", form.getFirst("type"));
+        assertEquals("116958703918865", form.getFirst("oid"));
+        assertEquals("1002", form.getFirst("root"));
+        assertEquals("1003", form.getFirst("parent"));
+        assertEquals("回复内容", form.getFirst("message"));
+        assertEquals("1", form.getFirst("plat"));
+        Map<String, Object> comment = (Map<String, Object>) result.get("comment");
+        assertEquals("9999", comment.get("rpid"));
+        assertEquals("回复内容", comment.get("message"));
+        // 自己发的回复:标「我」(is_self)而非「作者」(is_up)
+        assertEquals(true, comment.get("is_self"));
+        assertEquals(false, comment.get("is_up"));
+    }
+
+    @Test
+    void runCommentReplyValidatesRootAndMessage() {
+        cn.har01d.alist_tvbox.exception.BadRequestException badRoot =
+                org.junit.jupiter.api.Assertions.assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                        () -> service.runCommentReply("BV195KY6YEeY", "abc", "abc", "hi"));
+        assertTrue(badRoot.getMessage().contains("无效的评论 ID"));
+        cn.har01d.alist_tvbox.exception.BadRequestException emptyMessage =
+                org.junit.jupiter.api.Assertions.assertThrows(cn.har01d.alist_tvbox.exception.BadRequestException.class,
+                        () -> service.runCommentReply("BV195KY6YEeY", "1002", "1002", "   "));
+        assertTrue(emptyMessage.getMessage().contains("1-1000 字"));
+    }
+
+    @Test
+    void runCommentReplyWithoutRootPostsTopLevelComment() throws Exception {
+        String body = """
+                {"code":0,"data":{"reply":{
+                  "rpid_str":"7777","member":{"mid":"2340134","uname":"我",
+                    "avatar":"https://i0.hdslb.com/face/me.jpg","level_info":{"current_level":6}},
+                  "content":{"message":"直接评论视频"},"like":0,"rcount":0,"ctime":1790838000,"action":0,
+                  "reply_control":{"time_desc":"刚刚"},"replies":[]}}}
+                """;
+        org.mockito.ArgumentCaptor<HttpEntity<org.springframework.util.MultiValueMap<String, String>>> captor =
+                org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        when(restTemplate.exchange(eq("https://api.bilibili.com/x/v2/reply/add"), eq(HttpMethod.POST),
+                captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(ResponseEntity.ok(new ObjectMapper().readTree(body)));
+
+        Map<String, Object> result = service.runCommentReply("BV195KY6YEeY", "", null, "直接评论视频");
+
+        org.springframework.util.MultiValueMap<String, String> form = captor.getValue().getBody();
+        assertEquals("1", form.getFirst("type"));
+        assertEquals("116958703918865", form.getFirst("oid"));
+        assertEquals("直接评论视频", form.getFirst("message"));
+        // 顶层评论:不带 root/parent
+        assertNull(form.getFirst("root"));
+        assertNull(form.getFirst("parent"));
+        Map<String, Object> comment = (Map<String, Object>) result.get("comment");
+        assertEquals("7777", comment.get("rpid"));
     }
 
 }

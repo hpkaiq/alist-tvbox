@@ -191,6 +191,8 @@ public class BiliBiliService {
     public static final String REPLY_MAIN_API = "https://api.bilibili.com/x/v2/reply/wbi/main";
     public static final String REPLY_REPLY_API = "https://api.bilibili.com/x/v2/reply/reply";
     public static final String REPLY_ACTION_API = "https://api.bilibili.com/x/v2/reply/action";
+    public static final String REPLY_ADD_API = "https://api.bilibili.com/x/v2/reply/add";
+    public static final String DM_POST_API = "https://api.bilibili.com/x/v2/dm/post";
 
     private final List<FilterValue> filters1 = Arrays.asList(
             new FilterValue("综合排序", ""),
@@ -2483,8 +2485,9 @@ public class BiliBiliService {
             for (JsonNode reply : data.path("replies")) {
                 names.put(reply.path("rpid_str").asText(""), reply.path("member").path("uname").asText(""));
             }
+            long selfMid = currentSelfMid();
             for (JsonNode reply : data.path("replies")) {
-                Map<String, Object> map = buildComment(reply, upperMid, false);
+                Map<String, Object> map = buildComment(reply, upperMid, false, selfMid);
                 // 楼中楼直答(root)不带前缀,层内互答显示「回复 @xxx」;父条不在本页则留空
                 String parent = reply.path("parent_str").asText("");
                 map.put("parent_uname", !parent.isEmpty() && !parent.equals(rootRpid) ? names.getOrDefault(parent, "") : "");
@@ -2520,12 +2523,13 @@ public class BiliBiliService {
         long upperMid = data.path("upper").path("mid").asLong(0);
         List<Map<String, Object>> comments = new ArrayList<>();
         // UP 置顶评论置首(top.upper),后台置顶(top.admin)不并:与 B站 web 展示一致
+        long selfMid = currentSelfMid();
         JsonNode top = data.path("top").path("upper");
         if (top.isObject() && !top.isNull()) {
-            comments.add(buildComment(top, upperMid, true));
+            comments.add(buildComment(top, upperMid, true, selfMid));
         }
         for (JsonNode reply : data.path("replies")) {
-            comments.add(buildComment(reply, upperMid, false));
+            comments.add(buildComment(reply, upperMid, false, selfMid));
         }
         Map<String, Object> result = new HashMap<>();
         result.put("count", cursor.path("all_count").asInt(0));
@@ -2563,6 +2567,150 @@ public class BiliBiliService {
         return result;
     }
 
+    /**
+     * atv-player 发评论(x/v2/reply/add):root/parent 空=视频顶层评论(form 不带两者),
+     * 回复一级评论 root=parent=该评论 rpid,楼中楼内互答 root=根 rpid/parent=被回复行。
+     * 返回上游 data.reply 精简后的新评论对象(含 rpid/member/content 等),
+     * 客户端据此本地插入免整页刷新;敏感词/频率等错误码转文案抛出。
+     */
+    public Map<String, Object> runCommentReply(String vodId, String root, String parent, String message) {
+        String aid = resolveAid(vodId);
+        String normalizedRoot = StringUtils.defaultString(root).trim();
+        String normalizedParent = StringUtils.defaultString(parent).trim();
+        if (StringUtils.isBlank(normalizedParent)) {
+            normalizedParent = normalizedRoot;
+        }
+        if (StringUtils.isBlank(normalizedRoot)) {
+            // 顶层评论不带 root/parent,孤传 parent 不成形,一并忽略
+            normalizedParent = "";
+        }
+        String normalizedMessage = StringUtils.defaultString(message).trim();
+        if (StringUtils.isNotBlank(normalizedRoot) && !StringUtils.isNumeric(normalizedRoot + normalizedParent)) {
+            throw new BadRequestException("无效的评论 ID");
+        }
+        if (normalizedMessage.isEmpty() || normalizedMessage.length() > 1000) {
+            throw new BadRequestException("评论内容须为 1-1000 字");
+        }
+        String cookie = resolveCookie();
+        String csrf = BiliCookieRefreshUtils.getCookieValue(cookie, "bili_jct");
+        if (StringUtils.isBlank(csrf)) {
+            throw new BadRequestException("未登录 B站,请先在设置中配置 Cookie");
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("type", "1");
+        form.add("oid", aid);
+        if (StringUtils.isNotBlank(normalizedRoot)) {
+            form.add("root", normalizedRoot);
+            form.add("parent", normalizedParent);
+        }
+        form.add("message", normalizedMessage);
+        form.add("plat", "1");
+        form.add("csrf", csrf);
+        JsonNode body = postForm(REPLY_ADD_API, form, "https://www.bilibili.com/");
+        // 「作者」标签=视频 UP 主(曾误传登录 mid 致自己的回复全被标作者);「我」标签=当前账号
+        long upMid = ownerMidOf(vodId);
+        Map<String, Object> result = new HashMap<>();
+        result.put("comment", buildComment(body.path("data").path("reply"), upMid, false, currentSelfMid()));
+        return result;
+    }
+
+    /**
+     * atv-player 发送弹幕(x/v2/dm/post,query 带 WBI 签名,form 带内容):
+     * oid=cid(条目 id 无 cid 段时回落视频首个分P),rnd=微秒时间戳(免 90s 冷却降到 5s)。
+     * 模式仅开放 1=滚动/4=底部/5=顶部;36701 敏感词、36703 频率等上游错误码转文案抛出。
+     * 签名后的 query 均为字母数字安全字符,postForm 的 String url 模板展开无二次编码风险。
+     */
+    public Map<String, Object> postDanmaku(String vodId, String message, Long progress, Integer mode, Integer color, Integer fontsize) {
+        String aid = resolveAid(vodId);
+        String cid = resolveCid(vodId);
+        String normalizedMessage = StringUtils.defaultString(message).trim();
+        if (normalizedMessage.isEmpty() || normalizedMessage.length() > 100) {
+            throw new BadRequestException("弹幕内容须为 1-100 字");
+        }
+        int normalizedMode = mode != null && (mode == 1 || mode == 4 || mode == 5) ? mode : 1;
+        int normalizedColor = color != null && color > 0 ? color : 0xFFFFFF;
+        int normalizedFontsize = fontsize != null && fontsize >= 12 && fontsize <= 64 ? fontsize : 25;
+        long normalizedProgress = progress != null ? Math.max(0, progress) : 0;
+        String cookie = resolveCookie();
+        String csrf = BiliCookieRefreshUtils.getCookieValue(cookie, "bili_jct");
+        if (StringUtils.isBlank(csrf)) {
+            throw new BadRequestException("未登录 B站,请先在设置中配置 Cookie");
+        }
+        HttpEntity<Void> entity = buildHttpEntity(null);
+        getKeys(entity);
+        Map<String, Object> query = new HashMap<>();
+        query.put("web_location", 1315873);
+        String url = DM_POST_API + "?" + Utils.encryptWbiRfc3986(query, imgKey, subKey);
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("type", "1");
+        form.add("oid", cid);
+        form.add("msg", normalizedMessage);
+        form.add("aid", aid);
+        form.add("progress", String.valueOf(normalizedProgress));
+        form.add("color", String.valueOf(normalizedColor));
+        form.add("fontsize", String.valueOf(normalizedFontsize));
+        form.add("pool", "0");
+        form.add("mode", String.valueOf(normalizedMode));
+        form.add("rnd", String.valueOf(System.currentTimeMillis() * 1000));
+        form.add("csrf", csrf);
+        JsonNode body = postForm(url, form, videoReferer(aid));
+        Map<String, Object> result = new HashMap<>();
+        JsonNode data = body.path("data");
+        result.put("dmid", data.path("dmid_str").asText(data.path("dmid").asText("")));
+        return result;
+    }
+
+    /** 评论正文内嵌表情(content.emote,key=[xxx])与图片评论(content.pictures)透传,供客户端渲染图片。 */
+    private void appendCommentImages(JsonNode content, Map<String, Object> map) {
+        List<Map<String, Object>> emotes = new ArrayList<>();
+        JsonNode emoteNode = content.path("emote");
+        if (emoteNode.isObject()) {
+            emoteNode.fields().forEachRemaining(entry -> {
+                String url = entry.getValue().path("url").asText("");
+                if (!url.isEmpty()) {
+                    Map<String, Object> emote = new HashMap<>();
+                    emote.put("text", entry.getKey());
+                    emote.put("url", url);
+                    emote.put("size", entry.getValue().path("meta").path("size").asInt(1));
+                    emotes.add(emote);
+                }
+            });
+        }
+        map.put("emotes", emotes);
+        List<Map<String, Object>> pictures = new ArrayList<>();
+        for (JsonNode picture : content.path("pictures")) {
+            String url = picture.path("img_src").asText("");
+            if (!url.isEmpty()) {
+                Map<String, Object> item = new HashMap<>();
+                item.put("url", url);
+                item.put("width", picture.path("img_width").asInt(0));
+                item.put("height", picture.path("img_height").asInt(0));
+                pictures.add(item);
+            }
+        }
+        map.put("pictures", pictures);
+    }
+
+    /** 当前登录账号 mid(cookie DedeUserID),用于评论 is_self 标识;未登录/缺失为 0。 */
+    private long currentSelfMid() {
+        try {
+            return Long.parseLong(BiliCookieRefreshUtils.getCookieValue(resolveCookie(), "DedeUserID"));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** 视频条目 id→UP 主 mid(view 缓存),未命中为 0(新评论回传时判 is_up 用)。 */
+    private long ownerMidOf(String vodId) {
+        try {
+            String aid = resolveAid(vodId);
+            BiliBiliInfo info = cache.getIfPresent(BiliBiliUtils.av2bv(Long.parseLong(aid)));
+            return info == null || info.getOwner() == null ? 0 : info.getOwner().getMid();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     private JsonNode fetchReplyJson(String url, String source) {
         HttpEntity<Void> entity = buildHttpEntity(null, Map.of(HttpHeaders.REFERER, "https://www.bilibili.com"));
         JsonNode body;
@@ -2584,6 +2732,10 @@ public class BiliBiliService {
     }
 
     private Map<String, Object> buildComment(JsonNode reply, long upperMid, boolean top) {
+        return buildComment(reply, upperMid, top, 0);
+    }
+
+    private Map<String, Object> buildComment(JsonNode reply, long upperMid, boolean top, long selfMid) {
         JsonNode member = reply.path("member");
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("rpid", reply.path("rpid_str").asText(reply.path("rpid").asText("0")));
@@ -2599,9 +2751,12 @@ public class BiliBiliService {
         map.put("location", reply.path("reply_control").path("location").asText(""));
         map.put("top", top);
         long mid = member.path("mid").asLong(0);
+        // is_up=视频 UP 主(评论区「作者」标签);is_self=当前登录账号自己发的(客户端标「我」),二者独立
         map.put("is_up", upperMid > 0 && mid == upperMid);
+        map.put("is_self", selfMid > 0 && mid == selfMid);
         // 登录时上游 action=1 表示当前用户已赞,驱动客户端点赞按钮初始态
         map.put("liked", reply.path("action").asInt(0) == 1);
+        appendCommentImages(reply.path("content"), map);
         List<Map<String, Object>> preview = new ArrayList<>();
         Map<String, String> names = new HashMap<>();
         for (JsonNode child : reply.path("replies")) {
@@ -2609,7 +2764,7 @@ public class BiliBiliService {
         }
         String rootRpid = reply.path("rpid_str").asText(reply.path("rpid").asText(""));
         for (JsonNode child : reply.path("replies")) {
-            Map<String, Object> childMap = buildComment(child, upperMid, false);
+            Map<String, Object> childMap = buildComment(child, upperMid, false, selfMid);
             String parent = child.path("parent_str").asText("");
             childMap.put("parent_uname", !parent.isEmpty() && !parent.equals(rootRpid) ? names.getOrDefault(parent, "") : "");
             preview.add(childMap);
@@ -2632,6 +2787,30 @@ public class BiliBiliService {
             throw new BadRequestException("无法识别的视频 ID: " + vodId);
         }
         return aid;
+    }
+
+    /** 播放条目 id(aid-cid[-epId] / BVxxx / aid)→ cid;无 cid 段时取视频首个分P(view 缓存,未命中走 view API)。 */
+    private String resolveCid(String vodId) {
+        String id = StringUtils.defaultString(vodId).trim();
+        int dash = id.indexOf('-');
+        if (dash > 0) {
+            String rest = id.substring(dash + 1);
+            int next = rest.indexOf('-');
+            String cid = (next >= 0 ? rest.substring(0, next) : rest).trim();
+            if (StringUtils.isNumeric(cid)) {
+                return cid;
+            }
+        }
+        String aid = resolveAid(id);
+        try {
+            BiliBiliInfo info = cache.get(BiliBiliUtils.av2bv(Long.parseLong(aid)));
+            if (info != null && info.getCid() != 0) {
+                return String.valueOf(info.getCid());
+            }
+        } catch (Exception e) {
+            log.warn("resolve bilibili cid failed: {} {}", vodId, e.getMessage());
+        }
+        throw new BadRequestException("无法解析视频 cid: " + vodId);
     }
 
     private String resolveCookie() {

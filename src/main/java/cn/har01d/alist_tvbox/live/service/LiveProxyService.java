@@ -2,6 +2,8 @@ package cn.har01d.alist_tvbox.live.service;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
+import cn.har01d.alist_tvbox.live.util.FlvSpliceSession;
+import cn.har01d.alist_tvbox.live.util.HttpFlvTagReader;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
 import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.Utils;
@@ -17,9 +19,11 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -36,23 +40,30 @@ public class LiveProxyService {
     private static final String LOOK_MEDIA_HOST = ".live.126.net";
     private static final String YY_MEDIA_HOST = ".yy.com";
     private final OkHttpClient okHttpClient;
+    /** 拼接中继专用:读超时收紧到 15 秒(新连接关键帧搜寻预算同级),停流连接更快判死触发换源。 */
+    private final OkHttpClient relayClient;
     private final SubscriptionService subscriptionService;
     private final AppProperties appProperties;
-    // 四平台服务反向依赖本服务成环,以 ObjectProvider 延迟化解:
+    // 平台服务反向依赖本服务成环,以 ObjectProvider 延迟化解:
     // @Lazy 类代理需运行期生成 CGLIB 类,native image 下无反射注册直接启动失败
     private final ObjectProvider<KugouLiveService> kugouLiveService;
     private final ObjectProvider<InkeService> inkeService;
     private final ObjectProvider<LookLiveService> lookService;
     private final ObjectProvider<YyService> yyService;
+    private final ObjectProvider<DouyuService> douyuService;
 
     public LiveProxyService(SubscriptionService subscriptionService, AppProperties appProperties,
                             ObjectProvider<KugouLiveService> kugouLiveService,
                             ObjectProvider<InkeService> inkeService,
                             ObjectProvider<LookLiveService> lookService,
-                            ObjectProvider<YyService> yyService) {
+                            ObjectProvider<YyService> yyService,
+                            ObjectProvider<DouyuService> douyuService) {
         this.okHttpClient = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
+                .build();
+        this.relayClient = this.okHttpClient.newBuilder()
+                .readTimeout(15, TimeUnit.SECONDS)
                 .build();
         this.subscriptionService = subscriptionService;
         this.appProperties = appProperties;
@@ -60,6 +71,7 @@ public class LiveProxyService {
         this.inkeService = inkeService;
         this.lookService = lookService;
         this.yyService = yyService;
+        this.douyuService = douyuService;
     }
 
     /** dual 代理模式(直连优先双线路):各平台 detail 据此产出「直连+代理」两条线路。 */
@@ -86,7 +98,33 @@ public class LiveProxyService {
         }
     }
 
+    /**
+     * 斗鱼租约中继地址:匿名原画等带 expire 租约的 FLV 改经服务端关键帧拼接续流,
+     * 客户端对 300 秒断流无感(pure_live 3.2.11 #35 服务端等价物)。构造失败回退直连地址。
+     */
+    public String buildDouyuProxyUrl(String roomId, int rate, String cdn, String directUrl) {
+        try {
+            String token = subscriptionService.getCurrentToken();
+            return ServletUriComponentsBuilder.fromCurrentRequest()
+                    .scheme(Utils.publicScheme(appProperties.isEnableHttps()))
+                    .replacePath("/live-proxy/" + token)
+                    .replaceQuery("dy=" + URLEncoder.encode(roomId, StandardCharsets.UTF_8)
+                            + "&dyr=" + rate
+                            + "&dyc=" + URLEncoder.encode(cdn, StandardCharsets.UTF_8))
+                    .build()
+                    .toUriString();
+        } catch (Exception e) {
+            log.debug("build douyu relay url failed: {}", directUrl, e);
+            return directUrl;
+        }
+    }
+
     public void proxy(String target, HttpServletRequest request, HttpServletResponse response) throws IOException {
+        // 斗鱼租约中继自带续签(每次连接服务端重取流地址),不走 u= 通用转发
+        if (request.getParameter("dy") != null) {
+            proxyDouyuRelay(request, response);
+            return;
+        }
         if (target == null || target.isEmpty() || !Utils.isSafeExternalUrl(target)) {
             throw new BadRequestException("不安全的地址");
         }
@@ -121,18 +159,20 @@ public class LiveProxyService {
         }
         if (isYyStream(target) && request.getParameter("yy") != null) {
             // YY 流地址签名 t 租约仅约 10 分钟(detail 15 分钟缓存内必然过期):
-            // 每次连接先重取当前地址,断流再续租;HLS 清单每次重取,分片独立签名即刻有效,
-            // 分片经 rewrite 生成的代理地址不带 yy 参数,落到下方通用转发
+            // 每次连接先重取房间当前地址(HLS 天然续租);分片经 rewrite 生成的代理地址不带
+            // yy 参数,落到下方通用转发,不产生多余重签。
+            // 子频道房 yys 带子频道号(流接口要 cid=频道/sid=子频道双 id),缺省=房间号
             String roomId = request.getParameter("yy");
+            String subSid = yySubChannelId(request, roomId);
             if (target.contains(".m3u8")) {
                 String rate = request.getParameter("yyr");
-                String fresh = rate == null ? null : yyService.getObject().renewHlsUrl(roomId, rate);
+                String fresh = rate == null ? null : yyService.getObject().renewHlsUrl(roomId, subSid, rate);
                 proxyManifest(fresh == null ? target : fresh, response, "https://wap.yy.com/");
             } else {
                 String gear = request.getParameter("yyq");
-                String fresh = yyService.getObject().renewStreamUrl(roomId, gear);
+                String fresh = yyService.getObject().renewStreamUrl(roomId, subSid, gear);
                 proxyWithRenew(fresh == null ? target : fresh, response, "https://www.yy.com/",
-                        () -> yyService.getObject().renewStreamUrl(roomId, gear));
+                        () -> yyService.getObject().renewStreamUrl(roomId, subSid, gear));
             }
             return;
         }
@@ -228,6 +268,12 @@ public class LiveProxyService {
         return hostMatches(target, YY_MEDIA_HOST);
     }
 
+    /** YY 子频道号(续租双 id 用):yys 参数纯数字即用,缺省回落房间号(单频道房/存量条目)。 */
+    static String yySubChannelId(HttpServletRequest request, String roomId) {
+        String subSid = request.getParameter("yys");
+        return subSid != null && subSid.matches("[1-9][0-9]{0,17}") ? subSid : roomId;
+    }
+
     private static boolean hostMatches(String target, String suffix) {
         try {
             String host = URI.create(target).getHost();
@@ -240,6 +286,65 @@ public class LiveProxyService {
 
     private static String kugouProtocol(String target) {
         return target.contains(".m3u8") ? "hls" : "flv";
+    }
+
+    /**
+     * 斗鱼租约拼接中继:匿名原画 FLV 带 expire=300 租约,CDN 到点断流、TVBox 播放器无从重签。
+     * 每次连接先重取当前流地址(detail 缓存/停留页造成的签发时滞一并消除),到期前 45 秒预算下一条,
+     * 关键帧对齐切换(PureLive 3.2.11 FlvSpliceSession 同款);换链彻底失败才放任断流。
+     * 线程模型与 proxyWithRenew 同款:占用请求线程直到播放器断开。
+     */
+    private void proxyDouyuRelay(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String roomId = request.getParameter("dy");
+        String rateParam = request.getParameter("dyr");
+        String cdn = request.getParameter("dyc");
+        if (roomId == null || roomId.isBlank() || rateParam == null || cdn == null) {
+            throw new BadRequestException("缺少斗鱼中继参数");
+        }
+        int rate;
+        try {
+            rate = Integer.parseInt(rateParam);
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("画质档位参数非法");
+        }
+        DouyuService douyu = douyuService.getObject();
+        String url = douyu.getPlayUrlForRelay(roomId, rate, cdn);
+        if (url == null || url.isBlank()) {
+            log.warn("斗鱼中继取流失败: room={} rate={} cdn={}", roomId, rate, cdn);
+            response.setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+            return;
+        }
+        FlvSpliceSession.Lease initial = new FlvSpliceSession.Lease(url,
+                FlvSpliceSession.refreshAtEpochMs(url, System.currentTimeMillis()));
+        Map<String, String> headers = Map.of(
+                "User-Agent", Constants.USER_AGENT,
+                "Referer", "https://www.douyu.com/" + roomId,
+                "Origin", "https://www.douyu.com");
+        FlvSpliceSession.Opener opener = next -> new HttpFlvTagReader(relayClient, next, headers);
+        FlvSpliceSession.Renewer renewer = current -> {
+            String renewed = douyu.getPlayUrlForRelay(roomId, rate, cdn);
+            if (renewed == null || renewed.isBlank()) {
+                throw new IllegalStateException("douyu relign failed");
+            }
+            return new FlvSpliceSession.Lease(renewed,
+                    FlvSpliceSession.refreshAtEpochMs(renewed, System.currentTimeMillis()));
+        };
+        FlvSpliceSession session = new FlvSpliceSession(initial, opener, renewer, System::currentTimeMillis);
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentType("video/x-flv");
+        response.setHeader("Cache-Control", "no-store");
+        try {
+            OutputStream out = response.getOutputStream();
+            session.run(out);
+        } catch (IOException e) {
+            // 下游断开(ClientAbortException/broken pipe)或上游建连失败:结束会话即可
+            log.debug("douyu relay ended: room={} {} renewals={}", roomId, e.toString(), session.getSwitches());
+            if (!response.isCommitted()) {
+                response.setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+            }
+        } finally {
+            session.cancel();
+        }
     }
 
     /**
