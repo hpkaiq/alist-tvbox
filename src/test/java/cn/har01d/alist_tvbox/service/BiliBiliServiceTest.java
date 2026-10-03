@@ -8,13 +8,18 @@ import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfo;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliInfoResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliList;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliListResponse;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlay;
+import cn.har01d.alist_tvbox.dto.bili.BiliBiliPlayResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliRelatedResponse;
 import cn.har01d.alist_tvbox.util.BiliBiliUtils;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2Info;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliV2InfoResponse;
 import cn.har01d.alist_tvbox.dto.bili.BiliBiliWatchLaterResponse;
+import cn.har01d.alist_tvbox.dto.bili.Dash;
 import cn.har01d.alist_tvbox.dto.bili.Data;
+import cn.har01d.alist_tvbox.dto.bili.Media;
 import cn.har01d.alist_tvbox.dto.bili.Resp;
+import cn.har01d.alist_tvbox.dto.bili.Segment;
 import cn.har01d.alist_tvbox.entity.SettingRepository;
 import cn.har01d.alist_tvbox.entity.Setting;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
@@ -41,6 +46,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -51,6 +57,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -110,11 +117,8 @@ class BiliBiliServiceTest {
     }
 
     private void stubPlayUrl() {
-        Resp resp = new Resp();
-        resp.setCode(0);
-        resp.setData(new Data());
         when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
-                .thenReturn(ResponseEntity.ok(resp));
+                .thenReturn(ResponseEntity.ok(dashResp()));
     }
 
     @Test
@@ -145,6 +149,103 @@ class BiliBiliServiceTest {
 
         assertEquals(List.of(), result.get("chapters"));
         assertEquals(List.of(), result.get("subs"));
+    }
+
+    @Test
+    void getPlayUrlSendsRefererOnUgcPlayUrlRequest() throws Exception {
+        // #1075 回归:主请求缺 Referer 时 B站高概率回 code=0+data 只含 v_voucher 的软拦截
+        stubPlayUrl();
+
+        service.getPlayUrl("116958703918865-40168587741", true, "com.github.tvbox.osc");
+
+        org.mockito.ArgumentCaptor<HttpEntity> captor = org.mockito.ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), captor.capture(), eq(Resp.class));
+        assertEquals("https://www.bilibili.com", captor.getValue().getHeaders().getFirst("Referer"));
+    }
+
+    @Test
+    void getPlayUrlRetriesVoucherSoftBlockViaPgcFallback() throws Exception {
+        // 风控软拦截:code=0 但 data 只含 v_voucher(无 durl/dash),与错误码同走 fallback 重试
+        Resp voucher = new Resp();
+        voucher.setCode(0);
+        voucher.setData(new Data());
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(voucher));
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/pgc/player/web/v2/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(dashResp()));
+
+        Map<String, Object> result = service.getPlayUrl("116958703918865-40168587741", true, "com.github.tvbox.osc");
+
+        assertTrue(StringUtils.isNotBlank((String) result.get("url")));
+        verify(restTemplate).exchange(startsWith("https://api.bilibili.com/pgc/player/web/v2/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class));
+    }
+
+    @Test
+    void getPlayUrlThrowsClearErrorWhenSoftBlocked() throws Exception {
+        Resp voucher = new Resp();
+        voucher.setCode(0);
+        voucher.setData(new Data());
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(voucher));
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/pgc/player/web/v2/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(voucher));
+
+        IOException ex = assertThrows(IOException.class,
+                () -> service.getPlayUrl("116958703918865-40168587741", true, "com.github.tvbox.osc"));
+        assertTrue(ex.getMessage().contains("v_voucher"));
+    }
+
+    @Test
+    void getPlayUrlNonDashThrowsInsteadOfCrashingOnEmptyDurl() throws Exception {
+        // 原实现空 durl 直接 get(0) 抛 IndexOutOfBoundsException(#1075 dash=false 形态)
+        BiliBiliPlayResponse empty = new BiliBiliPlayResponse();
+        empty.setCode(0);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class)))
+                .thenReturn(ResponseEntity.ok(empty));
+
+        IOException ex = assertThrows(IOException.class,
+                () -> service.getPlayUrl("116958703918865-40168587741", false, "com.github.tvbox.osc"));
+        assertTrue(ex.getMessage().contains("v_voucher"));
+        verify(restTemplate, Mockito.times(2)).exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class));
+    }
+
+    @Test
+    void isPlayUrlEmptyDetectsVoucherSoftBlock() {
+        Resp voucher = new Resp();
+        voucher.setCode(0);
+        voucher.setData(new Data());
+        assertTrue(BiliBiliService.isPlayUrlEmpty(voucher));
+        assertTrue(BiliBiliService.isPlayUrlEmpty((Resp) null));
+        assertTrue(BiliBiliService.isPlayUrlEmpty((BiliBiliPlayResponse) null));
+        Resp err = new Resp();
+        err.setCode(-404);
+        assertTrue(BiliBiliService.isPlayUrlEmpty(err));
+
+        Resp durl = new Resp();
+        durl.setCode(0);
+        Data data = new Data();
+        data.setDurl(new ArrayList<>(List.of(new BiliBiliPlay.DUrl())));
+        durl.setData(data);
+        assertFalse(BiliBiliService.isPlayUrlEmpty(durl));
+
+        Resp dash = new Resp();
+        dash.setCode(0);
+        Data dashData = new Data();
+        dashData.setDash(new Dash());
+        dash.setResult(dashData);
+        assertFalse(BiliBiliService.isPlayUrlEmpty(dash));
+
+        BiliBiliPlayResponse emptyPlay = new BiliBiliPlayResponse();
+        emptyPlay.setCode(0);
+        assertTrue(BiliBiliService.isPlayUrlEmpty(emptyPlay));
+        BiliBiliPlayResponse durlPlay = new BiliBiliPlayResponse();
+        durlPlay.setCode(0);
+        BiliBiliPlay playData = new BiliBiliPlay();
+        BiliBiliPlay.DUrl d = new BiliBiliPlay.DUrl();
+        d.setUrl("https://upos/x.mp4");
+        playData.setDurl(new ArrayList<>(List.of(d)));
+        durlPlay.setData(playData);
+        assertFalse(BiliBiliService.isPlayUrlEmpty(durlPlay));
     }
 
     @Test
@@ -1326,6 +1427,95 @@ class BiliBiliServiceTest {
         assertNull(form.getFirst("parent"));
         Map<String, Object> comment = (Map<String, Object>) result.get("comment");
         assertEquals("7777", comment.get("rpid"));
+    }
+
+    @Test
+    void parsePlayIdReadsEpisodeSegment() {
+        BiliBiliService.PlayId auto = BiliBiliService.parsePlayId("116958703918865-40168587741");
+        assertEquals("116958703918865", auto.aid());
+        assertEquals("40168587741", auto.cid());
+        assertNull(auto.epId());
+
+        // 番剧条目第三段是 epId:getPlayUrl 据此路由 pgc 端点
+        BiliBiliService.PlayId pgc = BiliBiliService.parsePlayId("478818261-1022370693-733316");
+        assertEquals("733316", pgc.epId());
+    }
+
+    @Test
+    void getPlayUrlUsesPgcEndpointForEpisodeIds() throws Exception {
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/pgc/player/web/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(dashResp()));
+
+        Map<String, Object> result = service.getPlayUrl("478818261-1022370693-733316", true, "com.github.tvbox.osc.tk");
+
+        org.mockito.ArgumentCaptor<String> urlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(restTemplate, Mockito.times(1)).exchange(urlCaptor.capture(), eq(HttpMethod.GET), any(), eq(Resp.class));
+        assertTrue(urlCaptor.getValue().contains("ep_id=733316"));
+        assertTrue(urlCaptor.getValue().contains("qn=127"));
+        // pgc 端点放行 4K/HDR:MPD 含全部轨(125/120/80),播放器 ABR 自选
+        String mpd = decodeDataUri((String) result.get("url"));
+        assertTrue(mpd.contains("id=\"125_"));
+        assertTrue(mpd.contains("id=\"120_"));
+        assertTrue(mpd.contains("id=\"80_"));
+    }
+
+    @Test
+    void getPlayUrlReturnsFirstDurlForNonDashEpisodes() throws Exception {
+        // dash=false 时 pgc 请求 fnval=0,响应只有 durl(实测无 dash 字段):
+        // DashUtils.convert 的 dash==null 分支回落首段 durl,与改前非 DASH 流程同款,老壳子照常可播
+        Resp resp = new Resp();
+        resp.setCode(0);
+        Data data = new Data();
+        BiliBiliPlay.DUrl durl = new BiliBiliPlay.DUrl();
+        durl.setUrl("https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/x.mp4");
+        data.setDurl(new ArrayList<>(List.of(durl)));
+        resp.setResult(data);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/pgc/player/web/playurl"), eq(HttpMethod.GET), any(), eq(Resp.class)))
+                .thenReturn(ResponseEntity.ok(resp));
+
+        Map<String, Object> result = service.getPlayUrl("478818261-1022370693-733316", false, "com.github.tvbox.osc");
+
+        org.mockito.ArgumentCaptor<String> urlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(restTemplate, Mockito.times(1)).exchange(urlCaptor.capture(), eq(HttpMethod.GET), any(), eq(Resp.class));
+        assertTrue(urlCaptor.getValue().contains("fnval=0"));
+        assertEquals("https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/x.mp4", result.get("url"));
+    }
+
+    /** pgc/UGC playurl 通用 dash 样本:125/120/80 三档 + 单音频轨 */
+    private Resp dashResp() {
+        Data data = new Data();
+        Dash dash = new Dash();
+        dash.setDuration("600");
+        dash.setMinBufferTime("1.5");
+        dash.setVideo(List.of(
+                media("125", "https://upos/125.m4s", "video/mp4", "hvc1.2.4.L153.90"),
+                media("120", "https://upos/120.m4s", "video/mp4", "avc1.640033"),
+                media("80", "https://upos/80.m4s", "video/mp4", "avc1.640032")));
+        dash.setAudio(List.of(media("30280", "https://upos/a.m4s", "audio/mp4", "mp4a.40.2")));
+        data.setDash(dash);
+        data.setAcceptQuality(new ArrayList<>(List.of(125, 120, 80)));
+        data.setAcceptDescription(new ArrayList<>(List.of("真彩 HDR", "超清 4K", "高清 1080P")));
+        Resp resp = new Resp();
+        resp.setCode(0);
+        resp.setResult(data);
+        return resp;
+    }
+
+    private Media media(String id, String baseUrl, String mimeType, String codecs) {
+        Media media = new Media();
+        media.setId(id);
+        media.setBaseUrl(baseUrl);
+        media.setMimeType(mimeType);
+        media.setCodecs(codecs);
+        media.setBandwidth("2000000");
+        media.setCodecid("7");
+        media.setSegmentBase(new Segment());
+        return media;
+    }
+
+    private String decodeDataUri(String url) {
+        assertTrue(url.startsWith("data:application/dash+xml;base64,"));
+        return new String(java.util.Base64.getMimeDecoder().decode(url.substring("data:application/dash+xml;base64,".length())));
     }
 
 }
