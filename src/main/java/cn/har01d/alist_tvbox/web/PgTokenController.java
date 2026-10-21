@@ -2,7 +2,6 @@ package cn.har01d.alist_tvbox.web;
 
 import cn.har01d.alist_tvbox.config.AppProperties;
 import cn.har01d.alist_tvbox.domain.DriverType;
-import cn.har01d.alist_tvbox.dto.ClientSyncRule;
 import cn.har01d.alist_tvbox.entity.Account;
 import cn.har01d.alist_tvbox.entity.AccountRepository;
 import cn.har01d.alist_tvbox.entity.DriverAccount;
@@ -85,10 +84,10 @@ public class PgTokenController {
 
         ObjectNode objectNode = (ObjectNode) objectMapper.readTree(json);
 
-        // 凭证同步矩阵(#1084):pg 行的 enabled/drives 控制 tokenm 的账号凭证注入;
-        // 总开关(client_cookie_sync)关闭时全部停发。data/tokenm.json 是管理员手工维护的
-        // 覆盖文件,不受矩阵控制原样保留,PG/猫源客户端按未配置降级(自行登录)
-        if (syncDrive("ali")) {
+        // tokenm 是 PG/猫源插件主动拉取的配置,授权=持有合法订阅 token;凭证下发受矩阵 pg 行
+        // 控制(pg 行默认开,总开关关则全停,#1084)。data/tokenm.json 是管理员手工维护的
+        // 覆盖文件,不受矩阵控制原样合并。
+        if (appProperties.allowPluginDrive("pg", "ali")) {
         aliAccount(uid).ifPresent(account -> {
             objectNode.put("token", account.getRefreshToken());
             objectNode.put("open_token", account.getOpenToken());
@@ -97,10 +96,10 @@ public class PgTokenController {
             settingRepository.findById(Constants.OPEN_TOKEN_URL).map(Setting::getValue).ifPresent(url -> objectNode.put("open_api_url", url));
         }
         }
-        if (syncDrive("quark")) {
+        if (appProperties.allowPluginDrive("pg", "quark")) {
         account(DriverType.QUARK, uid).ifPresent(share -> objectNode.put("quark_cookie", share.getCookie()));
         }
-        if (syncDrive("115")) {
+        if (appProperties.allowPluginDrive("pg", "115")) {
         account(DriverType.PAN115, uid).ifPresent(share -> {
             objectNode.put("pan115_cookie", share.getCookie());
             try {
@@ -110,27 +109,27 @@ public class PgTokenController {
             }
         });
         }
-        if (syncDrive("uc")) {
+        if (appProperties.allowPluginDrive("pg", "uc")) {
         account(DriverType.UC, uid).ifPresent(share -> objectNode.put("uc_cookie", share.getCookie()));
         }
-        if (syncDrive("baidu")) {
+        if (appProperties.allowPluginDrive("pg", "baidu")) {
         account(DriverType.BAIDU, uid).ifPresent(share -> objectNode.put("baidu_cookie", share.getCookie()));
         }
-        if (syncDrive("123")) {
+        if (appProperties.allowPluginDrive("pg", "123")) {
         account(DriverType.PAN123, uid).ifPresent(share -> {
             objectNode.put("pan123_username", share.getUsername());
             objectNode.put("pan123_password", share.getPassword());
             objectNode.put("pan123_flags", "4kz");
         });
         }
-        if (syncDrive("189")) {
+        if (appProperties.allowPluginDrive("pg", "189")) {
         account(DriverType.CLOUD189, uid).ifPresent(share -> {
             objectNode.put("pan189_username", share.getUsername());
             objectNode.put("pan189_password", share.getPassword());
             objectNode.put("pan189_flags", "4kz");
         });
         }
-        if (syncDrive("139")) {
+        if (appProperties.allowPluginDrive("pg", "139")) {
         account(DriverType.PAN139, uid).ifPresent(share -> {
             objectNode.put("yd_auth", "Basic " + share.getToken());
             objectNode.put("yd_thread_limit", 4);
@@ -138,14 +137,14 @@ public class PgTokenController {
             objectNode.put("yd_danmu", true);
         });
         }
-        if (syncDrive("xunlei")) {
+        if (appProperties.allowPluginDrive("pg", "xunlei")) {
         account(DriverType.THUNDER, uid).ifPresent(share -> {
             objectNode.put("thunder_username", share.getUsername());
             objectNode.put("thunder_password", share.getPassword());
             objectNode.put("thunder_captchatoken", share.getToken());
         });
         }
-        if (syncDrive("pikpak")) {
+        if (appProperties.allowPluginDrive("pg", "pikpak")) {
         pikpakAccount(uid).ifPresent(account -> {
             objectNode.put("pikpak_username", account.getUsername());
             objectNode.put("pikpak_password", account.getPassword());
@@ -163,16 +162,6 @@ public class PgTokenController {
         }
 
         return objectNode;
-    }
-
-    /** 矩阵 pg 行判定:总开关开 && pg 行未禁用 && 该网盘在 pg 行允许范围(drives 空=全部)。 */
-    private boolean syncDrive(String drive) {
-        if (!appProperties.isClientCookieSync()) {
-            return false;
-        }
-        ClientSyncRule rule = appProperties.getClientCookieScope() == null
-                ? null : appProperties.getClientCookieScope().get(ClientSyncRule.PLUGIN_PG);
-        return rule == null || (rule.isEnabled() && rule.allowsDrive(drive));
     }
 
     private Optional<Account> aliAccount(int uid) {
