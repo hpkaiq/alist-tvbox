@@ -77,6 +77,7 @@ import cn.har01d.alist_tvbox.util.Constants;
 import cn.har01d.alist_tvbox.util.DashUtils;
 import cn.har01d.alist_tvbox.exception.BadRequestException;
 import cn.har01d.alist_tvbox.exception.NotFoundException;
+import cn.har01d.alist_tvbox.live.service.LiveProxyService;
 import cn.har01d.alist_tvbox.util.Utils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -92,6 +93,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -345,6 +347,10 @@ public class BiliBiliService {
     private final RestTemplate restTemplate;
     private final RestTemplate restTemplate1;
     private final ObjectMapper objectMapper;
+    /** T4(全走服务端)播放地址改写用;单测旧构造下为 null。 */
+    private final LiveProxyService liveProxyService;
+    /** T4 短代理地址(/proxy/{token}/{id})取当前 token 用;单测旧构造下为 null。 */
+    private final SubscriptionService subscriptionService;
     /** 无美化输出 mapper:WBI 签名载荷(pagination_str 等)必须是紧凑 JSON,见 getComments 注释。 */
     private static final ObjectMapper COMPACT_JSON = new ObjectMapper();
     private final OkHttpClient client = new OkHttpClient();
@@ -429,6 +435,29 @@ public class BiliBiliService {
                            BiliCookieRefreshService biliCookieRefreshService,
                            RestTemplateBuilder builder,
                            ObjectMapper objectMapper) {
+        this(settingRepository, navigationService, appProperties, biliCookieRefreshService, builder, objectMapper, null, null);
+    }
+
+    public BiliBiliService(SettingRepository settingRepository,
+                           NavigationService navigationService,
+                           AppProperties appProperties,
+                           BiliCookieRefreshService biliCookieRefreshService,
+                           RestTemplateBuilder builder,
+                           ObjectMapper objectMapper,
+                           LiveProxyService liveProxyService) {
+        this(settingRepository, navigationService, appProperties, biliCookieRefreshService, builder, objectMapper, liveProxyService, null);
+    }
+
+    // 双构造器并存(旧 6/7 参保单测)时 Spring 无法自选,主构造器须显式标注
+    @Autowired
+    public BiliBiliService(SettingRepository settingRepository,
+                           NavigationService navigationService,
+                           AppProperties appProperties,
+                           BiliCookieRefreshService biliCookieRefreshService,
+                           RestTemplateBuilder builder,
+                           ObjectMapper objectMapper,
+                           LiveProxyService liveProxyService,
+                           SubscriptionService subscriptionService) {
         this.settingRepository = settingRepository;
         this.navigationService = navigationService;
         this.appProperties = appProperties;
@@ -443,6 +472,8 @@ public class BiliBiliService {
                 .readTimeout(Duration.ofSeconds(30))
                 .build();
         this.objectMapper = objectMapper;
+        this.liveProxyService = liveProxyService;
+        this.subscriptionService = subscriptionService;
     }
 
     public Map<String, Object> updateCookie(CookieData cookieData) {
@@ -2290,9 +2321,32 @@ public class BiliBiliService {
     }
 
     public Map<String, Object> getPlayUrl(String bvid, boolean dash, String client) throws IOException {
+        if ("t4".equals(client)) {
+            // T4 短代理地址 /proxy/{token}/{id}:回源解析延后到真正拉流时——每次拉流取新鲜
+            // durl(B站 url 时效、PCDN 择优都是当下的),playerContent 零 B站 API 调用
+            String proxyUrl = buildT4ProxyUrl(bvid);
+            if (proxyUrl != null) {
+                Map<String, Object> result = new HashMap<>();
+                result.put("url", proxyUrl);
+                result.put("parse", 0);
+                result.put("jx", 0);
+                return result;
+            }
+            // 无请求上下文等异常场景回落:就地解析并走 live-proxy 包装(旧形态)
+        }
         Map<String, Object> result = new HashMap<>();
         List<String> qns = appProperties.getQns();
         dash = dash || appProperties.isSupportDash() || DashUtils.isClientSupport(client);
+        // T4 族(含代理解析态 t4p)强制单文件 durl(FLV/MP4):通用壳子的内核(系统播放器/ijk)
+        // 不支持音视频分离的 DASH MPD,只有 exo 系(FongMi)能播;单文件经代理直出即可播(画质随 durl 上限)
+        if (client != null && client.startsWith("t4")) {
+            dash = false;
+        }
+        // T4(全走服务端,X-CLIENT: t4):播放地址改写为 live-proxy 服务端地址——
+        // B站 CDN 分片要求 Referer/UA,设备端由 spring.jar VideoStreamProxy 补头,T4 由代理端补,
+        // 客户端对 CDN 零头要求(也天然免疫 FongMi type4 对播放响应 header 的站点头覆盖)
+        java.util.function.UnaryOperator<String> urlWrapper =
+                "t4".equals(client) && liveProxyService != null ? liveProxyService::buildProxyUrl : null;
         String aid;
         String cid;
         String epId = null;
@@ -2327,7 +2381,7 @@ public class BiliBiliService {
                     throw new IOException("B站返回播放信息为空(疑似风控软拦截 v_voucher),请稍后重试: " + bvid);
                 }
             }
-            result = DashUtils.convert(body, qns, client);
+            result = DashUtils.convert(body, qns, client, urlWrapper);
         } else {
             Map<String, Object> map = new HashMap<>();
             map.put("avid", aid);
@@ -2361,7 +2415,7 @@ public class BiliBiliService {
                     }
                 }
 
-                result = DashUtils.convert(body, qns, client);
+                result = DashUtils.convert(body, qns, client, urlWrapper);
             } else {
                 ResponseEntity<BiliBiliPlayResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BiliBiliPlayResponse.class);
                 BiliBiliPlayResponse res = response.getBody();
@@ -2379,7 +2433,7 @@ public class BiliBiliService {
                 }
 
                 BiliBiliPlay data = res.getData() == null ? res.getResult() : res.getData();
-                result.put("url", data.getDurl().get(0).getUrl());
+                result.put("url", urlWrapper != null ? urlWrapper.apply(data.getDurl().get(0).getUrl()) : data.getDurl().get(0).getUrl());
             }
         }
         String cookie = entity.getHeaders().getFirst("Cookie");
@@ -2389,11 +2443,14 @@ public class BiliBiliService {
         headers.put(HttpHeaders.USER_AGENT, appProperties.getUserAgent());
         result.put("header", headers);
 
-        BiliBiliV2Info playerInfo = getPlayerInfo(aid, cid);
-        result.put("subs", getSubtitles(playerInfo));
-        result.put("chapters", getChapters(playerInfo));
+        // t4p(代理解析态)只消费 url:跳过 player/wbi/v2(字幕/章节)请求,回源上游调用减半
+        if (!"t4p".equals(client)) {
+            BiliBiliV2Info playerInfo = getPlayerInfo(aid, cid);
+            result.put("subs", getSubtitles(playerInfo));
+            result.put("chapters", getChapters(playerInfo));
 
-        result.put("danmaku", List.of(Map.of("name", "哔哩哔哩弹幕", "url", "https://comment.bilibili.com/" + cid + ".xml")));
+            result.put("danmaku", List.of(Map.of("name", "哔哩哔哩弹幕", "url", "https://comment.bilibili.com/" + cid + ".xml")));
+        }
 
         if ("gui".equals(client)) {
             // atv-player 详情动作(点赞/投币/收藏/稍后再看):状态查询并发,失败兜底默认态不影响播放
@@ -2406,8 +2463,99 @@ public class BiliBiliService {
             heartbeat(aid, cid);
         }
 
+        if ("t4".equals(client)) {
+            // T4 最小响应:只保留代理播放地址。header 里的账号 Cookie(SESSDATA/bili_jct)
+            // 会整串泄给客户端,违背"凭证不出服务器"原则(代理端已补 Referer/UA,客户端零头要求);
+            // 字幕/弹幕/章节为设备端增强,跨端壳子消费不了,一并裁掉。
+            // durl 分支无 DashUtils 参与,补直链播放标记(缺省会被播放器当 1 走网页嗅探)
+            result.remove("header");
+            result.remove("subs");
+            result.remove("danmaku");
+            result.remove("chapters");
+            result.putIfAbsent("parse", 0);
+        }
+
         log.debug("getPlayUrl: {} {}", bvid, result);
         return result;
+    }
+
+    /**
+     * /proxy/{token}/{id} 回源:t4p(T4 代理解析态)强制单文件、不包装不裁剪,取当次 durl 直链。
+     * 短缓存按 playId 键(解析与 token 无关,B站账号为服务器全局):播放器断线重连/同视频重播
+     * 免重复打 playurl(风控敏感端点),TTL 跟随直链自带 deadline,不越过其失效点。
+     */
+    public String resolvePlayUrlForProxy(String playId) throws IOException {
+        String cached = t4ProxyUrlCache.getIfPresent(playId);
+        if (cached != null) {
+            return cached;
+        }
+        Map<String, Object> result = getPlayUrl(playId, false, "t4p");
+        String url = result.get("url") == null ? "" : result.get("url").toString();
+        if (!url.isBlank()) {
+            t4ProxyUrlCache.put(playId, url);
+        }
+        return url;
+    }
+
+    /** T4 代理直链缓存:每条 TTL 按 URL 自身 deadline 收紧(上限 30min,余量 5min,无时效参数兜底 10min)。 */
+    private final Cache<String, String> t4ProxyUrlCache = Caffeine.newBuilder()
+            .maximumSize(300)
+            .expireAfter(new com.github.benmanes.caffeine.cache.Expiry<String, String>() {
+                @Override
+                public long expireAfterCreate(String key, String url, long currentTime) {
+                    return java.util.concurrent.TimeUnit.SECONDS.toNanos(t4ProxyUrlTtlSeconds(url));
+                }
+
+                @Override
+                public long expireAfterUpdate(String key, String url, long currentTime, long currentDuration) {
+                    return expireAfterCreate(key, url, currentTime);
+                }
+
+                @Override
+                public long expireAfterRead(String key, String url, long currentTime, long currentDuration) {
+                    return currentDuration;
+                }
+            })
+            .build();
+
+    private static final java.util.regex.Pattern URL_DEADLINE_PARAM =
+            java.util.regex.Pattern.compile("[?&](?:deadline|e)=(\\d{9,13})");
+
+    /** TTL 秒数 = min(30min, deadline 剩余 - 5min);deadline 已过/缺失/非数字兜底 10min(过期为 0=即过期重解析)。 */
+    static long t4ProxyUrlTtlSeconds(String url) {
+        long now = System.currentTimeMillis() / 1000;
+        java.util.regex.Matcher matcher = URL_DEADLINE_PARAM.matcher(url);
+        if (matcher.find()) {
+            try {
+                long expire = Long.parseLong(matcher.group(1));
+                if (expire > 10_000_000_000L) {
+                    expire /= 1000; // 毫秒级(13 位)兼容
+                }
+                return Math.max(0, Math.min(1800, expire - now - 300));
+            } catch (NumberFormatException ignored) {
+                // e=exp 之类的非数字占位值走兜底
+            }
+        }
+        return 600;
+    }
+
+    /** T4 短代理地址 /proxy/bilibili/{token}/{playId};无请求上下文/依赖缺失(单测旧构造)返回 null 走回落形态。 */
+    private String buildT4ProxyUrl(String playId) {
+        if (subscriptionService == null) {
+            return null;
+        }
+        try {
+            String token = subscriptionService.getCurrentToken();
+            return org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentRequest()
+                    .scheme(Utils.publicScheme(appProperties.isEnableHttps())) // nginx https
+                    .replacePath("/proxy/bilibili/" + (token == null || token.isBlank() ? "-" : token) + "/" + playId)
+                    .replaceQuery(null)
+                    .build()
+                    .toUriString();
+        } catch (Exception e) {
+            log.debug("build t4 proxy url failed: {}", playId, e);
+            return null;
+        }
     }
 
     /** player/wbi/v2 一次返回字幕与分段章节(view_points),供 getPlayUrl 组装;失败返回 null,字幕/章节各自兜底为空。 */

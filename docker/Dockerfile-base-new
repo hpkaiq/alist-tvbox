@@ -2,12 +2,20 @@ ARG TAG=latest
 
 FROM haroldli/java:21 AS corretto-jdk
 
+# Alpine 3.17→3.21+:python3 3.12(T4 服务端插件运行时);haroldli/alist 重建后随上游基座
+# (openlist-base-image)升级,此处 apk 补装运行时依赖包
 FROM haroldli/alist:${TAG}
 
 LABEL MAINTAINER="Har01d"
 
 ENV JAVA_HOME=/jre
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+RUN apk add --no-cache \
+        bash busybox-extras ca-certificates curl jemalloc jq less \
+        nginx nginx-mod-devel-kit nginx-mod-http-js nginx-mod-http-lua oniguruma \
+        ripgrep sqlite tzdata unzip \
+        python3 py3-requests py3-lxml py3-pycryptodome
 
 COPY data/update.sql /
 

@@ -59,7 +59,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -137,6 +136,111 @@ class BiliBiliServiceTest {
         ), result.get("chapters"));
         assertEquals(List.of(), result.get("subs"));
         assertEquals(List.of(Map.of("name", "哔哩哔哩弹幕", "url", "https://comment.bilibili.com/40168587741.xml")), result.get("danmaku"));
+    }
+
+    @Test
+    void getPlayUrlT4StripsCredentialsAndForcesDurl() throws Exception {
+        // T4 最小响应:①header(账号 Cookie)不得下发——凭证不出服务器;字幕/弹幕/章节一并裁掉;
+        // ②强制单文件 durl——通用壳子内核(系统播放器/ijk)不支持音视频分离的 DASH MPD
+        BiliBiliPlayResponse playResponse = new BiliBiliPlayResponse();
+        BiliBiliPlay play = new BiliBiliPlay();
+        BiliBiliPlay.DUrl durl = new BiliBiliPlay.DUrl();
+        durl.setUrl("https://upos-sz-mirrorcos.bilivideo.com/upos/x.flv?e=exp&os=upos");
+        play.setDurl(List.of(durl));
+        playResponse.setData(play);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class)))
+                .thenReturn(ResponseEntity.ok(playResponse));
+        BiliBiliV2InfoResponse playerResponse = new BiliBiliV2InfoResponse();
+        playerResponse.setData(playerInfoWithChapters());
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/v2"), eq(HttpMethod.GET), any(), eq(BiliBiliV2InfoResponse.class)))
+                .thenReturn(ResponseEntity.ok(playerResponse));
+
+        Map<String, Object> result = service.getPlayUrl("116958703918865-40168587741", false, "t4");
+
+        assertFalse(result.containsKey("header"));
+        assertFalse(result.containsKey("subs"));
+        assertFalse(result.containsKey("danmaku"));
+        assertFalse(result.containsKey("chapters"));
+        assertEquals(durl.getUrl(), result.get("url"));
+        assertEquals(0, ((Number) result.get("parse")).intValue());
+    }
+
+    @Test
+    void getPlayUrlT4ReturnsShortProxyUrlWithoutUpstreamCall() throws Exception {
+        // T4 短代理:/proxy/{token}/{id} 直出,playerContent 零 B站 API 调用,解析延后到拉流时
+        org.springframework.mock.web.MockHttpServletRequest req =
+                new org.springframework.mock.web.MockHttpServletRequest("GET", "/t4/Harold/v/BiliBili");
+        req.setServerName("atv.example");
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(
+                new org.springframework.web.context.request.ServletRequestAttributes(req));
+        try {
+            SubscriptionService subscriptionService = Mockito.mock(SubscriptionService.class);
+            when(subscriptionService.getCurrentToken()).thenReturn("Harold");
+            BiliBiliService t4Service = new BiliBiliService(settingRepository, navigationService, appProperties,
+                    biliCookieRefreshService, new org.springframework.boot.restclient.RestTemplateBuilder(),
+                    new ObjectMapper(), Mockito.mock(cn.har01d.alist_tvbox.live.service.LiveProxyService.class),
+                    subscriptionService);
+
+            Map<String, Object> result = t4Service.getPlayUrl("BV1u1no6hEiP", false, "t4");
+
+            assertEquals("http://atv.example/proxy/bilibili/Harold/BV1u1no6hEiP", result.get("url"));
+            assertEquals(0, ((Number) result.get("parse")).intValue());
+            assertEquals(0, ((Number) result.get("jx")).intValue());
+            Mockito.verifyNoInteractions(restTemplate);
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    @Test
+    void resolvePlayUrlForProxyReturnsRawDurl() throws Exception {
+        // /proxy 回源口径(t4p):强制单文件、不包装,返回 CDN 原始直链
+        BiliBiliPlayResponse playResponse = new BiliBiliPlayResponse();
+        BiliBiliPlay play = new BiliBiliPlay();
+        BiliBiliPlay.DUrl durl = new BiliBiliPlay.DUrl();
+        durl.setUrl("https://upos-sz-mirrorcos.bilivideo.com/upos/x.flv?e=exp&os=upos");
+        play.setDurl(List.of(durl));
+        playResponse.setData(play);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class)))
+                .thenReturn(ResponseEntity.ok(playResponse));
+
+        assertEquals(durl.getUrl(), service.resolvePlayUrlForProxy("116958703918865-40168587741"));
+    }
+
+    @Test
+    void t4ProxyUrlTtlFollowsDeadlineParam() {
+        long now = System.currentTimeMillis() / 1000;
+        // deadline 余量充足 → 触顶 30min;临期按剩余-5min;已过期=0(即过期,重解析)
+        assertEquals(1800, BiliBiliService.t4ProxyUrlTtlSeconds(
+                "https://upos.bilivideo.com/x.flv?deadline=" + (now + 7200)));
+        assertEquals(900, BiliBiliService.t4ProxyUrlTtlSeconds(
+                "https://upos.bilivideo.com/x.flv?e=" + (now + 1200)));
+        assertEquals(0, BiliBiliService.t4ProxyUrlTtlSeconds(
+                "https://upos.bilivideo.com/x.flv?deadline=" + (now - 60)));
+        // 无时效参数/非数字占位(e=exp)兜底 10min;毫秒级 13 位兼容
+        assertEquals(600, BiliBiliService.t4ProxyUrlTtlSeconds("https://upos.bilivideo.com/x.flv?e=exp"));
+        assertEquals(600, BiliBiliService.t4ProxyUrlTtlSeconds("https://upos.bilivideo.com/x.flv"));
+        assertEquals(1800, BiliBiliService.t4ProxyUrlTtlSeconds(
+                "https://upos.bilivideo.com/x.flv?deadline=" + (now + 7200) + "000"));
+    }
+
+    @Test
+    void resolvePlayUrlForProxyCachesResolvedDurl() throws Exception {
+        // 二次回源(断线重连/重播)命中缓存:playurl 只打一次
+        BiliBiliPlayResponse playResponse = new BiliBiliPlayResponse();
+        BiliBiliPlay play = new BiliBiliPlay();
+        BiliBiliPlay.DUrl durl = new BiliBiliPlay.DUrl();
+        durl.setUrl("https://upos-sz-mirrorcos.bilivideo.com/upos/x.flv?deadline=" + (System.currentTimeMillis() / 1000 + 3600));
+        play.setDurl(List.of(durl));
+        playResponse.setData(play);
+        when(restTemplate.exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class)))
+                .thenReturn(ResponseEntity.ok(playResponse));
+
+        assertEquals(durl.getUrl(), service.resolvePlayUrlForProxy("116958703918865-40168587741"));
+        assertEquals(durl.getUrl(), service.resolvePlayUrlForProxy("116958703918865-40168587741"));
+
+        verify(restTemplate, org.mockito.Mockito.times(1))
+                .exchange(startsWith("https://api.bilibili.com/x/player/wbi/playurl"), eq(HttpMethod.GET), any(), eq(BiliBiliPlayResponse.class));
     }
 
     @Test

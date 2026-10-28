@@ -10,10 +10,10 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
 
@@ -32,7 +32,7 @@ jobs:
           fi
 
       - name: Setup node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
           node-version: 18.16.x
           cache: npm
@@ -46,11 +46,11 @@ jobs:
         env:
           VITE_TELEGRAM_INVITE_LINK: ${{ secrets.TELEGRAM_INVITE_LINK }}
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -66,7 +66,7 @@ jobs:
           cp data/version data/app_version
           cat data/version
       - name: Build docker and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile-native
