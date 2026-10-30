@@ -41,6 +41,11 @@
             }}/{{ scope.row.sid }}</a>
         </template>
       </el-table-column>
+      <el-table-column prop="url" label="T4配置地址" sortable>
+        <template #default="scope">
+          <a :href="t4Url(scope.row.sid)" target="_blank">{{ t4Url(scope.row.sid) }}</a>
+        </template>
+      </el-table-column>
       <el-table-column prop="url" label="多仓聚合地址" sortable>
         <template #default="scope">
           <a :href="currentUrl+'/repo'+token+'/'+scope.row.sid" target="_blank">{{ currentUrl }}/repo{{
@@ -574,6 +579,13 @@
             <el-switch v-model="scope.row.enabled" @change="updateSource(scope.row)"/>
           </template>
         </el-table-column>
+        <el-table-column label="T4" width="90">
+          <template #default="scope">
+            <el-tooltip content="关闭后该源不出现在 T4 接口(独立地址与订阅 T4 均生效),插件直连调用也会拒绝;TVBox 订阅不受影响" placement="top">
+              <el-switch v-model="scope.row.t4Visible" :disabled="isWebPageSource(scope.row)" @change="updateSource(scope.row)"/>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="最近检查" width="180">
           <template #default="scope">
             <span>{{ formatPluginCheckedAt(scope.row.lastCheckedAt) }}</span>
@@ -1055,6 +1067,7 @@ interface ManagedSource {
   sourceName: string
   url: string
   enabled: boolean
+  t4Visible: boolean
   sortOrder: number
   version: number | null
   extend: string
@@ -1158,6 +1171,12 @@ function copyUrl(text: string) {
   }).catch(() => {
     ElMessage.error('复制失败')
   })
+}
+
+// T4 订阅形态地址:每订阅独立站点集(受该订阅覆盖配置 sites-whitelist/blacklist 过滤);
+// 裸订阅(未开安全订阅)=单段 /t4/{订阅号},数字订阅号与 T4 专用 token 命名空间不撞
+function t4Url(sid: string) {
+  return currentUrl + '/t4' + token.value + '/' + sid
 }
 const pgLocal = ref('')
 const pgRemote = ref('')
@@ -2908,6 +2927,7 @@ const updateSource = (source: ManagedSource) => {
   axios.put('/api/subscription-sources/' + source.id, {
     name: source.name,
     enabled: source.enabled,
+    t4Visible: source.t4Visible,
     extend: source.extend
   }).then(({data}) => {
     Object.assign(source, data)

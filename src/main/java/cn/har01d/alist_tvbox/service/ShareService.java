@@ -679,6 +679,12 @@ public class ShareService {
         request.setPassword(password);
         LoginResponse response = restTemplate.postForObject("/api/auth/login", request, LoginResponse.class);
         log.debug("AList login response: {}", response);
+        if (response == null || response.getData() == null || response.getData().getToken() == null) {
+            // data 为 null = 登录被拒(401 账号不存在/密码错、429 连续失败锁定);裸 NPE 会吞掉真实原因
+            String message = response == null ? "无响应" : response.getCode() + " " + response.getMessage();
+            log.error("AList login failed: {}", message);
+            throw new BadRequestException("AList 登录失败: " + message);
+        }
         return response.getData().getToken();
     }
 
@@ -825,12 +831,24 @@ public class ShareService {
             node.put("cookie", account.getCookie());
             node.put("username", account.getUsername());
             node.put("password", account.getPassword());
+            // 完整会话(sessionKey 体系,PL 登录/刷新回写):摸鱼天翼登录态只认会话文件,
+            // 账密/cookie 形态它还要自己跑 loginSubmit(验证码常挡)
+            try {
+                JsonNode session = objectMapper.readTree(account.getAddition()).get("tianyi_session");
+                if (session != null && !session.isNull()) {
+                    node.put("session", session.asText());
+                }
+            } catch (Exception e) {
+                log.warn("read 189 session failed", e);
+            }
         });
 
         account(DriverType.PAN123, uid).ifPresent(account -> {
             ObjectNode node = result.putObject("123");
             node.put("username", account.getUsername());
             node.put("password", account.getPassword());
+            // 123 token(由 Go 401 重登回写):摸鱼等第三方插件持有 token 免在线登录,绕开登录风控
+            node.put("token", account.getToken());
         });
 
         account(DriverType.QUARK_TV, uid).ifPresent(account -> {
@@ -848,13 +866,19 @@ public class ShareService {
 
         account(DriverType.THUNDER, uid).ifPresent(account -> {
             ObjectNode node = result.putObject("xunlei");
-            node.put("refresh_token", account.getCookie());
             node.put("access_token", account.getToken());
+            // 真 refresh_token(PL SetTokenResp 回传落 addition):cookie 列是 captchaToken,
+            // 冒充 refresh_token 下发会让摸鱼刷新必炸;存量无真值时宁缺毋滥
             try {
-                String code = objectMapper.readTree(account.getAddition()).get("device_id").asText();
+                var add = objectMapper.readTree(account.getAddition());
+                JsonNode refresh = add.get("refresh_token");
+                if (refresh != null && !refresh.isNull() && !refresh.asText().isBlank()) {
+                    node.put("refresh_token", refresh.asText());
+                }
+                String code = add.get("device_id").asText();
                 node.put("device_id", code);
-            } catch (JsonProcessingException ex) {
-                // ignore
+            } catch (Exception ex) {
+                // ignore(addition 缺 device_id 等不应炸掉整个 /cookies)
             }
         });
 

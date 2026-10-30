@@ -58,10 +58,12 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.security.spec.AlgorithmParameterSpec;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -103,6 +105,29 @@ public class SubscriptionService {
     private static final String SYSTEM_PLAYBACK_TOKEN_NAME = "系统订阅同步";
     /** WebHome 网页首页站点 key(内置源之一,订阅源管理可禁用/调序/改名)。 */
     private static final String WEB_HOME_KEY = "atv_home";
+    /** spring.jar 内容指纹(md5 前 8 位):重打 jar 后 URL 随之变化,播放器按 URL 缓存才会强制重新下载。 */
+    private static final String SPIDER_JAR_VERSION = computeSpiderJarVersion();
+
+    private static String computeSpiderJarVersion() {
+        try (InputStream in = SubscriptionService.class.getResourceAsStream("/static/spring.jar")) {
+            if (in == null) {
+                return "0";
+            }
+            MessageDigest digest = MessageDigest.getInstance("MD5");
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                digest.update(buf, 0, n);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest.digest()) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.substring(0, 8);
+        } catch (Exception e) {
+            return "0";
+        }
+    }
 
     private final Environment environment;
     private final AppProperties appProperties;
@@ -751,6 +776,11 @@ public class SubscriptionService {
         if (!appProperties.isT4Enabled()) {
             throw new NotFoundException();
         }
+        // 仅独立地址模式(t4_standalone_only):旧订阅形态不再生成配置(T4Controller 层守卫的双保险),
+        // T4 只经 /t4/{t4_token} 独立地址开放(standaloneT4 不受影响)
+        if (appProperties.isT4StandaloneOnly()) {
+            throw new NotFoundException();
+        }
         var credentialUser = userService.findUserByCredentialToken(token);
         if (credentialUser != null) {
             token = UserService.userVodToken(credentialUser.getUsername());
@@ -844,6 +874,8 @@ public class SubscriptionService {
                 ? token + "-" + userService.vodSecretOf(userService.findByUserVodToken(token))
                 : token;
         String base = readHostAddress("");
+        // T4 不可见源(订阅源管理「T4」开关):站点从 T4 配置删除;T3 订阅不受影响
+        Set<String> t4Hidden = subscriptionSourceService.t4HiddenSiteKeys();
         Iterator<?> it = sites.iterator();
         while (it.hasNext()) {
             // api 可能缺失(上游配置的无 api 条目);SetN.contains(null) 会 NPE,先判空
@@ -851,7 +883,14 @@ public class SubscriptionService {
                 continue;
             }
             String api = raw.get("api") instanceof String value ? value : null;
+            Object siteKey = raw.get("key");
             if (api != null && T4_SITE_KEYS.contains(api)) {
+                // T4 不可见内置源(订阅源管理「T4」开关):api=siteKey=内置源 key,直接删除
+                if (t4Hidden.contains(api)) {
+                    log.debug("t4 hidden builtin site: {}", siteKey);
+                    it.remove();
+                    continue;
+                }
                 @SuppressWarnings("unchecked")
                 Map<String, Object> site = (Map<String, Object>) raw;
                 site.put("type", 4);
@@ -864,9 +903,11 @@ public class SubscriptionService {
                 continue;
             }
             // 插件源(spider 插件):服务端 Python 运行时就绪时同样 T4 化——api 指回
-            // /t4/{token}/v/{插件站点 key},T4Controller 转投 PluginWorkerService 执行
+            // /t4/{token}/v/{插件站点 key},T4Controller 转投 PluginWorkerService 执行;
+            // T4 不可见者(站点 key=pluginSiteKey 同源)不 T4 化,落到下方 type 3 移除分支删除
             if (pluginRuntime && api != null
-                    && (api.equals("csp_PyProxy") || api.startsWith(base + "/Atvp.py"))) {
+                    && (api.equals("csp_PyProxy") || api.startsWith(base + "/Atvp.py"))
+                    && !(siteKey instanceof String key && t4Hidden.contains(key))) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> site = (Map<String, Object>) raw;
                 site.put("type", 4);
@@ -914,7 +955,7 @@ public class SubscriptionService {
         // 导致本项目 spring.jar 不随订阅加载,其代理/播放同步等常驻服务不启动。
         // 全局主 spider 固定为本项目 spring.jar;上游 spider 已在合并 sites 时降级为上游站点的 jar 属性。
         // 用户在全局或订阅覆盖配置中显式指定 spider 时以用户为准(两处均在此后应用)。
-        config.put("spider", readHostAddress("/spring.jar"));
+        config.put("spider", spiderJarUrl());
 
 //        injectCookies(config);
 
@@ -1702,7 +1743,7 @@ public class SubscriptionService {
         site.put("filterable", 0);
         site.put("changeable", 0);
         // 显式 jar(与其他内置源一致):防宿主不回落全局 spider 或全局位被覆盖
-        site.put("jar", readHostAddress("") + "/spring.jar");
+        site.put("jar", spiderJarUrl());
         Map<String, Object> ext = new HashMap<>();
         ext.put("url", pageUrl);
         // vod token(与页面 URL 同源同值):spider 桥经 /check-links/{token} 做网页盘检、
@@ -1880,7 +1921,7 @@ public class SubscriptionService {
         String ext = objectMapper.writeValueAsString(map).replaceAll("\\s", "");
         ext = Base64.getEncoder().encodeToString(ext.getBytes());
         site.put("ext", ext);
-        String jar = url + "/spring.jar";
+        String jar = url + "/spring.jar?v=" + SPIDER_JAR_VERSION;
         site.put("jar", jar);
         site.put("changeable", 0);
         site.put("searchable", 1);
@@ -2010,7 +2051,7 @@ public class SubscriptionService {
         site.put("type", 3);
         site.put("key", pluginSiteKey(plugin));
         site.put("searchable", 1);
-        String jar = url + "/spring.jar";
+        String jar = url + "/spring.jar?v=" + SPIDER_JAR_VERSION;
         site.put("jar", jar);
 
         if ("8cdcaa4255534ca19aaa18948ea9c3524c1d".equals(plugin.getExternalId())) {
@@ -2235,6 +2276,11 @@ public class SubscriptionService {
                 .replaceQuery(null)
                 .build();
         return uriComponents.toUriString();
+    }
+
+    /** 订阅里 spring.jar 的引用地址(带内容版本参数)。 */
+    public String spiderJarUrl() {
+        return readHostAddress("/spring.jar") + "?v=" + SPIDER_JAR_VERSION;
     }
 
     private String readAListAddress() {

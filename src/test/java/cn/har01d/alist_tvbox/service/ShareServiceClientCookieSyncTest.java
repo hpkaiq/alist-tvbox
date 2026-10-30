@@ -178,6 +178,95 @@ class ShareServiceClientCookieSyncTest {
         assertThat(policy.get("aowu").get("enabled").asBoolean()).isFalse();
     }
 
+    /**
+     * 123 账号持有 token(Go 401 重登回写)时随账密一并下发:
+     * 摸鱼 pan123 拿到 user.token 即免在线登录,绕开 123 登录风控(#1088)。
+     */
+    @Test
+    void getCookiesDistributesPan123Token() {
+        when(appProperties.isClientCookieSync()).thenReturn(true);
+        when(appProperties.getClientCookieScope()).thenReturn(new HashMap<>());
+        DriverAccount pan123 = new DriverAccount();
+        pan123.setType(DriverType.PAN123);
+        pan123.setUsername("user");
+        pan123.setPassword("pass");
+        pan123.setToken("tok_live");
+        when(driverAccountRepository.findByTypeAndMasterTrue(any(DriverType.class))).thenReturn(Optional.empty());
+        when(driverAccountRepository.findByTypeAndMasterTrue(DriverType.PAN123)).thenReturn(Optional.of(pan123));
+
+        ObjectNode result = service.getCookies("topsecret");
+
+        assertThat(result.has("123")).isTrue();
+        assertThat(result.get("123").get("username").asText()).isEqualTo("user");
+        assertThat(result.get("123").get("password").asText()).isEqualTo("pass");
+        assertThat(result.get("123").get("token").asText()).isEqualTo("tok_live");
+    }
+
+    /**
+     * 迅雷 refresh_token 真值化(#1088 摸鱼未登录):cookie 列是 captchaToken,
+     * PL SetTokenResp 回传的真 refresh_token 落 addition,无真值时宁缺毋滥不下发该字段。
+     */
+    @Test
+    void getCookiesDistributesXunleiRealRefreshToken() {
+        when(appProperties.isClientCookieSync()).thenReturn(true);
+        when(appProperties.getClientCookieScope()).thenReturn(new HashMap<>());
+        DriverAccount thunder = new DriverAccount();
+        thunder.setType(DriverType.THUNDER);
+        thunder.setToken("access_live");
+        thunder.setCookie("captcha_token");
+        thunder.setAddition("{\"refresh_token\":\"rt_live\",\"device_id\":\"dev1\"}");
+        when(driverAccountRepository.findByTypeAndMasterTrue(any(DriverType.class))).thenReturn(Optional.empty());
+        when(driverAccountRepository.findByTypeAndMasterTrue(DriverType.THUNDER)).thenReturn(Optional.of(thunder));
+
+        ObjectNode result = service.getCookies("topsecret");
+
+        var xunlei = result.get("xunlei");
+        assertThat(xunlei.get("access_token").asText()).isEqualTo("access_live");
+        assertThat(xunlei.get("refresh_token").asText()).isEqualTo("rt_live");
+        assertThat(xunlei.get("device_id").asText()).isEqualTo("dev1");
+    }
+
+    /** 迅雷存量无真 refresh_token:addition 缺键时不下发 refresh_token(不发 captchaToken 冒充)。 */
+    @Test
+    void getCookiesOmitsXunleiRefreshTokenWhenLegacy() {
+        when(appProperties.isClientCookieSync()).thenReturn(true);
+        when(appProperties.getClientCookieScope()).thenReturn(new HashMap<>());
+        DriverAccount thunder = new DriverAccount();
+        thunder.setType(DriverType.THUNDER);
+        thunder.setToken("access_live");
+        thunder.setCookie("captcha_token");
+        thunder.setAddition("{\"device_id\":\"dev1\"}");
+        when(driverAccountRepository.findByTypeAndMasterTrue(any(DriverType.class))).thenReturn(Optional.empty());
+        when(driverAccountRepository.findByTypeAndMasterTrue(DriverType.THUNDER)).thenReturn(Optional.of(thunder));
+
+        ObjectNode result = service.getCookies("topsecret");
+
+        var xunlei = result.get("xunlei");
+        assertThat(xunlei.has("refresh_token")).isFalse();
+        assertThat(xunlei.get("access_token").asText()).isEqualTo("access_live");
+    }
+
+    /** 天翼完整会话下发:PL 登录/刷新回写的 sessionKey 体系(addition.tianyi_session)。 */
+    @Test
+    void getCookiesDistributes189Session() {
+        when(appProperties.isClientCookieSync()).thenReturn(true);
+        when(appProperties.getClientCookieScope()).thenReturn(new HashMap<>());
+        DriverAccount cloud189 = new DriverAccount();
+        cloud189.setType(DriverType.CLOUD189);
+        cloud189.setCookie("JSESSIONID=x");
+        cloud189.setUsername("u");
+        cloud189.setPassword("p");
+        cloud189.setAddition("{\"tianyi_session\":\"{\\\"sessionKey\\\":\\\"sk\\\",\\\"sessionSecret\\\":\\\"ss\\\"}\"}");
+        when(driverAccountRepository.findByTypeAndMasterTrue(any(DriverType.class))).thenReturn(Optional.empty());
+        when(driverAccountRepository.findByTypeAndMasterTrue(DriverType.CLOUD189)).thenReturn(Optional.of(cloud189));
+
+        ObjectNode result = service.getCookies("topsecret");
+
+        var node189 = result.get("189");
+        assertThat(node189.get("username").asText()).isEqualTo("u");
+        assertThat(node189.get("session").asText()).contains("sessionKey");
+    }
+
     /** 出厂默认与统一判定语义(AppProperties 真实实例,非 mock)。 */
     @Test
     void factoryDefaultsAndAllowPluginDrive() {

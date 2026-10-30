@@ -59,6 +59,7 @@ class SubscriptionServiceT4Test {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private SettingRepository settingRepository;
+    private SubscriptionSourceService subscriptionSourceService;
     private AppProperties appProperties;
 
     @BeforeEach
@@ -172,6 +173,42 @@ class SubscriptionServiceT4Test {
     }
 
     @Test
+    void t4HiddenPluginSourceRemovedFromT4Config() {
+        // 订阅源管理「T4」开关关闭:插件源不 T4 化,随 type 3 移除;T3 订阅不受影响
+        Plugin plugin = new Plugin();
+        plugin.setId(9);
+        plugin.setUrl("https://up.example/spider.txt");
+        plugin.setName("上游源");
+        plugin.setT4Visible(false);
+        List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "网盘", null),
+                new SubscriptionSourceService.SubscriptionSourceRef("plugin-9", false, "上游源", "上游源", plugin));
+        SubscriptionService service = newService("{}", sources, mock(UserService.class));
+        when(subscriptionSourceService.t4HiddenSiteKeys()).thenReturn(java.util.Set.of("plugin-9"));
+
+        Map<String, Object> config = service.subscriptionT4("", "0", true);
+
+        assertTrue(findSiteKeys(config).stream().noneMatch("plugin-9"::equals));
+        // 未隐藏的内置源不受牵连
+        assertEquals(4, findSite(config, "csp_AList").get("type"));
+    }
+
+    @Test
+    void t4HiddenBuiltinSiteRemovedFromT4Config() {
+        // 内置源「T4」开关关闭:站点直接从 T4 配置删除(独立地址与订阅 T4 同一变换)
+        List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "网盘", null),
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_Media", true, "csp_Media", "我的追剧", null));
+        SubscriptionService service = newService("{}", sources, mock(UserService.class));
+        when(subscriptionSourceService.t4HiddenSiteKeys()).thenReturn(java.util.Set.of("csp_AList"));
+
+        Map<String, Object> config = service.subscriptionT4("", "0", true);
+
+        assertTrue(findSiteKeys(config).stream().noneMatch("csp_AList"::equals));
+        assertEquals(4, findSite(config, "csp_Media").get("type"));
+    }
+
+    @Test
     void plainHttpUpstreamSitesKept() {
         // type 0/1/2 的普通 HTTP 站点不依赖 jar,保留
         String upstream = "{\"sites\":[{\"key\":\"cms\",\"name\":\"CMS采集\",\"type\":1,\"api\":\"https://cj.example/api.php/provide/vod\"}]}";
@@ -251,6 +288,22 @@ class SubscriptionServiceT4Test {
     }
 
     @Test
+    void standaloneOnlyRejectsLegacySubscriptionForm() {
+        // t4_standalone_only 开:旧订阅形态不再生成配置(T4Controller 守卫的服务层双保险),
+        // /t4/{t4token} 独立地址照常
+        List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "网盘", null));
+        SubscriptionService service = newService("{}", sources, mock(UserService.class));
+        ReflectionTestUtils.setField(service, "t4Token", "t4abcd12");
+        appProperties.setT4StandaloneOnly(true);
+
+        assertThrows(NotFoundException.class, () -> service.subscriptionT4("", "0"));
+        assertThrows(NotFoundException.class, () -> service.subscriptionT4("tok", "0"));
+        Map<String, Object> config = service.standaloneT4("t4abcd12", false);
+        assertTrue(config.containsKey("sites"));
+    }
+
+    @Test
     void updateT4TokenValidatesAndPersists() {
         SubscriptionService service = newService("{}", List.of(), mock(UserService.class));
 
@@ -262,6 +315,42 @@ class SubscriptionServiceT4Test {
         assertThrows(BadRequestException.class, () -> service.updateT4Token("ab1"));
         assertThrows(BadRequestException.class, () -> service.updateT4Token("a b!"));
         assertThrows(BadRequestException.class, () -> service.updateT4Token("u-alice"));
+    }
+
+    @Test
+    void subscriptionOverrideWhitelistFiltersT4Config() {
+        // T3 订阅 override 的 sites-whitelist 对 T4 订阅形态天然生效(subscriptionT4 先跑完整
+        // subscription() 含 resolveAndApplyFilters,再 applyT4):多入口分站点集复用 T3 机制,
+        // 每个订阅一份白名单,各自的 /t4/{token}/{订阅号} 即不同的站点集
+        List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "网盘", null),
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_Media", true, "csp_Media", "我的追剧", null));
+        SubscriptionService service = newService("{}", sources, mock(UserService.class), 0,
+                "{\"sites-whitelist\":[\"csp_AList\"]}");
+
+        Map<String, Object> config = service.subscriptionT4("", "0", true);
+
+        assertEquals(4, findSite(config, "csp_AList").get("type"));
+        assertTrue(findSiteKeys(config).stream().noneMatch("csp_Media"::equals));
+    }
+
+    @Test
+    void subscriptionOverrideBlacklistFiltersT4Config() {
+        // sites-blacklist 同理:黑名单里的插件源在 T4 订阅形态不出现(即使 Python 运行时就绪)
+        Plugin plugin = new Plugin();
+        plugin.setId(9);
+        plugin.setUrl("https://up.example/spider.txt");
+        plugin.setName("上游源");
+        List<SubscriptionSourceService.SubscriptionSourceRef> sources = List.of(
+                new SubscriptionSourceService.SubscriptionSourceRef("builtin-csp_AList", true, "csp_AList", "网盘", null),
+                new SubscriptionSourceService.SubscriptionSourceRef("plugin-9", false, "上游源", "上游源", plugin));
+        SubscriptionService service = newService("{}", sources, mock(UserService.class), 0,
+                "{\"sites-blacklist\":[\"plugin-9\"]}");
+
+        Map<String, Object> config = service.subscriptionT4("", "0", true);
+
+        assertEquals(4, findSite(config, "csp_AList").get("type"));
+        assertTrue(findSiteKeys(config).stream().noneMatch("plugin-9"::equals));
     }
 
     private static Map<String, Object> findSite(Map<String, Object> config, String key) {
@@ -283,6 +372,12 @@ class SubscriptionServiceT4Test {
     private SubscriptionService newService(String upstreamJson,
                                            List<SubscriptionSourceService.SubscriptionSourceRef> sources,
                                            UserService userService, int ownerUid) {
+        return newService(upstreamJson, sources, userService, ownerUid, null);
+    }
+
+    private SubscriptionService newService(String upstreamJson,
+                                           List<SubscriptionSourceService.SubscriptionSourceRef> sources,
+                                           UserService userService, int ownerUid, String override) {
         settingRepository = mock(SettingRepository.class);
         when(settingRepository.findById(anyString())).thenAnswer(invocation -> {
             Object key = invocation.getArgument(0);
@@ -305,11 +400,13 @@ class SubscriptionServiceT4Test {
         subscription.setSid("0");
         subscription.setUrl("http://up.example/config.json");
         subscription.setOwnerUid(ownerUid);
+        subscription.setOverride(override);
         SubscriptionRepository subscriptionRepository = mock(SubscriptionRepository.class);
         when(subscriptionRepository.findBySid("0")).thenReturn(Optional.of(subscription));
 
-        SubscriptionSourceService subscriptionSourceService = mock(SubscriptionSourceService.class);
+        subscriptionSourceService = mock(SubscriptionSourceService.class);
         when(subscriptionSourceService.findEnabledSources()).thenReturn(sources);
+        when(subscriptionSourceService.t4HiddenSiteKeys()).thenReturn(java.util.Set.of());
 
         appProperties = new AppProperties();
         SubscriptionService service = new SubscriptionService(

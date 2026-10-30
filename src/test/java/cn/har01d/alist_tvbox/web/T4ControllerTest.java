@@ -312,6 +312,20 @@ class T4ControllerTest {
     }
 
     @Test
+    void pluginSiteHiddenFromT4Rejected() {
+        // 订阅源管理「T4」开关关闭:配置不出现,直连五动作同样 404
+        Plugin plugin = new Plugin();
+        plugin.setId(9);
+        plugin.setUrl("https://up.example/spider.txt");
+        plugin.setT4Visible(false);
+        when(pluginRepository.findByExternalId("plugin-9")).thenReturn(java.util.Optional.empty());
+        when(pluginRepository.findById(9)).thenReturn(java.util.Optional.of(plugin));
+
+        assertThrows(NotFoundException.class,
+                () -> controller.vod(TOKEN, "plugin-9", null, null, null, null, null, null, null, request, response));
+    }
+
+    @Test
     void unknownSiteRejected() {
         assertThrows(NotFoundException.class,
                 () -> controller.vod(TOKEN, "csp_Unknown", null, null, null, null, null, null, null, request, response));
@@ -384,6 +398,48 @@ class T4ControllerTest {
         assertThrows(NotFoundException.class,
                 () -> controller.cenc(TOKEN, "plugin-9",
                         new MockHttpServletRequest("GET", "/t4cenc/tok/plugin-9/cenc/abc.mp4"), response));
+    }
+
+    @Test
+    void standaloneOnlyRejectsLegacyForms() throws Exception {
+        // 仅独立地址(t4_standalone_only):旧裸订阅/双段配置/五动作/CENC 桥全部 404,
+        // vod token / 订阅号持有者只能走 /sub
+        appProperties.setT4StandaloneOnly(true);
+        when(subscriptionService.isT4Token(anyString())).thenReturn(false);
+
+        assertThrows(NotFoundException.class, () -> controller.config("0"));
+        assertThrows(NotFoundException.class, () -> controller.config(TOKEN, "0"));
+        assertThrows(NotFoundException.class,
+                () -> controller.vod(TOKEN, "csp_AList", null, null, null, null, null, null, null, request, response));
+        assertThrows(NotFoundException.class,
+                () -> controller.cenc(TOKEN, "plugin-9",
+                        new MockHttpServletRequest("GET", "/t4cenc/tok/plugin-9/cenc/abc.mp4"), response));
+
+        verify(subscriptionService, never()).subscriptionT4(anyString(), anyString(), anyBoolean());
+        verify(subscriptionService, never()).standaloneT4(anyString(), anyBoolean());
+    }
+
+    @Test
+    void standaloneOnlyKeepsDedicatedTokenForms() throws Exception {
+        // 仅独立地址模式下 /t4/{t4token} 形态照常:独立配置/五动作/CENC 桥不受影响
+        appProperties.setT4StandaloneOnly(true);
+        when(subscriptionService.isT4Token("t4tok")).thenReturn(true);
+        when(subscriptionService.resolveT4Token("t4tok")).thenReturn(TOKEN);
+        when(pluginWorkerService.isAvailable()).thenReturn(false);
+        Map<String, Object> config = Map.of("sites", List.of());
+        when(subscriptionService.standaloneT4("t4tok", false)).thenReturn(config);
+
+        assertEquals(config, controller.config("t4tok"));
+
+        when(mediaLibraryController.browse(eq(TOKEN), eq("db:1"), isNull(), isNull(), isNull(),
+                isNull(), eq(1), eq(Map.of()), same(request))).thenReturn(new MovieList());
+        controller.vod("t4tok", "csp_Media", null, "db:1", null, null, null, null, null, request, response);
+
+        MockHttpServletRequest bridgeRequest =
+                new MockHttpServletRequest("GET", "/t4cenc/t4tok/plugin-9/cenc/abc.mp4");
+        controller.cenc("t4tok", "plugin-9", bridgeRequest, response);
+
+        verify(subscriptionService, never()).subscriptionT4(anyString(), anyString(), anyBoolean());
     }
 
     @Test
