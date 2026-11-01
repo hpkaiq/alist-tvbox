@@ -10,6 +10,7 @@ import cn.har01d.alist_tvbox.exception.NotFoundException;
 import cn.har01d.alist_tvbox.live.web.LiveController;
 import cn.har01d.alist_tvbox.service.PluginWorkerService;
 import cn.har01d.alist_tvbox.service.SubscriptionService;
+import cn.har01d.alist_tvbox.service.T4DetailEnhancer;
 import cn.har01d.alist_tvbox.tvbox.CategoryList;
 import cn.har01d.alist_tvbox.tvbox.MovieDetail;
 import cn.har01d.alist_tvbox.tvbox.MovieList;
@@ -86,6 +87,7 @@ public class T4Controller {
     private final PluginWorkerService pluginWorkerService;
     private final PluginRepository pluginRepository;
     private final ObjectMapper objectMapper;
+    private final T4DetailEnhancer t4DetailEnhancer;
 
     private final Cache<String, String> titleCache =
             Caffeine.newBuilder().maximumSize(5000).expireAfterAccess(Duration.ofHours(2)).build();
@@ -227,7 +229,8 @@ public class T4Controller {
         if (StringUtils.isNotBlank(play)) {
             method = "play";
             params.put("play", play);
-            // 红果密文流等需服务端解密的场景:worker 把 #hg-cenc= URL 改写为此桥下地址
+            // 红果密文流等需服务端解密的场景:worker 把 #hg-cenc= URL 改写为此桥下地址;
+            // 自定义 raw 插件自起的 127.0.0.1 流代理(hgtv.py 类)由 worker 改写为 /lp/{port}/ 桥地址
             // (嵌 pathToken:T4 专用 token 形态下桥地址仍是 T4 面,不泄漏 vod token)
             params.put("proxy_base", subscriptionService.readHostAddress("/t4cenc/" + pathToken + "/" + site));
         } else if (StringUtils.isNotBlank(ids)) {
@@ -249,7 +252,13 @@ public class T4Controller {
             method = "home";
         }
         log.info("t4 plugin: {}  method: {}  t: {}  ids: {}  wd: {}  play: {}", site, method, t, ids, wd, play);
-        return pluginWorkerService.call(site, extend, method, params);
+        JsonNode result = pluginWorkerService.call(site, extend, method, params);
+        // 详情增强(Setting 键 t4_detail_enhance,默认关):豆瓣/TMDB 双源元数据 + 选集名清洗,
+        // 源级短剧/音乐自动跳过;任何异常/超时在增强器内部兜底原样返回
+        if ("detail".equals(method) && appProperties.isT4DetailEnhance() && result instanceof JsonNode) {
+            result = t4DetailEnhancer.enhance(plugin, result);
+        }
+        return result;
     }
 
     // T4 CENC 解密桥:转发到插件 worker 内的 127.0.0.1 解密代理(Range 透传,seek 可用)
@@ -316,6 +325,11 @@ public class T4Controller {
             throws IOException {
         Object home = homeBody(token, site, request, response);
         Object homeVideo = homeVideoBody(token, site, request, response);
+        // TG/盘搜族:home/video 两段须在合并成 Map 前分别捕获——mergeHomeVideo 产出 Map 形态,
+        // captureTitles 只认 MovieList/CategoryList;用户从 home 推荐卡片直点详情的第一跳
+        // 没有 ?t= 分类请求,不在这里捕获 titleCache 就永远 miss(4567 实测三连环第三环)
+        home = captureTitles(site, home);
+        homeVideo = captureTitles(site, homeVideo);
         return mergeHomeVideo(home, homeVideo);
     }
 
@@ -391,7 +405,7 @@ public class T4Controller {
     private Object detail(String token, String site, String ids, HttpServletRequest request,
                           HttpServletResponse response) throws IOException {
         if (TITLE_SITES.contains(site)) {
-            String title = titleCache.getIfPresent(cacheKey(site, ids));
+            String title = titleCache.getIfPresent(cacheKey(site, normalizeVodId(ids)));
             String keyword = keywordCache.getIfPresent(cacheKey(token, site));
             return switch (site) {
                 case "csp_TgDouBan" ->
@@ -544,11 +558,30 @@ public class T4Controller {
         if (list != null) {
             for (MovieDetail item : list) {
                 if (StringUtils.isNotBlank(item.getVod_id()) && StringUtils.isNotBlank(item.getVod_name())) {
-                    titleCache.put(cacheKey(site, item.getVod_id()), item.getVod_name());
+                    // putIfAbsent(asMap 并发视图):分类/搜索的正确标题先到即冻结;detail 响应的
+                    // vod_name 可能是挂载目录名(拆字混淆),不得反向覆盖列表捕获的正确标题
+                    titleCache.asMap().putIfAbsent(cacheKey(site, normalizeVodId(item.getVod_id())), item.getVod_name());
                 }
             }
         }
         return result;
+    }
+
+    /**
+     * titleCache key 规范化:列表侧 vod_id 是 encodeUrl 形态(TelegramService.toMovieDetail),
+     * 详情侧 ids 经 Spring 参数解码已是裸链接——不统一形态则永不命中,详情退化为用挂载目录名
+     * (防审核拆字名如「【X】⺌丨Cheng丨丶艮丨Fang」)匹配豆瓣,元数据必失。两侧统一解码后作 key。
+     * 仅含 '%' 才尝试解码:裸链接不含 % 直接原样,URLDecoder 的 '+'→空格副作用不会误伤。
+     */
+    private static String normalizeVodId(String id) {
+        if (id == null || id.indexOf('%') < 0) {
+            return id;
+        }
+        try {
+            return java.net.URLDecoder.decode(id, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return id;
+        }
     }
 
     private Object mergeHomeVideo(Object home, Object homeVideo) {

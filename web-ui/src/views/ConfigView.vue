@@ -115,6 +115,23 @@
               />
               <span class="hint">开启后旧地址全部 404,只有下面的 T4 专用地址可用——Token 发给谁谁能用 T4,其他用户只能用 /sub。</span>
             </el-form-item>
+            <el-form-item label="详情增强">
+              <el-switch
+                v-model="t4DetailEnhance"
+                inline-prompt
+                active-text="开启"
+                inactive-text="关闭"
+                @change="updateT4DetailEnhance"
+              />
+              <span class="hint">第三方插件源详情页经豆瓣/TMDB 补海报、简介、演职员,并清洗混淆选集名;短剧/音乐源自动跳过(可在订阅源管理按源强制)。</span>
+            </el-form-item>
+            <el-form-item label="增强优先级" v-if="t4DetailEnhance">
+              <el-radio-group v-model="t4EnhancePriority" @change="updateT4EnhancePriority">
+                <el-radio label="douban">豆瓣优先</el-radio>
+                <el-radio label="tmdb">TMDB 优先</el-radio>
+              </el-radio-group>
+              <span class="hint">豆瓣优先用本地库零网络零配额,未命中自动回退另一源。</span>
+            </el-form-item>
             <el-form-item label="T4地址">
               <el-input v-model="t4Url" style="width: 300px" readonly/>
               <el-button class="hint" @click="copyT4Url">复制</el-button>
@@ -380,6 +397,14 @@
             />
           </el-form-item>
         </div>
+        <el-form-item label="分片预读上限(MB)">
+          <el-input v-model="aListReadAhead" style="width: 140px" type="text" placeholder="64"/>
+          <el-button type="primary" class="hint" @click="updateAListReadAhead">更新</el-button>
+          <div class="hint" style="width: 100%">
+            多账号分片下载的预读内存上限(播放进度前方最多预读多少字节),默认64,0=不限;
+            网盘下载速度远高于播放速度导致内存被占满时可调小。保存后需重启AList生效。
+          </div>
+        </el-form-item>
         <el-form-item>
           <el-button @click="resetAListToken">重置AList认证Token</el-button>
           <el-button @click="exportDatabase">导出数据库</el-button>
@@ -486,6 +511,7 @@ const mixSiteSource = ref(false)
 const replaceAliToken = ref(false)
 const debugLog = ref(false)
 const aListDebug = ref(false)
+const aListReadAhead = ref('64')
 const enableHttps = ref(false)
 const autoCheckin = ref(false)
 const dialogVisible = ref(false)
@@ -525,6 +551,8 @@ const {toClipboard} = clipBorad()
 const t4Enabled = ref(true)
 const t4ProxyMode = ref('all')
 const t4StandaloneOnly = ref(false)
+const t4DetailEnhance = ref(false)
+const t4EnhancePriority = ref('douban')
 const t4Token = ref('')
 const t4TokenInput = ref('')
 const t4Url = computed(() => currentUrl + '/t4/' + t4Token.value)
@@ -682,6 +710,18 @@ const updateT4StandaloneOnly = () => {
   })
 }
 
+const updateT4DetailEnhance = () => {
+  axios.post('/api/settings', {name: 't4_detail_enhance', value: t4DetailEnhance.value}).then(() => {
+    ElMessage.success('更新成功')
+  })
+}
+
+const updateT4EnhancePriority = () => {
+  axios.post('/api/settings', {name: 't4_enhance_priority', value: t4EnhancePriority.value}).then(() => {
+    ElMessage.success('更新成功')
+  })
+}
+
 const copyT4Url = () => {
   if (!t4Token.value) {
     ElMessage.warning('T4 地址未就绪')
@@ -763,6 +803,16 @@ const updateDebugLog = () => {
 
 const updateAListDebug = () => {
   axios.post('/api/settings', {name: 'alist_debug', value: aListDebug.value}).then(() => {
+    ElMessage.success('更新成功，重启生效')
+  })
+}
+
+const updateAListReadAhead = () => {
+  if (!/^\d+$/.test(aListReadAhead.value)) {
+    ElMessage.warning('预读上限须为 0 或正整数(MB)')
+    return
+  }
+  axios.post('/api/settings', {name: 'alist_read_ahead_limit', value: aListReadAhead.value}).then(() => {
     ElMessage.success('更新成功，重启生效')
   })
 }
@@ -913,12 +963,15 @@ onMounted(() => {
     enableHttps.value = data.enable_https === 'true'
     debugLog.value = data.debug_log === 'true'
     aListDebug.value = data.alist_debug === 'true'
+    aListReadAhead.value = data.alist_read_ahead_limit || '64'
     mixSiteSource.value = data.mix_site_source !== 'false'
     atvPass.value = data.atv_password
     apiKey.value = data.api_key
     t4Enabled.value = data.t4_enabled !== 'false'
     t4ProxyMode.value = data.t4_proxy_mode === 'direct' ? 'direct' : 'all'
     t4StandaloneOnly.value = data.t4_standalone_only === 'true'
+    t4DetailEnhance.value = data.t4_detail_enhance === 'true'
+    t4EnhancePriority.value = data.t4_enhance_priority === 'tmdb' ? 'tmdb' : 'douban'
     t4Token.value = data.t4_token || ''
     t4TokenInput.value = t4Token.value
     apiClientId.value = data.open_api_client_id || ''

@@ -74,6 +74,8 @@ class T4ControllerTest {
     private cn.har01d.alist_tvbox.service.PluginWorkerService pluginWorkerService;
     @Mock
     private cn.har01d.alist_tvbox.entity.PluginRepository pluginRepository;
+    @Mock
+    private cn.har01d.alist_tvbox.service.T4DetailEnhancer t4DetailEnhancer;
 
     private T4Controller controller;
     private AppProperties appProperties;
@@ -86,7 +88,7 @@ class T4ControllerTest {
         controller = new T4Controller(subscriptionService, appProperties, tvBoxController, pianDanController,
                 mediaLibraryController, biliBiliController, embyController, jellyfinController,
                 feiniuController, liveController, telegramController, remoteSearchController,
-                playController, pluginWorkerService, pluginRepository, new ObjectMapper());
+                playController, pluginWorkerService, pluginRepository, new ObjectMapper(), t4DetailEnhancer);
         // vod/cenc 入口的 T4 专用 token 换算:默认回显(未命中),个别用例按需覆写
         lenient().when(subscriptionService.resolveT4Token(anyString()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -193,6 +195,55 @@ class T4ControllerTest {
 
         verify(telegramController).db(eq(TOKEN), eq("36675942"), isNull(), isNull(), isNull(),
                 eq("醒来"), isNull(), isNull(), isNull(), isNull(), eq(1), eq(30));
+    }
+
+    @Test
+    void titleCacheMatchesUrlEncodedShareLink() throws Exception {
+        // 频道列表 vod_id 是 encodeUrl 形态(TelegramService.toMovieDetail),壳子回传 ids 经
+        // Spring 参数解码已是裸链接——titleCache key 两侧形态不统一则永不命中,详情退化为用
+        // 挂载目录名(防审核拆字名如「【X】⺌丨Cheng丨丶艮丨Fang」)匹配豆瓣,元数据必失
+        String encoded = "https%3A%2F%2Fpan.baidu.com%2Fs%2F1xIAUak0UwamXryQ9qm9wFg%3Fpwd%3D1030";
+        String decoded = "https://pan.baidu.com/s/1xIAUak0UwamXryQ9qm9wFg?pwd=1030";
+        MovieList categoryResult = new MovieList();
+        MovieDetail item = new MovieDetail();
+        item.setVod_id(encoded);
+        item.setVod_name("小城良方");
+        categoryResult.setList(List.of(item));
+        when(telegramController.browseTgSearch(eq(TOKEN), isNull(), eq("channel1"), isNull(),
+                isNull(), isNull(), eq(1), eq(30))).thenReturn(categoryResult);
+        when(telegramController.browseTgSearch(eq(TOKEN), eq(decoded), isNull(), isNull(),
+                isNull(), eq("小城良方"), eq(1), eq(30))).thenReturn(new MovieList());
+
+        controller.vod(TOKEN, "csp_TgChannel", "channel1", null, null, null, null, null, null, request, response);
+        controller.vod(TOKEN, "csp_TgChannel", null, decoded, null, null, null, null, null, request, response);
+
+        verify(telegramController).browseTgSearch(eq(TOKEN), eq(decoded), isNull(), isNull(),
+                isNull(), eq("小城良方"), eq(1), eq(30));
+    }
+
+    @Test
+    void titleCacheCapturesHomeRecommendCardsBeforeMerge() throws Exception {
+        // home 推荐(t=0)是用户从首页卡片直点详情的唯一入口:homeBody/homeVideoBody 须在
+        // mergeHomeVideo 合并成 Map 前分别捕获——Map 形态 captureTitles 认不出,第一跳必 miss
+        String encoded = "https%3A%2F%2Fpan.baidu.com%2Fs%2F1yMBzP9kR4j3_tXEptNd3Uw%3Fpwd%3Dyptv";
+        String decoded = "https://pan.baidu.com/s/1yMBzP9kR4j3_tXEptNd3Uw?pwd=yptv";
+        when(telegramController.browseTgSearch(eq(TOKEN), isNull(), isNull(), isNull(),
+                isNull(), isNull(), eq(1), eq(30))).thenReturn(new CategoryList());
+        MovieList recommend = new MovieList();
+        MovieDetail card = new MovieDetail();
+        card.setVod_id(encoded);
+        card.setVod_name("尚公主");
+        recommend.setList(List.of(card));
+        when(telegramController.browseTgSearch(eq(TOKEN), isNull(), eq("0"), isNull(),
+                isNull(), isNull(), eq(1), eq(30))).thenReturn(recommend);
+        when(telegramController.browseTgSearch(eq(TOKEN), eq(decoded), isNull(), isNull(),
+                isNull(), eq("尚公主"), eq(1), eq(30))).thenReturn(new MovieList());
+
+        controller.vod(TOKEN, "csp_TgChannel", null, null, null, null, null, null, null, request, response);
+        controller.vod(TOKEN, "csp_TgChannel", null, decoded, null, null, null, null, null, request, response);
+
+        verify(telegramController).browseTgSearch(eq(TOKEN), eq(decoded), isNull(), isNull(),
+                isNull(), eq("尚公主"), eq(1), eq(30));
     }
 
     @Test
