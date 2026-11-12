@@ -135,6 +135,75 @@ class T4ControllerTest {
     }
 
     @Test
+    void playerDrivePlayCarriesT4TypeUnderDefaultProxyMode() throws Exception {
+        // 网盘族播放须带 T4 身份(type=t4,默认全代理):TvBoxService 据此强制凭证屏障盘(夸克/UC
+        // 直连 Cookie 形态)/p 中转、抑制 Cookie/multiUrls 下发;漏传 type 时 T4 独立 token(共享口径
+        // uid=0)下 local proxy 未启用的盘会把账号 Cookie 直接近下发给第三方壳子
+        when(playController.play(eq(TOKEN), isNull(), isNull(), eq("msubep-3-248"), isNull(),
+                eq("t4"), eq(false), same(request))).thenReturn(Map.of());
+
+        controller.vod(TOKEN, "csp_Media", null, null, null, null, "msubep-3-248", null, null, request, response);
+
+        verify(playController).play(eq(TOKEN), isNull(), isNull(), eq("msubep-3-248"), isNull(),
+                eq("t4"), eq(false), same(request));
+    }
+
+    @Test
+    void playerDrivePlayUsesDirectTypeUnderDirectProxyMode() throws Exception {
+        // t4_proxy_mode=direct(直连优先):网盘族与插件源/B站同口径透传 t4-direct,
+        // 无凭证屏障的盘(百度 netdisk UA/夸克免转存/阿里/115/123)直链直出省服务器带宽
+        appProperties.setT4ProxyMode("direct");
+        when(playController.play(eq(TOKEN), isNull(), isNull(), eq("/吞噬星空/248.mp4"), isNull(),
+                eq("t4-direct"), eq(false), same(request))).thenReturn(Map.of());
+
+        controller.vod(TOKEN, "csp_AList", null, null, null, null, "/吞噬星空/248.mp4", null, null, request, response);
+
+        verify(playController).play(eq(TOKEN), isNull(), isNull(), eq("/吞噬星空/248.mp4"), isNull(),
+                eq("t4-direct"), eq(false), same(request));
+    }
+
+    @Test
+    void playerMsubEpisodeStaysBackendProxyUnderDirectMode() throws Exception {
+        // 追剧逻辑线路 msubep- 恒 t4(后端代理是追剧的设计:死源重点即实时换源、直链过期由服务端刷新);
+        // direct 策略只放行一次性播放,不得把追剧改成直链
+        appProperties.setT4ProxyMode("direct");
+        when(playController.play(eq(TOKEN), isNull(), isNull(), eq("msubep-75-8"), isNull(),
+                eq("t4"), eq(false), same(request))).thenReturn(Map.of());
+
+        controller.vod(TOKEN, "csp_Media", null, null, null, null, "msubep-75-8", null, null, request, response);
+
+        verify(playController).play(eq(TOKEN), isNull(), isNull(), eq("msubep-75-8"), isNull(),
+                eq("t4"), eq(false), same(request));
+    }
+
+    @Test
+    void playerMediaDriveLineStillDirectUnderDirectMode() throws Exception {
+        // 追剧详情里的盘线路条目(1@{pid} 固定文件播放)是一次性播放:direct 策略照常放行直连,
+        // 与 msubep- 逻辑线路(恒后端代理)区分
+        appProperties.setT4ProxyMode("direct");
+        when(playController.play(eq(TOKEN), isNull(), isNull(), eq("1@248217"), isNull(),
+                eq("t4-direct"), eq(false), same(request))).thenReturn(Map.of());
+
+        controller.vod(TOKEN, "csp_Media", null, null, null, null, "1@248217", null, null, request, response);
+
+        verify(playController).play(eq(TOKEN), isNull(), isNull(), eq("1@248217"), isNull(),
+                eq("t4-direct"), eq(false), same(request));
+    }
+
+    @Test
+    void playerPianDanActionRoutesToPlayEndpoint() throws Exception {
+        // 片单详情动作条目(msubadd- 等)是 /play id 分支的 msg 伪动作,T4 下同样须路由:
+        // 此前 player() 无 csp_PianDan case,点动作条目直接 404
+        when(playController.play(eq(TOKEN), isNull(), isNull(), eq("msubadd-db:123"), isNull(),
+                eq("t4"), eq(false), same(request))).thenReturn(Map.of("msg", "已加入追剧"));
+
+        controller.vod(TOKEN, "csp_PianDan", null, null, null, null, "msubadd-db:123", null, null, request, response);
+
+        verify(playController).play(eq(TOKEN), isNull(), isNull(), eq("msubadd-db:123"), isNull(),
+                eq("t4"), eq(false), same(request));
+    }
+
+    @Test
     void playerLiveFollowActionHitsFollowEndpoint() throws Exception {
         when(liveController.follow(eq(TOKEN), org.mockito.ArgumentMatchers.any(LiveFollowDto.class)))
                 .thenReturn(Map.of("success", true));
